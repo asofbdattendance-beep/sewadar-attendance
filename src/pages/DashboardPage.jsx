@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES } from '../lib/supabase'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { Users, LogIn, LogOut, Activity, RefreshCw, Clock, Calendar, Download, Filter } from 'lucide-react'
+import { Users, LogIn, LogOut, Activity, RefreshCw, Clock, Calendar, Download, Plane } from 'lucide-react'
 
 export default function DashboardPage() {
   const { profile } = useAuth()
@@ -12,14 +12,13 @@ export default function DashboardPage() {
   const [recentScans, setRecentScans] = useState([])
   const [loading, setLoading] = useState(true)
   const [lastRefresh, setLastRefresh] = useState(new Date())
+  const [jathaSummary, setJathaSummary] = useState({ total: 0, satsangDays: 0 })
 
   // Filters
   const today = new Date().toISOString().split('T')[0]
   const [dateFrom, setDateFrom] = useState(today)
   const [dateTo, setDateTo] = useState(today)
-  const [sessionFilter, setSessionFilter] = useState('')
   const [centreFilter, setCentreFilter] = useState('')
-  const [sessions, setSessions] = useState([])
   const [viewableCentres, setViewableCentres] = useState([])
 
   const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
@@ -27,25 +26,19 @@ export default function DashboardPage() {
   const isAdminOrAbove = isSuperAdmin || isAdmin
 
   useEffect(() => {
-    if (isAdminOrAbove) fetchSessions()
     if (isAdminOrAbove) fetchViewableCentres()
   }, [profile])
 
   useEffect(() => {
     fetchData()
-    // Realtime subscription
+    fetchJathaSummary()
     const channel = supabase.channel('dashboard-rt')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, fetchData)
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'attendance' }, fetchData)
       .subscribe()
     const interval = setInterval(fetchData, 30000)
     return () => { supabase.removeChannel(channel); clearInterval(interval) }
-  }, [profile, dateFrom, dateTo, sessionFilter, centreFilter])
-
-  async function fetchSessions() {
-    const { data } = await supabase.from('sessions').select('id,name,date').order('date', { ascending: false }).limit(30)
-    setSessions(data || [])
-  }
+  }, [profile, dateFrom, dateTo, centreFilter])
 
   async function fetchViewableCentres() {
     if (isSuperAdmin) {
@@ -58,6 +51,35 @@ export default function DashboardPage() {
     }
   }
 
+  async function fetchJathaSummary() {
+    // This month's jatha summary
+    const now = new Date()
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0]
+
+    let q = supabase.from('jatha_attendance')
+      .select('satsang_days, submitted_centre')
+      .gte('date_from', firstDay)
+      .lte('date_from', lastDay)
+
+    if (!isSuperAdmin && isAdmin) {
+      const { data: childData } = await supabase.from('centres').select('centre_name')
+        .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
+      const centreNames = childData?.map(c => c.centre_name) || [profile.centre]
+      q = q.in('submitted_centre', centreNames)
+    } else if (!isAdminOrAbove && profile?.centre) {
+      q = q.eq('submitted_centre', profile.centre)
+    }
+
+    const { data } = await q
+    if (data) {
+      setJathaSummary({
+        total: data.length,
+        satsangDays: data.reduce((acc, r) => acc + (r.satsang_days || 0), 0)
+      })
+    }
+  }
+
   async function fetchData() {
     const start = new Date(dateFrom); start.setHours(0, 0, 0, 0)
     const end = new Date(dateTo); end.setHours(23, 59, 59, 999)
@@ -67,7 +89,6 @@ export default function DashboardPage() {
       .lte('scan_time', end.toISOString())
       .order('scan_time', { ascending: false })
 
-    // Scope by role
     if (!isAdminOrAbove && profile?.centre) {
       query = query.eq('centre', profile.centre)
     } else if (isAdmin && !centreFilter) {
@@ -79,15 +100,12 @@ export default function DashboardPage() {
       query = query.eq('centre', centreFilter)
     }
 
-    if (sessionFilter) query = query.eq('session_id', sessionFilter)
-
     const { data } = await query.limit(1000)
     if (!data) { setLoading(false); return }
 
     const ins = data.filter(r => r.type === 'IN')
     const outs = data.filter(r => r.type === 'OUT')
 
-    // "Currently inside" = for each badge, if latest record today is IN
     const latestByBadge = {}
     data.forEach(r => {
       if (!latestByBadge[r.badge_number] || new Date(r.scan_time) > new Date(latestByBadge[r.badge_number].scan_time)) {
@@ -165,14 +183,6 @@ export default function DashboardPage() {
             style={{ border: 'none', background: 'none', color: 'var(--text-primary)', fontSize: '0.82rem', outline: 'none' }} />
         </div>
 
-        {isAdminOrAbove && sessions.length > 0 && (
-          <select value={sessionFilter} onChange={e => setSessionFilter(e.target.value)}
-            style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.75rem', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem' }}>
-            <option value="">All Sessions</option>
-            {sessions.map(s => <option key={s.id} value={s.id}>{s.name} ({new Date(s.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })})</option>)}
-          </select>
-        )}
-
         {isAdminOrAbove && viewableCentres.length > 1 && (
           <select value={centreFilter} onChange={e => setCentreFilter(e.target.value)}
             style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.75rem', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem' }}>
@@ -208,12 +218,31 @@ export default function DashboardPage() {
             </div>
           </div>
 
+          {/* Jatha this month summary */}
+          <div className="card mb-3" style={{ display: 'flex', gap: '1.5rem', alignItems: 'center', padding: '0.85rem 1.25rem', borderColor: 'rgba(201,168,76,0.2)' }}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: 'var(--gold-bg)', border: '1px solid rgba(201,168,76,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <Plane size={20} color="var(--gold)" />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Jatha This Month</div>
+              <div style={{ display: 'flex', gap: '1.5rem' }}>
+                <div>
+                  <span style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--gold)', lineHeight: 1 }}>{jathaSummary.total}</span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: '0.35rem' }}>jatha submissions</span>
+                </div>
+                <div>
+                  <span style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--green)', lineHeight: 1 }}>{jathaSummary.satsangDays}</span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: '0.35rem' }}>satsang days logged</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Centre chart */}
           {isAdminOrAbove && centreStats.length > 0 && (
             <div className="card mb-3">
               <h3 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
                 Centre-wise · {isMultiDay ? `${dateFmt(dateFrom)} – ${dateFmt(dateTo)}` : dateFmt(dateFrom)}
-                {sessionFilter && sessions.find(s => s.id === sessionFilter) && ` · ${sessions.find(s => s.id === sessionFilter).name}`}
               </h3>
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={centreStats} margin={{ top: 0, right: 0, left: -20, bottom: 40 }}>

@@ -1,16 +1,15 @@
 // src/pages/SuperAdminPage.jsx
-// SUPER_ADMIN ONLY — full management: users, sewadars, centres, sessions, attendance correction
-// CRITICAL: ALL hooks declared BEFORE conditional return (React rules of hooks)
-// All writes/deletes logged to logs table.
+// SUPER_ADMIN ONLY — full management: users, sewadars, centres, jatha_centres, attendance correction, reports
+// Sessions removed. Jatha Centres tab added.
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { ROLES } from '../lib/supabase'
+import { ROLES, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
 import {
   UserPlus, Trash2, Shield, MapPin, ToggleLeft, ToggleRight,
   RefreshCw, Download, FileSpreadsheet, Calendar,
-  ChevronDown, ChevronRight, Users, Building2, CalendarClock,
+  ChevronDown, ChevronRight, Users, Building2, Plane,
   Pencil, X, Check, Search, PlusCircle, Eye, EyeOff
 } from 'lucide-react'
 
@@ -31,7 +30,7 @@ function log(profile, action, details) {
 export default function SuperAdminPage() {
   const { profile } = useAuth()
 
-  // ── ALL HOOKS FIRST ── before any conditional return
+  // ── ALL HOOKS FIRST ──
   const [tab, setTab] = useState('users')
   const [users, setUsers] = useState([])
   const [centres, setCentres] = useState([])
@@ -46,9 +45,6 @@ export default function SuperAdminPage() {
   const [dateRange, setDateRange] = useState({ from:'', to:'' })
   const [expandedParent, setExpandedParent] = useState(null)
   const [expandedChild, setExpandedChild] = useState(null)
-  const [sessions, setSessions] = useState([])
-  const [newSession, setNewSession] = useState({ name:'', date: new Date().toISOString().split('T')[0], centre:'', notes:'' })
-  const [showAddSession, setShowAddSession] = useState(false)
   const [sewadars, setSewadars] = useState([])
   const [sewadarSearch, setSewadarSearch] = useState('')
   const [sewadarCentreFilter, setSewadarCentreFilter] = useState('')
@@ -65,19 +61,29 @@ export default function SuperAdminPage() {
   const [editAttTime, setEditAttTime] = useState('')
   const [editAttType, setEditAttType] = useState('')
 
+  // Jatha Centres tab
+  const [jathaCentres, setJathaCentres] = useState([])
+  const [jathaCentresLoading, setJathaCentresLoading] = useState(false)
+  const [showAddJatha, setShowAddJatha] = useState(false)
+  const [newJatha, setNewJatha] = useState({ jatha_type: JATHA_TYPE.MAJOR_CENTRE, centre_name:'', department:'', is_active: true })
+  const [editingJatha, setEditingJatha] = useState(null)
+  const [editJathaForm, setEditJathaForm] = useState({})
+  const [jathaTypeFilter, setJathaTypeFilter] = useState('')
+
   useEffect(() => {
     if (tab === 'users') fetchUsers()
     else if (tab === 'centres') fetchCentres()
     else if (tab === 'reports') fetchReports()
-    else if (tab === 'sessions') fetchSessions()
     else if (tab === 'sewadars') fetchSewadars()
     else if (tab === 'attendance') fetchAttendance()
+    else if (tab === 'jatha_centres') fetchJathaCentres()
   }, [tab, dateRange])
 
   useEffect(() => { if (tab === 'sewadars') fetchSewadars() }, [sewadarSearch, sewadarCentreFilter])
   useEffect(() => { if (tab === 'attendance') fetchAttendance() }, [attDate, attSearch])
+  useEffect(() => { if (tab === 'jatha_centres') fetchJathaCentres() }, [jathaTypeFilter])
 
-  // ── Guard — AFTER all hooks ──
+  // ── Guard ──
   if (profile?.role !== ROLES.SUPER_ADMIN) return (
     <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
   )
@@ -146,33 +152,6 @@ export default function SuperAdminPage() {
   const exportCentres = () => dlCSV(['Centre,Parent,Geo,Radius,Lat,Lng', ...reportData.centres.map(c => [c.centre_name, c.parent_centre||'', c.geo_enabled?'Y':'N', c.geo_radius||'', c.latitude||'', c.longitude||''].join(','))].join('\n'), 'centres_export.csv')
   const exportLogs = () => dlCSV(['Time,Badge,Action,Details', ...reportData.logs.map(l => [new Date(l.timestamp).toLocaleString('en-IN'), l.user_badge, l.action, `"${l.details||''}"`].join(','))].join('\n'), 'logs_export.csv')
 
-  // ── Sessions ──
-  async function fetchSessions() {
-    setLoading(true)
-    const { data } = await supabase.from('sessions').select('*').order('date', { ascending: false }).limit(50)
-    setSessions(data || []); setLoading(false)
-  }
-  async function createSession() {
-    if (!newSession.name || !newSession.date) { setMessage('✗ Name and date required'); return }
-    const { error } = await supabase.from('sessions').insert({ ...newSession, created_by: profile.badge_number, created_at: new Date().toISOString(), is_active: false })
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'CREATE_SESSION', `Created session "${newSession.name}" on ${newSession.date}`)
-    setMessage('✓ Session created!'); setShowAddSession(false)
-    setNewSession({ name:'', date: new Date().toISOString().split('T')[0], centre:'', notes:'' }); fetchSessions()
-  }
-  async function toggleSession(s) {
-    if (!s.is_active) await supabase.from('sessions').update({ is_active: false }).eq('date', s.date).eq('is_active', true)
-    await supabase.from('sessions').update({ is_active: !s.is_active }).eq('id', s.id)
-    await log(profile, 'TOGGLE_SESSION', `is_active=${!s.is_active} for "${s.name}"`)
-    fetchSessions()
-  }
-  async function deleteSession(s) {
-    if (!confirm(`Delete session "${s.name}"? Attendance records will be unlinked.`)) return
-    await supabase.from('sessions').delete().eq('id', s.id)
-    await log(profile, 'DELETE_SESSION', `Deleted session "${s.name}"`)
-    fetchSessions()
-  }
-
   // ── Sewadars ──
   async function fetchSewadars() {
     setSewadarLoading(true)
@@ -236,6 +215,47 @@ export default function SuperAdminPage() {
     setMessage('✓ Record updated'); setEditingAtt(null); fetchAttendance()
   }
 
+  // ── Jatha Centres ──
+  async function fetchJathaCentres() {
+    setJathaCentresLoading(true)
+    let q = supabase.from('jatha_centres').select('*').order('jatha_type').order('centre_name').order('department')
+    if (jathaTypeFilter) q = q.eq('jatha_type', jathaTypeFilter)
+    const { data } = await q; setJathaCentres(data || []); setJathaCentresLoading(false)
+  }
+  async function createJathaCentre() {
+    if (!newJatha.centre_name.trim() || !newJatha.department.trim()) { setMessage('✗ Centre name and department are required'); return }
+    setSaving(true)
+    const { error } = await supabase.from('jatha_centres').insert({
+      jatha_type: newJatha.jatha_type,
+      centre_name: newJatha.centre_name.trim(),
+      department: newJatha.department.trim(),
+      is_active: true,
+      created_at: new Date().toISOString()
+    })
+    if (error) { setMessage('✗ ' + error.message); setSaving(false); return }
+    await log(profile, 'CREATE_JATHA_CENTRE', `Added ${newJatha.centre_name} (${newJatha.jatha_type})`)
+    setMessage('✓ Jatha centre added!'); setShowAddJatha(false)
+    setNewJatha({ jatha_type: JATHA_TYPE.MAJOR_CENTRE, centre_name:'', department:'', is_active: true })
+    fetchJathaCentres(); setSaving(false)
+  }
+  async function saveJathaCentre(jc) {
+    const { error } = await supabase.from('jatha_centres').update(editJathaForm).eq('id', jc.id)
+    if (error) { setMessage('✗ ' + error.message); return }
+    await log(profile, 'EDIT_JATHA_CENTRE', `Updated jatha_centre id=${jc.id}`)
+    setMessage('✓ Updated!'); setEditingJatha(null); setEditJathaForm({}); fetchJathaCentres()
+  }
+  async function toggleJathaCentreActive(jc) {
+    await supabase.from('jatha_centres').update({ is_active: !jc.is_active }).eq('id', jc.id)
+    await log(profile, 'TOGGLE_JATHA_CENTRE', `is_active=${!jc.is_active} for ${jc.centre_name}`)
+    fetchJathaCentres()
+  }
+  async function deleteJathaCentre(jc) {
+    if (!confirm(`Delete "${jc.centre_name} — ${jc.department}"? Existing jatha records are unaffected.`)) return
+    await supabase.from('jatha_centres').delete().eq('id', jc.id)
+    await log(profile, 'DELETE_JATHA_CENTRE', `Deleted jatha_centre id=${jc.id} ${jc.centre_name}`)
+    setMessage('✓ Deleted'); fetchJathaCentres()
+  }
+
   // ── Render helpers ──
   const centreTree = PARENT_CENTRES.map(p => ({ parent: p, children: centres.filter(c => c.parent_centre === p), config: centres.find(c => c.centre_name === p) }))
   const roleColor = { super_admin: 'var(--gold)', admin: 'var(--blue)', centre_user: 'var(--green)' }
@@ -265,7 +285,7 @@ export default function SuperAdminPage() {
           {TAB_BTN('users', 'Users', Users)}
           {TAB_BTN('sewadars', 'Sewadars', Shield)}
           {TAB_BTN('centres', 'Centres', Building2)}
-          {TAB_BTN('sessions', 'Sessions', CalendarClock)}
+          {TAB_BTN('jatha_centres', 'Jatha Centres', Plane)}
           {TAB_BTN('attendance', 'Correct Att', Pencil)}
           {TAB_BTN('reports', 'Reports', FileSpreadsheet)}
         </div>
@@ -409,28 +429,69 @@ export default function SuperAdminPage() {
         </div>
       )}
 
-      {/* SESSIONS */}
-      {tab === 'sessions' && (
+      {/* JATHA CENTRES */}
+      {tab === 'jatha_centres' && (
         <div>
-          <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:'0.75rem', gap:'1rem' }}>
-            <p className="text-muted text-sm">Sessions tag attendance per-satsang. Only one session can be active per date.</p>
-            <button className="btn btn-gold" style={{ flexShrink:0 }} onClick={() => setShowAddSession(true)}><PlusCircle size={15}/> New Session</button>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.75rem', gap:'0.75rem', flexWrap:'wrap' }}>
+            <div style={{ display:'flex', gap:'0.5rem' }}>
+              {['', JATHA_TYPE.MAJOR_CENTRE, JATHA_TYPE.BEAS].map(t => (
+                <button key={t} onClick={() => setJathaTypeFilter(t)}
+                  style={{ padding:'0.35rem 0.85rem', borderRadius:'var(--radius)', fontSize:'0.8rem', fontWeight:600, cursor:'pointer', fontFamily:'Inter,sans-serif',
+                    background: jathaTypeFilter === t ? 'var(--excel-green)' : 'var(--bg)',
+                    color: jathaTypeFilter === t ? 'white' : 'var(--text-muted)',
+                    border: jathaTypeFilter === t ? 'none' : '1.5px solid var(--border)' }}>
+                  {t === '' ? 'All' : JATHA_TYPE_LABEL[t]}
+                </button>
+              ))}
+            </div>
+            <button className="btn btn-gold" onClick={() => setShowAddJatha(true)}><PlusCircle size={15} /> Add Entry</button>
           </div>
-          {loading ? <div className="spinner" style={{ margin:'2rem auto' }}/> : (
+          <p className="text-muted text-sm mb-2">These centre + department combinations appear in the Jatha attendance form.</p>
+          {jathaCentresLoading ? <div className="spinner" style={{ margin:'2rem auto' }} /> : (
             <div className="table-wrap"><table>
-              <thead><tr><th>Name</th><th>Date</th><th>Centre</th><th>Notes</th><th>Active</th><th></th></tr></thead>
+              <thead><tr><th>Type</th><th>Centre Name</th><th>Department</th><th>Active</th><th></th></tr></thead>
               <tbody>
-                {sessions.map(s => (
-                  <tr key={s.id}>
-                    <td style={{ fontWeight:500 }}>{s.name}</td>
-                    <td style={{ fontSize:'0.82rem', color:'var(--text-muted)', whiteSpace:'nowrap' }}>{new Date(s.date+'T12:00:00').toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })}</td>
-                    <td style={{ fontSize:'0.82rem' }}>{s.centre||'All'}</td>
-                    <td style={{ fontSize:'0.82rem', color:'var(--text-muted)', maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.notes||'—'}</td>
-                    <td><button className="btn btn-ghost" style={{ padding:'0.2rem' }} onClick={() => toggleSession(s)}>{s.is_active ? <ToggleRight size={22} color="var(--green)"/> : <ToggleLeft size={22} color="var(--text-muted)"/>}</button></td>
-                    <td><button className="btn btn-ghost" style={{ padding:'0.25rem', color:'var(--red)' }} onClick={() => deleteSession(s)}><Trash2 size={14}/></button></td>
+                {jathaCentres.map(jc => (
+                  <tr key={jc.id}>
+                    {editingJatha === jc.id ? (
+                      <>
+                        <td>
+                          <select className="input" style={{ padding:'0.3rem', fontSize:'0.82rem', width:130 }}
+                            value={editJathaForm.jatha_type ?? jc.jatha_type}
+                            onChange={e => setEditJathaForm(f => ({...f, jatha_type: e.target.value}))}>
+                            <option value={JATHA_TYPE.MAJOR_CENTRE}>{JATHA_TYPE_LABEL[JATHA_TYPE.MAJOR_CENTRE]}</option>
+                            <option value={JATHA_TYPE.BEAS}>{JATHA_TYPE_LABEL[JATHA_TYPE.BEAS]}</option>
+                          </select>
+                        </td>
+                        <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem' }} value={editJathaForm.centre_name ?? jc.centre_name} onChange={e => setEditJathaForm(f => ({...f, centre_name: e.target.value}))} /></td>
+                        <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem' }} value={editJathaForm.department ?? jc.department} onChange={e => setEditJathaForm(f => ({...f, department: e.target.value}))} /></td>
+                        <td>—</td>
+                        <td style={{ display:'flex', gap:4 }}>
+                          <button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={() => saveJathaCentre(jc)}><Check size={15}/></button>
+                          <button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => { setEditingJatha(null); setEditJathaForm({}) }}><X size={15}/></button>
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td><span className="badge" style={{ background:'var(--gold-bg)', color:'var(--gold)', border:'1px solid rgba(201,168,76,0.25)', fontSize:'0.78rem' }}>{JATHA_TYPE_LABEL[jc.jatha_type] || jc.jatha_type}</span></td>
+                        <td style={{ fontWeight:500 }}>{jc.centre_name}</td>
+                        <td style={{ fontSize:'0.82rem', color:'var(--text-secondary)' }}>{jc.department}</td>
+                        <td>
+                          <button className="btn btn-ghost" style={{ padding:'0.2rem' }} onClick={() => toggleJathaCentreActive(jc)}>
+                            {jc.is_active ? <ToggleRight size={22} color="var(--green)"/> : <ToggleLeft size={22} color="var(--text-muted)"/>}
+                          </button>
+                        </td>
+                        <td style={{ display:'flex', gap:4 }}>
+                          <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--blue)' }} onClick={() => { setEditingJatha(jc.id); setEditJathaForm({}) }}><Pencil size={14}/></button>
+                          <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--red)' }} onClick={() => deleteJathaCentre(jc)}><Trash2 size={14}/></button>
+                        </td>
+                      </>
+                    )}
                   </tr>
                 ))}
-                {!sessions.length && !loading && <tr><td colSpan={6} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>No sessions. Create one before a satsang.</td></tr>}
+                {!jathaCentres.length && !jathaCentresLoading && (
+                  <tr><td colSpan={5} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>No jatha centres configured. Add your first entry.</td></tr>
+                )}
               </tbody>
             </table></div>
           )}
@@ -566,18 +627,27 @@ export default function SuperAdminPage() {
         </div>
       )}
 
-      {/* ADD SESSION MODAL */}
-      {showAddSession && (
-        <div className="overlay" onClick={() => setShowAddSession(false)}>
+      {/* ADD JATHA CENTRE MODAL */}
+      {showAddJatha && (
+        <div className="overlay" onClick={() => setShowAddJatha(false)}>
           <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', marginBottom:'1.5rem' }}>New Session</h3>
-            <div className="mb-2"><label className="label">Session Name *</label><input className="input" placeholder="e.g. Morning Satsang" value={newSession.name} onChange={e => setNewSession({...newSession, name:e.target.value})}/></div>
-            <div className="mb-2"><label className="label">Date *</label><input className="input" type="date" value={newSession.date} onChange={e => setNewSession({...newSession, date:e.target.value})}/></div>
-            <div className="mb-2"><label className="label">Centre <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, color:'var(--text-muted)' }}>(blank = all centres)</span></label><select className="input" value={newSession.centre} onChange={e => setNewSession({...newSession, centre:e.target.value})}><option value="">All Centres</option>{PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}</select></div>
-            <div className="mb-2"><label className="label">Notes <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, color:'var(--text-muted)' }}>(optional)</span></label><textarea className="input" rows={2} value={newSession.notes} onChange={e => setNewSession({...newSession, notes:e.target.value})} style={{ resize:'none' }}/></div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem', marginTop:'1rem' }}>
-              <button className="btn btn-outline btn-full" onClick={() => setShowAddSession(false)}>Cancel</button>
-              <button className="btn btn-gold btn-full" onClick={createSession}>Create Session</button>
+            <h3 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', marginBottom:'1.5rem' }}>Add Jatha Centre Entry</h3>
+            <div className="mb-2">
+              <label className="label">Jatha Type</label>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.6rem' }}>
+                {[JATHA_TYPE.MAJOR_CENTRE, JATHA_TYPE.BEAS].map(t => (
+                  <button key={t} onClick={() => setNewJatha({...newJatha, jatha_type:t})}
+                    style={{ padding:'0.6rem', border:`2px solid ${newJatha.jatha_type===t ? 'var(--gold)' : 'var(--border)'}`, borderRadius:8, background: newJatha.jatha_type===t ? 'var(--gold-bg)' : 'var(--bg)', color: newJatha.jatha_type===t ? 'var(--gold)' : 'var(--text-secondary)', fontWeight:700, fontSize:'0.85rem', cursor:'pointer', fontFamily:'Inter,sans-serif' }}>
+                    {JATHA_TYPE_LABEL[t]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="mb-2"><label className="label">Centre Name *</label><input className="input" placeholder={newJatha.jatha_type === JATHA_TYPE.BEAS ? 'Beas' : 'e.g. Delhi'} value={newJatha.centre_name} onChange={e => setNewJatha({...newJatha, centre_name:e.target.value})}/></div>
+            <div className="mb-2"><label className="label">Department *</label><input className="input" placeholder="e.g. Langar Sewa" value={newJatha.department} onChange={e => setNewJatha({...newJatha, department:e.target.value})}/></div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem', marginTop:'1.25rem' }}>
+              <button className="btn btn-outline btn-full" onClick={() => setShowAddJatha(false)}>Cancel</button>
+              <button className="btn btn-gold btn-full" onClick={createJathaCentre} disabled={saving}>{saving?'Adding…':'Add Entry'}</button>
             </div>
           </div>
         </div>
