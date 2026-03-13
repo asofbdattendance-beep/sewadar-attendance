@@ -284,21 +284,23 @@ export default function SuperAdminPage() {
 
           {loading ? <div className="spinner" style={{ margin: '2rem auto' }} /> : (
             <div className="table-wrap">
-              <table>
+              <table className="sewadars-table">
                 <thead>
                   <tr>
-                    <th>Badge</th>
+                    <th style={{ width: 120 }}>Badge</th>
                     <th>Name</th>
-                    <th>Centre</th>
-                    <th>Dept</th>
-                    <th>Geo</th>
-                    <th></th>
+                    <th style={{ width: 140 }}>Centre</th>
+                    <th style={{ width: 120 }}>Dept</th>
+                    <th style={{ width: 100 }}>Geo</th>
+                    <th style={{ width: 60 }}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {sewadars.map(s => (
                     <tr key={s.id}>
-                      <td style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--gold)' }}>{s.badge_number}</td>
+                      <td style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--gold)' }}>
+                        {s.badge_number}
+                      </td>
                       <td style={{ fontWeight: 500 }}>
                         <input
                           defaultValue={s.sewadar_name}
@@ -311,6 +313,7 @@ export default function SuperAdminPage() {
                           defaultValue={s.centre}
                           onChange={e => updateSewadar(s.id, 'centre', e.target.value)}
                           className="inline-select"
+                          style={{ width: '100%' }}
                         >
                           {PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
@@ -321,13 +324,13 @@ export default function SuperAdminPage() {
                           placeholder="Dept"
                           onBlur={e => updateSewadar(s.id, 'department', e.target.value)}
                           className="inline-edit"
-                          style={{ width: 100 }}
                         />
                       </td>
                       <td>
                         <button
                           className="btn btn-ghost"
                           onClick={() => updateSewadar(s.id, 'geo_required', !s.geo_required)}
+                          title={s.geo_required ? 'Geo required' : 'Geo not required'}
                         >
                           {s.geo_required
                             ? <ToggleRight size={18} color="var(--green)" />
@@ -337,8 +340,9 @@ export default function SuperAdminPage() {
                       <td>
                         <button
                           className="btn btn-ghost"
-                          style={{ color: 'var(--red)' }}
+                          style={{ color: 'var(--red)', padding: '0.25rem' }}
                           onClick={() => deleteSewadar(s.id, s.badge_number)}
+                          title="Delete sewadar"
                         >
                           <Trash2 size={15} />
                         </button>

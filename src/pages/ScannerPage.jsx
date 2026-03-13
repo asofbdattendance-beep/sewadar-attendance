@@ -27,10 +27,9 @@ export default function ScannerPage({ isOnline }) {
   // Load app settings and session
   useEffect(() => {
     async function loadSettings() {
-      const { data } = await supabase.from('app_settings').select('*')
-      if (data) {
-        const setting = data.find(s => s.key === 'duplicate_window_ms')
-        if (setting) DUPLICATE_WINDOW_MS = parseInt(setting.value)
+      const { data } = await supabase.from('app_settings').select('settings_json').eq('id', 'global').single()
+      if (data?.settings_json?.duplicate_window_ms) {
+        DUPLICATE_WINDOW_MS = parseInt(data.settings_json.duplicate_window_ms)
       }
     }
     loadSettings()
