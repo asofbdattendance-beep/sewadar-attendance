@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, FLAG_TYPES } from '../lib/supabase'
-import { Search, Download, Calendar, Filter, Flag, X, ChevronDown } from 'lucide-react'
+import { Search, Download, Calendar, Filter, Flag, X, ChevronDown, Trash2 } from 'lucide-react'
 
 export default function RecordsPage() {
   const { profile } = useAuth()
@@ -165,6 +165,40 @@ export default function RecordsPage() {
     }, 1500)
   }
 
+  async function deleteRecord(r) {
+    if (!confirm(`Delete this record? This cannot be undone.`)) return
+
+    try {
+      // Delete IN record if exists
+      if (r.in_id) {
+        await supabase.from('attendance').delete().eq('id', r.in_id)
+        await supabase.from('logs').insert({
+          user_badge: profile.badge_number,
+          action: 'DELETE_ATTENDANCE',
+          details: `Deleted IN record for ${r.badge_number} on ${r.date}`,
+          timestamp: new Date().toISOString()
+        })
+      }
+
+      // Delete OUT record if exists
+      if (r.out_id) {
+        await supabase.from('attendance').delete().eq('id', r.out_id)
+        await supabase.from('logs').insert({
+          user_badge: profile.badge_number,
+          action: 'DELETE_ATTENDANCE',
+          details: `Deleted OUT record for ${r.badge_number} on ${r.date}`,
+          timestamp: new Date().toISOString()
+        })
+      }
+
+      // Refresh records
+      fetchRecords()
+    } catch (err) {
+      console.error('Delete error:', err)
+      alert('Failed to delete record')
+    }
+  }
+
   function formatTime(iso) {
     if (!iso) return '—'
     return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
@@ -236,6 +270,7 @@ export default function RecordsPage() {
                 <th>OUT</th>
                 <th>Status</th>
                 <th></th>
+                {profile?.role === ROLES.SUPER_ADMIN && <th></th>}
               </tr>
             </thead>
             <tbody>
@@ -277,11 +312,22 @@ export default function RecordsPage() {
                       <Flag size={13} />
                     </button>
                   </td>
+                  {profile?.role === ROLES.SUPER_ADMIN && (
+                    <td>
+                      <button
+                        className="records-delete-btn"
+                        onClick={() => deleteRecord(r)}
+                        title="Delete this record"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
               {records.length === 0 && (
                 <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
+                  <td colSpan={profile?.role === ROLES.SUPER_ADMIN ? 9 : 8} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
                     No records found
                   </td>
                 </tr>

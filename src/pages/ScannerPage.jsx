@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, EXCEPTION_DEPARTMENTS, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import { lookupBadgeOffline, getLastAttendance, addToAttendanceCache, addToOfflineQueue } from '../lib/offline'
+import { lookupBadgeOffline, getLastAttendance, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
-import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, User } from 'lucide-react'
+import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, User, RefreshCw, Download, History, Radio } from 'lucide-react'
 
-const DUPLICATE_WINDOW_MS = 120000
+let DUPLICATE_WINDOW_MS = 120000 // Default, will be loaded from app_settings
 
 export default function ScannerPage({ isOnline }) {
   const { profile } = useAuth()
@@ -15,9 +15,49 @@ export default function ScannerPage({ isOnline }) {
   const [gpsStatus, setGpsStatus] = useState('loading')
   const [popupState, setPopupState] = useState(null)
   const [processing, setProcessing] = useState(false)
+  const [offlineQueueCount, setOfflineQueueCount] = useState(0)
+  const [activeSession, setActiveSession] = useState(null)
+  const [inCount, setInCount] = useState(0)
+  const [scanHistory, setScanHistory] = useState([])
 
   const scannerRef = useRef(null)
   const lastScanRef = useRef({ badge: null, time: 0 })
+  const watchIdRef = useRef(null)
+
+  // Load app settings and session
+  useEffect(() => {
+    async function loadSettings() {
+      const { data } = await supabase.from('app_settings').select('*')
+      if (data) {
+        const setting = data.find(s => s.key === 'duplicate_window_ms')
+        if (setting) DUPLICATE_WINDOW_MS = parseInt(setting.value)
+      }
+    }
+    loadSettings()
+  }, [])
+
+  // Load active session
+  useEffect(() => {
+    async function loadSession() {
+      const today = new Date().toISOString().split('T')[0]
+      const { data } = await supabase
+        .from('sessions')
+        .select('*')
+        .eq('is_active', true)
+        .eq('session_date', today)
+        .single()
+      if (data) setActiveSession(data)
+    }
+    loadSession()
+  }, [])
+
+  // Update offline queue count periodically
+  useEffect(() => {
+    const updateQueue = () => setOfflineQueueCount(getOfflineQueueCount())
+    updateQueue()
+    const interval = setInterval(updateQueue, 3000)
+    return () => clearInterval(interval)
+  }, [])
 
   // Load centre config and child centres list
   useEffect(() => {
@@ -37,21 +77,94 @@ export default function ScannerPage({ isOnline }) {
     })
   }, [profile?.centre])
 
-  // GPS
+  // GPS Watch Position (Continuous)
   useEffect(() => {
     if (!navigator.geolocation) { setGpsStatus('failed'); return }
-    let retries = 0
-    const tryGet = () => {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
-          setGpsStatus('success')
-        },
-        () => { retries++ < 3 ? setTimeout(tryGet, 2000) : setGpsStatus('failed') },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
-      )
+
+    const options = {
+      enableHighAccuracy: true,
+      timeout: 15000,
+      maximumAge: 30000
     }
-    tryGet()
+
+    const successHandler = (pos) => {
+      setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+      setGpsStatus('success')
+    }
+
+    const errorHandler = () => {
+      setGpsStatus('failed')
+    }
+
+    watchIdRef.current = navigator.geolocation.watchPosition(successHandler, errorHandler, options)
+
+    return () => {
+      if (watchIdRef.current) {
+        navigator.geolocation.clearWatch(watchIdRef.current)
+      }
+    }
+  }, [])
+
+  // Realtime subscription for IN count
+  useEffect(() => {
+    const channel = supabase
+      .channel('attendance-scanner')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, (payload) => {
+        // Update IN count if new IN record
+        if (payload.new.type === 'IN') {
+          setInCount(prev => prev + 1)
+        }
+        // Add to history for recent scans display
+        setScanHistory(prev => [payload.new, ...prev].slice(0, 5))
+      })
+      .subscribe()
+
+    return () => supabase.removeChannel(channel)
+  }, [])
+
+  // Load initial IN count
+  useEffect(() => {
+    async function loadInCount() {
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      const { data } = await supabase
+        .from('attendance')
+        .select('*')
+        .eq('type', 'IN')
+        .gte('scan_time', today.toISOString())
+      setInCount(data?.length || 0)
+    }
+    loadInCount()
+  }, [])
+
+  const playSound = useCallback((type) => {
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+      const oscillator = audioContext.createOscillator()
+      const gainNode = audioContext.createGain()
+
+      oscillator.connect(gainNode)
+      gainNode.connect(audioContext.destination)
+
+      if (type === 'IN') {
+        oscillator.frequency.value = 800 // Higher tone for IN
+        oscillator.type = 'sine'
+      } else {
+        oscillator.frequency.value = 400 // Lower tone for OUT
+        oscillator.type = 'sine'
+      }
+
+      gainNode.gain.value = 0.3
+      oscillator.start()
+      oscillator.stop(audioContext.currentTime + 0.1)
+
+      // Haptic feedback if available
+      if (navigator.vibrate) {
+        navigator.vibrate(type === 'IN' ? 100 : 50)
+      }
+    } catch (e) {
+      // Sound not available
+    }
   }, [])
 
   const handleScan = useCallback(async (badge) => {
@@ -87,7 +200,7 @@ export default function ScannerPage({ isOnline }) {
         return
       }
 
-      // Check duplicate within 2 minutes
+      // Check duplicate within window
       const lastEntry = todayEntries.length > 0 ? todayEntries[todayEntries.length - 1] : null
       if (lastEntry?.scan_time) {
         const diff = now - new Date(lastEntry.scan_time).getTime()
@@ -98,7 +211,7 @@ export default function ScannerPage({ isOnline }) {
         }
       }
 
-      // Determine allowed types
+      // Determine allowed types using ladder logic (last scan determines next)
       const hasIn = todayEntries.some(e => e.type === 'IN')
       const hasOut = todayEntries.some(e => e.type === 'OUT')
       let allowedTypes = []
@@ -114,7 +227,6 @@ export default function ScannerPage({ isOnline }) {
       const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
       const isAdmin = profile?.role === ROLES.ADMIN
       const isSameCentre = found.centre === profile?.centre
-      // Admin can scan own centre + all child centres without any confirmation
       const isChildCentre = isAdmin && childCentres.includes(found.centre)
       const isException = isExceptionDept(found.department)
 
@@ -175,7 +287,8 @@ export default function ScannerPage({ isOnline }) {
       scanner_centre: profile.centre || 'UNKNOWN',
       latitude: userLocation?.lat || null,
       longitude: userLocation?.lng || null,
-      device_id: navigator.userAgent.slice(0, 50)
+      device_id: navigator.userAgent.slice(0, 50),
+      session_id: activeSession?.id || null
     }
 
     let success = false
@@ -197,6 +310,7 @@ export default function ScannerPage({ isOnline }) {
     addToAttendanceCache(record)
 
     if (success) {
+      playSound(type)
       setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
       setTimeout(closePopup, 2000)
     }
@@ -206,6 +320,13 @@ export default function ScannerPage({ isOnline }) {
     setPopupState(null)
     lastScanRef.current = { badge: null, time: 0 }
     if (scannerRef.current) scannerRef.current.resume()
+  }
+
+  const syncQueue = async () => {
+    if (!isOnline) return
+    const result = await syncOfflineQueue(supabase)
+    setOfflineQueueCount(0)
+    alert(`Synced ${result.synced} records${result.failed ? `, ${result.failed} failed` : ''}`)
   }
 
   return (
@@ -222,7 +343,19 @@ export default function ScannerPage({ isOnline }) {
             <MapPin size={11} />
             GPS {gpsStatus === 'success' ? '✓' : gpsStatus === 'failed' ? '✗' : '…'}
           </span>
+          {offlineQueueCount > 0 && (
+            <span className="scanner-pill pill-queue" onClick={syncQueue} title="Tap to sync">
+              <RefreshCw size={11} />
+              {offlineQueueCount} pending
+            </span>
+          )}
         </div>
+      </div>
+
+      {/* Live IN count */}
+      <div className="live-in-count">
+        <Radio size={14} className="pulse-dot" />
+        <span>Inside Now: <strong>{inCount}</strong></span>
       </div>
 
       <BarcodeScanner ref={scannerRef} onScan={handleScan} />
@@ -248,10 +381,12 @@ export default function ScannerPage({ isOnline }) {
                 hasOut={popupState.hasOut}
                 onMark={markAttendance}
                 onClose={closePopup}
+                isSuperAdmin={profile?.role === ROLES.SUPER_ADMIN}
+                scanHistory={scanHistory}
               />
             )}
 
-            {/* EXCEPTION CONFIRMATION — different centre, exception dept */}
+            {/* EXCEPTION CONFIRMATION */}
             {popupState.type === 'exception_confirm' && (
               <div className="popup-exception">
                 <div className="popup-exception-banner">
@@ -260,17 +395,6 @@ export default function ScannerPage({ isOnline }) {
                 </div>
                 <div className="popup-exception-name">{popupState.sewadar.sewadar_name}</div>
                 <div className="popup-exception-badge">{popupState.sewadar.badge_number}</div>
-                <div className="popup-exception-detail">
-                  <span>Centre</span>
-                  <strong>{popupState.sewadar.centre}</strong>
-                </div>
-                <div className="popup-exception-detail">
-                  <span>Dept</span>
-                  <strong>{popupState.sewadar.department}</strong>
-                </div>
-                <p className="popup-exception-note">
-                  This sewadar belongs to their respective centre. Confirm to mark attendance here.
-                </p>
                 <div className="popup-actions">
                   {popupState.allowedTypes?.includes('IN') && (
                     <button className="btn-in" onClick={() => {
@@ -379,12 +503,34 @@ export default function ScannerPage({ isOnline }) {
           </div>
         </div>
       )}
+
+      {/* Session indicator */}
+      {activeSession && (
+        <div className="session-indicator">
+          <History size={12} />
+          <span>{activeSession.name}</span>
+        </div>
+      )}
     </div>
   )
 }
 
 // Extracted sewadar found card for cleanliness
-function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClose }) {
+function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClose, isSuperAdmin, scanHistory }) {
+  const [showManualEntry, setShowManualEntry] = useState(false)
+  const [manualSearch, setManualSearch] = useState('')
+  const [manualResults, setManualResults] = useState([])
+
+  const searchManual = async () => {
+    if (!manualSearch.trim()) return
+    const { data } = await supabase
+      .from('sewadars')
+      .select('*')
+      .or(`sewadar_name.ilike.%${manualSearch}%,badge_number.ilike.%${manualSearch.toUpperCase()}%`)
+      .limit(10)
+    setManualResults(data || [])
+  }
+
   return (
     <>
       <div className="popup-header">
@@ -425,6 +571,15 @@ function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClos
         </div>
       )}
 
+      {/* Scan history indicator */}
+      {scanHistory.length > 0 && (
+        <div className="scan-history-indicator">
+          {scanHistory.slice(0, 3).map((scan, i) => (
+            <div key={i} className={`scan-dot ${scan.type === 'IN' ? 'dot-in' : 'dot-out'}`} title={scan.sewadar_name} />
+          ))}
+        </div>
+      )}
+
       <div className="popup-actions">
         {allowedTypes?.includes('IN') && (
           <button className="btn-in" onClick={() => onMark('IN')}>IN</button>
@@ -433,7 +588,46 @@ function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClos
           <button className="btn-out" onClick={() => onMark('OUT')}>OUT</button>
         )}
       </div>
+
+      {/* Manual entry for super admin */}
+      {isSuperAdmin && (
+        <button className="btn-manual-entry" onClick={() => setShowManualEntry(true)}>
+          <User size={14} /> Manual Entry
+        </button>
+      )}
+
       <button className="btn-cancel" onClick={onClose}>Cancel</button>
+
+      {/* Manual entry modal */}
+      {showManualEntry && (
+        <div className="overlay" onClick={() => setShowManualEntry(false)}>
+          <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', marginBottom: '1rem' }}>Manual Attendance</h3>
+            <div className="flex gap-1 mb-3">
+              <input
+                className="input"
+                placeholder="Search by name or badge..."
+                value={manualSearch}
+                onChange={e => setManualSearch(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && searchManual()}
+              />
+              <button className="btn btn-gold" onClick={searchManual}>
+                <Search size={16} />
+              </button>
+            </div>
+            {manualResults.map(s => (
+              <div key={s.id} className="manual-result" onClick={() => {
+                onMark('IN') // Or could show choice
+                setShowManualEntry(false)
+              }}>
+                <span>{s.sewadar_name}</span>
+                <span style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--gold)' }}>{s.badge_number}</span>
+              </div>
+            ))}
+            <button className="btn-cancel" onClick={() => setShowManualEntry(false)}>Close</button>
+          </div>
+        </div>
+      )}
     </>
   )
 }

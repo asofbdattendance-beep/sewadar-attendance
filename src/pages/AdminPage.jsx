@@ -2,79 +2,110 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES } from '../lib/supabase'
-import { Search, Flag, CheckCircle, Clock, AlertCircle } from 'lucide-react'
+import { Search, Download, Calendar, Clock, User, Users, Activity } from 'lucide-react'
 
 export default function AdminPage() {
   const { profile } = useAuth()
-  const [tab, setTab] = useState('queries')
-  const [queries, setQueries] = useState([])
   const [searchBadge, setSearchBadge] = useState('')
+  const [searchName, setSearchName] = useState('')
   const [searchResults, setSearchResults] = useState([])
-  const [selectedRecord, setSelectedRecord] = useState(null)
-  const [queryNote, setQueryNote] = useState('')
+  const [selectedSewadar, setSelectedSewadar] = useState(null)
+  const [attendanceHistory, setAttendanceHistory] = useState([])
+  const [stats, setStats] = useState({ totalDays: 0, satsangs: 0, totalScans: 0 })
+  const [dateRange, setDateRange] = useState({ from: '', to: '' })
   const [loading, setLoading] = useState(false)
-  const [flaggedAttendance, setFlaggedAttendance] = useState([])
 
   const isAdmin = [ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(profile?.role)
 
-  useEffect(() => {
-    if (tab === 'queries') fetchQueries()
-  }, [tab])
-
-  async function fetchQueries() {
+  async function searchSewadars() {
+    if (!searchBadge.trim() && !searchName.trim()) return
     setLoading(true)
-    const { data: queriesData } = await supabase
-      .from('queries')
-      .select(`*, attendance(*)`)
-      .order('created_at', { ascending: false })
 
-    let filteredQueries = queriesData || []
-    
-    if (profile.role === ROLES.ADMIN && profile.centre) {
-      filteredQueries = filteredQueries.filter(q => q.attendance?.centre === profile.centre)
+    let query = supabase.from('sewadars').select('*')
+
+    if (searchBadge.trim()) {
+      query = query.ilike('badge_number', `%${searchBadge.trim().toUpperCase()}%`)
+    }
+    if (searchName.trim()) {
+      query = query.ilike('sewadar_name', `%${searchName.trim()}%`)
     }
 
-    setQueries(filteredQueries)
-    setLoading(false)
-  }
-
-  async function searchAttendance() {
-    if (!searchBadge.trim()) return
-    setLoading(true)
-    const { data } = await supabase
-      .from('attendance')
-      .select('*')
-      .eq('badge_number', searchBadge.trim().toUpperCase())
-      .order('scan_time', { ascending: false })
-      .limit(50)
+    const { data } = await query.limit(20)
     setSearchResults(data || [])
     setLoading(false)
   }
 
-  async function raiseQuery(attendanceId) {
-    if (!queryNote.trim()) return
-    await supabase.from('queries').insert({
-      raised_by_badge: profile.badge_number,
-      raised_by_name: profile.name,
-      attendance_id: attendanceId,
-      issue_description: queryNote,
-      status: 'open',
-      created_at: new Date().toISOString()
+  async function loadHistory(sewadar) {
+    setSelectedSewadar(sewadar)
+    setLoading(true)
+
+    let query = supabase
+      .from('attendance')
+      .select('*')
+      .eq('badge_number', sewadar.badge_number)
+      .order('scan_time', { ascending: false })
+
+    if (dateRange.from) {
+      const start = new Date(dateRange.from)
+      start.setHours(0, 0, 0, 0)
+      query = query.gte('scan_time', start.toISOString())
+    }
+    if (dateRange.to) {
+      const end = new Date(dateRange.to)
+      end.setHours(23, 59, 59, 999)
+      query = query.lte('scan_time', end.toISOString())
+    }
+
+    const { data } = await query
+    setAttendanceHistory(data || [])
+
+    // Calculate stats
+    const daysSet = new Set()
+    let satsangs = 0
+    data?.forEach(r => {
+      const date = new Date(r.scan_time).toISOString().split('T')[0]
+      daysSet.add(date)
+      if (r.type === 'IN') satsangs++
     })
-    await supabase.from('logs').insert({
-      user_badge: profile.badge_number,
-      action: 'RAISE_QUERY',
-      details: `Query raised on attendance ${attendanceId}: ${queryNote}`,
-      timestamp: new Date().toISOString()
+    setStats({
+      totalDays: daysSet.size,
+      satsangs,
+      totalScans: data?.length || 0
     })
-    setQueryNote('')
-    setSelectedRecord(null)
-    alert('Query raised successfully.')
+
+    setLoading(false)
   }
 
-  async function resolveQuery(queryId) {
-    await supabase.from('queries').update({ status: 'resolved', resolved_at: new Date().toISOString(), resolved_by: profile.badge_number }).eq('id', queryId)
-    fetchQueries()
+  function groupByDate(records) {
+    const grouped = {}
+    records.forEach(r => {
+      const date = new Date(r.scan_time).toISOString().split('T')[0]
+      if (!grouped[date]) grouped[date] = []
+      grouped[date].push(r)
+    })
+    return Object.entries(grouped).sort((a, b) => new Date(b[0]) - new Date(a[0]))
+  }
+
+  function exportHistory() {
+    if (!selectedSewadar || attendanceHistory.length === 0) return
+
+    const csv = [
+      ['Date', 'Time', 'Type', 'Scanner', 'Session'].join(','),
+      ...attendanceHistory.map(r => [
+        new Date(r.scan_time).toLocaleDateString('en-IN'),
+        new Date(r.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        r.type,
+        r.scanner_name,
+        r.session_id || ''
+      ].join(','))
+    ].join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `attendance_${selectedSewadar.badge_number}_${dateRange.from || 'all'}.csv`
+    a.click()
   }
 
   function timeFmt(iso) {
@@ -82,200 +113,190 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="page-wide pb-nav" style={{ maxWidth: 800 }}>
+    <div className="page-wide pb-nav" style={{ maxWidth: 900 }}>
       <div className="mt-2 mb-3">
         <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>
-          Admin Panel
+          Sewadar History
         </h2>
+        <p className="text-muted text-xs mt-1">Search and view attendance history</p>
       </div>
 
-      <div className="tab-nav">
-        <button className={`tab-btn ${tab === 'queries' ? 'active' : ''}`} onClick={() => setTab('queries')}>
-          <Flag size={14} /> Queries
-        </button>
-        <button className={`tab-btn ${tab === 'search' ? 'active' : ''}`} onClick={() => setTab('search')}>
-          <Search size={14} /> Search Badge
-        </button>
-        {profile?.role === ROLES.SUPER_ADMIN && (
-          <button className={`tab-btn ${tab === 'logs' ? 'active' : ''}`} onClick={() => setTab('logs')}>
-            <Clock size={14} /> Logs
+      {/* Search Section */}
+      <div className="card mb-3">
+        <div className="flex gap-2 mb-2">
+          <div className="search-box flex-1">
+            <Search size={15} />
+            <input
+              type="text"
+              placeholder="Search by badge number..."
+              value={searchBadge}
+              onChange={e => setSearchBadge(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && searchSewadars()}
+              style={{ textTransform: 'uppercase' }}
+            />
+          </div>
+          <div className="search-box flex-1">
+            <User size={15} />
+            <input
+              type="text"
+              placeholder="Search by name..."
+              value={searchName}
+              onChange={e => setSearchName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && searchSewadars()}
+            />
+          </div>
+          <button className="btn btn-gold" onClick={searchSewadars}>
+            Search
           </button>
+        </div>
+
+        {/* Search Results */}
+        {searchResults.length > 0 && (
+          <div className="search-results">
+            {searchResults.map(s => (
+              <div
+                key={s.id}
+                className="search-result-item"
+                onClick={() => loadHistory(s)}
+              >
+                <span className="badge" style={{ fontFamily: 'monospace', color: 'var(--gold)' }}>{s.badge_number}</span>
+                <span>{s.sewadar_name}</span>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{s.centre}</span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
-      {/* Queries Tab */}
-      {tab === 'queries' && (
+      {/* Sewadar History Section */}
+      {selectedSewadar && (
         <div>
-          {queries.length === 0 ? (
-            <div className="card text-center" style={{ padding: '3rem' }}>
-              <CheckCircle size={40} color="var(--green)" style={{ margin: '0 auto 1rem' }} />
-              <p className="text-secondary">No open queries</p>
+          {/* Sewadar Info & Stats */}
+          <div className="card mb-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>{selectedSewadar.sewadar_name}</div>
+                <div className="flex gap-3 mt-1" style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  <span style={{ fontFamily: 'monospace', color: 'var(--gold)' }}>{selectedSewadar.badge_number}</span>
+                  <span>•</span>
+                  <span>{selectedSewadar.centre}</span>
+                  <span>•</span>
+                  <span>{selectedSewadar.department || '—'}</span>
+                </div>
+              </div>
+              <button className="btn btn-outline" onClick={exportHistory} disabled={attendanceHistory.length === 0}>
+                <Download size={14} /> Export
+              </button>
+            </div>
+
+            {/* Stats Cards */}
+            <div className="stats-grid-3 mt-3" style={{ padding: '0.5rem 0' }}>
+              <div className="stat-card mini">
+                <div className="stat-number">{stats.totalDays}</div>
+                <div className="stat-label">Total Days</div>
+              </div>
+              <div className="stat-card mini">
+                <div className="stat-number" style={{ color: 'var(--green)' }}>{stats.satsangs}</div>
+                <div className="stat-label">Satsangs Attended</div>
+              </div>
+              <div className="stat-card mini">
+                <div className="stat-number">{stats.totalScans}</div>
+                <div className="stat-label">Total Scans</div>
+              </div>
+            </div>
+
+            {/* Date Range Filter */}
+            <div className="flex items-center gap-2 mt-3">
+              <Calendar size={14} />
+              <input
+                type="date"
+                value={dateRange.from}
+                onChange={e => setDateRange({ ...dateRange, from: e.target.value })}
+                style={{ width: 120 }}
+              />
+              <span style={{ color: 'var(--text-muted)' }}>to</span>
+              <input
+                type="date"
+                value={dateRange.to}
+                onChange={e => setDateRange({ ...dateRange, to: e.target.value })}
+                style={{ width: 120 }}
+              />
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  setDateRange({ from: '', to: '' })
+                  loadHistory(selectedSewadar)
+                }}
+              >
+                Clear
+              </button>
+              <button
+                className="btn btn-gold btn-sm"
+                onClick={() => loadHistory(selectedSewadar)}
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+
+          {/* Attendance History Grouped by Date */}
+          {loading ? (
+            <div className="text-center py-4">
+              <div className="spinner" style={{ margin: '0 auto' }} />
+            </div>
+          ) : attendanceHistory.length > 0 ? (
+            <div className="card">
+              <h3 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                Attendance History
+              </h3>
+              <div className="history-list">
+                {groupByDate(attendanceHistory).map(([date, records]) => (
+                  <div key={date} className="history-date-group">
+                    <div className="history-date-header">
+                      <Calendar size={14} />
+                      <span>{new Date(date).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                    </div>
+                    <div className="history-records">
+                      {records.map(r => (
+                        <div key={r.id} className="history-record">
+                          <Clock size={12} />
+                          <span style={{ width: 60, fontFamily: 'monospace', fontSize: '0.85rem' }}>
+                            {new Date(r.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          <span className={`badge ${r.type === 'IN' ? 'badge-green' : 'badge-red'}`} style={{ padding: '0.15rem 0.4rem', fontSize: '0.7rem' }}>
+                            {r.type}
+                          </span>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                            by {r.scanner_name}
+                          </span>
+                          {r.session_id && (
+                            <span className="badge badge-muted" style={{ fontSize: '0.65rem' }}>
+                              {r.session_id}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : (
-            queries.map(q => (
-              <div key={q.id} className="card mb-2" style={{ borderColor: q.status === 'open' ? 'rgba(224,92,92,0.3)' : 'var(--border)' }}>
-                <div className="flex items-center justify-between mb-2">
-                  <span className={`badge ${q.status === 'open' ? 'badge-red' : 'badge-green'}`}>
-                    {q.status}
-                  </span>
-                  <span className="text-muted text-xs">{timeFmt(q.created_at)}</span>
-                </div>
-                <p style={{ fontWeight: 500, marginBottom: '0.5rem' }}>{q.issue_description}</p>
-                <p className="text-muted text-xs">Raised by: {q.raised_by_name} ({q.raised_by_badge})</p>
-                {q.attendance && (
-                  <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: '0.75rem', marginTop: '0.75rem' }}>
-                    <p className="text-xs text-secondary">
-                      {q.attendance.sewadar_name} · {q.attendance.badge_number} · {q.attendance.type} · {timeFmt(q.attendance.scan_time)}
-                    </p>
-                  </div>
-                )}
-                {q.status === 'open' && isAdmin && (
-                  <button className="btn btn-outline mt-2" style={{ fontSize: '0.8rem', padding: '0.4rem 1rem' }} onClick={() => resolveQuery(q.id)}>
-                    Mark Resolved
-                  </button>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-      )}
-
-      {/* Search Tab */}
-      {tab === 'search' && (
-        <div>
-          <div className="flex gap-1 mb-3">
-            <input
-              className="input"
-              placeholder="Enter badge number e.g. FB5978GA0001"
-              value={searchBadge}
-              onChange={e => setSearchBadge(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && searchAttendance()}
-              style={{ textTransform: 'uppercase' }}
-            />
-            <button className="btn btn-gold" onClick={searchAttendance}>
-              <Search size={16} />
-            </button>
-          </div>
-
-          {loading && <div className="text-center mt-3"><div className="spinner" style={{ margin: '0 auto' }} /></div>}
-
-          {searchResults.length > 0 && (
-            <>
-              <p className="text-muted text-xs mb-2">{searchResults.length} records found for {searchBadge.toUpperCase()}</p>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Date/Time</th>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Scanner</th>
-                      {isAdmin && <th>Flag</th>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {searchResults.map(r => (
-                      <tr key={r.id}>
-                        <td style={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }}>{timeFmt(r.scan_time)}</td>
-                        <td style={{ fontWeight: 500 }}>{r.sewadar_name}</td>
-                        <td><span className={`badge ${r.type === 'IN' ? 'badge-green' : 'badge-red'}`}>{r.type}</span></td>
-                        <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{r.scanner_name}</td>
-                        {isAdmin && (
-                          <td>
-                            <button
-                              className="btn btn-ghost"
-                              style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', color: 'var(--red)' }}
-                              onClick={() => setSelectedRecord(r)}
-                            >
-                              <Flag size={12} /> Flag
-                            </button>
-                          </td>
-                        )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-
-          {searchResults.length === 0 && searchBadge && !loading && (
-            <div className="card text-center" style={{ padding: '2rem' }}>
-              <p className="text-muted">No attendance records found for this badge.</p>
+            <div className="card text-center py-4">
+              <Users size={32} color="var(--text-muted)" style={{ margin: '0 auto 1rem' }} />
+              <p className="text-muted">No attendance records found for this sewadar.</p>
             </div>
           )}
         </div>
       )}
 
-      {/* Logs Tab (Super Admin only) */}
-      {tab === 'logs' && profile?.role === ROLES.SUPER_ADMIN && (
-        <LogsTab />
-      )}
-
-      {/* Raise Query Modal */}
-      {selectedRecord && (
-        <div className="overlay" onClick={() => setSelectedRecord(null)}>
-          <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', marginBottom: '1rem' }}>Raise Query</h3>
-            <div className="card mb-2" style={{ padding: '1rem' }}>
-              <p style={{ fontWeight: 500 }}>{selectedRecord.sewadar_name}</p>
-              <p className="text-muted text-sm">{selectedRecord.badge_number} · {selectedRecord.type} · {timeFmt(selectedRecord.scan_time)}</p>
-            </div>
-            <label className="label">Describe the issue</label>
-            <textarea
-              className="input"
-              rows={3}
-              placeholder="e.g. Sewadar was not present, badge may have been misused..."
-              value={queryNote}
-              onChange={e => setQueryNote(e.target.value)}
-              style={{ resize: 'none', marginBottom: '1rem' }}
-            />
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-              <button className="btn btn-outline btn-full" onClick={() => setSelectedRecord(null)}>Cancel</button>
-              <button className="btn btn-gold btn-full" onClick={() => raiseQuery(selectedRecord.id)}>Submit Query</button>
-            </div>
-          </div>
+      {/* Initial State */}
+      {!selectedSewadar && !loading && searchResults.length === 0 && (
+        <div className="card text-center py-5">
+          <Search size={40} color="var(--text-muted)" style={{ margin: '0 auto 1rem' }} />
+          <p className="text-muted">Search for a sewadar by badge number or name to view their attendance history.</p>
         </div>
       )}
-    </div>
-  )
-}
-
-function LogsTab() {
-  const [logs, setLogs] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    supabase.from('logs').select('*').order('timestamp', { ascending: false }).limit(100)
-      .then(({ data }) => { setLogs(data || []); setLoading(false) })
-  }, [])
-
-  if (loading) return <div className="spinner" style={{ margin: '2rem auto' }} />
-
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>User</th>
-            <th>Action</th>
-            <th>Details</th>
-          </tr>
-        </thead>
-        <tbody>
-          {logs.map(l => (
-            <tr key={l.id}>
-              <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
-                {new Date(l.timestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-              </td>
-              <td style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--gold)' }}>{l.user_badge}</td>
-              <td><span className="badge badge-muted" style={{ fontSize: '0.7rem' }}>{l.action}</span></td>
-              <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{l.details}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   )
 }
