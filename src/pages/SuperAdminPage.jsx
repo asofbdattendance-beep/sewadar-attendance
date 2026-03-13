@@ -45,6 +45,7 @@ export default function SuperAdminPage() {
   const [reportLoading, setReportLoading] = useState(false)
   const [dateRange, setDateRange] = useState({ from:'', to:'' })
   const [expandedParent, setExpandedParent] = useState(null)
+<<<<<<< HEAD
   const [expandedChild, setExpandedChild] = useState(null)
   const [sessions, setSessions] = useState([])
   const [newSession, setNewSession] = useState({ name:'', date: new Date().toISOString().split('T')[0], centre:'', notes:'' })
@@ -64,6 +65,12 @@ export default function SuperAdminPage() {
   const [editingAtt, setEditingAtt] = useState(null)
   const [editAttTime, setEditAttTime] = useState('')
   const [editAttType, setEditAttType] = useState('')
+=======
+
+  if (profile?.role !== ROLES.SUPER_ADMIN) {
+    return <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
+  }
+>>>>>>> parent of 977b383 (Update)
 
   useEffect(() => {
     if (tab === 'users') fetchUsers()
@@ -381,6 +388,7 @@ export default function SuperAdminPage() {
                       <div className="geo-field"><label>Radius (m)</label><input defaultValue={config.geo_radius||200} onBlur={e => updateCentreGeo(config.id,'geo_radius',parseInt(e.target.value)||200,null)}/></div>
                     </div></div>
                   )}
+<<<<<<< HEAD
                   {expandedParent===parent && children.map(child => (
                     <div key={child.id}>
                       <div className="centre-child-row">
@@ -400,6 +408,26 @@ export default function SuperAdminPage() {
                           <div className="geo-field"><label>Radius (m)</label><input key={`rad-${child.id}`} defaultValue={child.geo_radius||200} onBlur={e => updateCentreGeo(child.id,'geo_radius',parseInt(e.target.value)||200,null)}/></div>
                         </div></div>
                       )}
+=======
+
+                  {/* Child rows */}
+                  {expandedParent === parent && children.map(child => (
+                    <div key={child.id} className="centre-child-row">
+                      <span className="centre-child-indent">└</span>
+                      <span className="centre-child-name">{child.centre_name}</span>
+                      <div className="centre-parent-geo">
+                        <span className="centre-geo-label">Geo</span>
+                        <button
+                          className="btn btn-ghost"
+                          style={{ padding: '0.15rem' }}
+                          onClick={() => updateCentreGeo(child.id, 'geo_enabled', !child.geo_enabled, null)}
+                        >
+                          {child.geo_enabled
+                            ? <ToggleRight size={20} color="var(--green)" />
+                            : <ToggleLeft size={20} color="var(--text-muted)" />}
+                        </button>
+                      </div>
+>>>>>>> parent of 977b383 (Update)
                     </div>
                   ))}
                 </div>
