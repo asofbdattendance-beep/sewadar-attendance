@@ -1,0 +1,247 @@
+# SEWADAR ATTENDANCE SYSTEM — COMPLETE DEPLOYMENT GUIDE
+# Follow every step exactly. You cannot go wrong.
+
+=============================================================
+STEP 1 — CREATE SUPABASE ACCOUNT & PROJECT (10 minutes)
+=============================================================
+
+1. Open your browser and go to: https://supabase.com
+2. Click "Start your project" (top right)
+3. Sign in with your Google account
+4. Click "New Project"
+5. Fill in:
+   - Organization: (your name or "Sewadar")
+   - Project name: sewadar-attendance
+   - Database Password: Create a strong password, SAVE IT SOMEWHERE
+   - Region: Southeast Asia (Singapore) — closest to India
+6. Click "Create new project"
+7. WAIT 2-3 minutes for project to be ready (green status)
+
+--- GET YOUR API KEYS ---
+8. In left sidebar, click "Project Settings" (gear icon at bottom)
+9. Click "API" in the settings menu
+10. You will see two values — COPY BOTH SOMEWHERE:
+    - "Project URL" looks like: https://abcdefgh.supabase.co
+    - "anon public" key — a very long string starting with "eyJ..."
+
+=============================================================
+STEP 2 — SET UP DATABASE (5 minutes)
+=============================================================
+
+1. In Supabase left sidebar, click "SQL Editor" (icon looks like >_)
+2. Click "New Query"
+3. Open the file "supabase_setup.sql" from the code I gave you
+4. Select ALL the text (Ctrl+A), Copy it (Ctrl+C)
+5. Paste it into the SQL Editor (Ctrl+V)
+6. Click the green "Run" button (or press Ctrl+Enter)
+7. You should see "Success. No rows returned" at the bottom
+8. Done! All your tables are created.
+
+=============================================================
+STEP 3 — CREATE YOUR SUPER ADMIN LOGIN (5 minutes)
+=============================================================
+
+1. In Supabase, click "Authentication" in left sidebar
+2. Click "Users" tab
+3. Click "Invite user" or "Add user"
+4. Fill in YOUR email and a password
+5. Click "Create user"
+6. Now go to "SQL Editor" again
+7. Run this query (replace with YOUR details):
+
+INSERT INTO users (auth_id, email, name, badge_number, role, centre, is_active)
+VALUES (
+  (SELECT id FROM auth.users WHERE email = 'YOUR_EMAIL_HERE'),
+  'YOUR_EMAIL_HERE',
+  'Your Full Name',
+  'FB5978GA0001',
+  'super_admin',
+  'SECTOR-15-A',
+  true
+);
+
+Replace YOUR_EMAIL_HERE with your actual email.
+Replace 'Your Full Name' with your name.
+8. Click Run. Done.
+
+=============================================================
+STEP 4 — IMPORT YOUR SEWADAR DATA (10 minutes)
+=============================================================
+
+Option A: CSV Import (Easiest)
+------------------------------
+1. Open your Excel file
+2. Save As → CSV (comma separated)
+3. Make sure columns are named EXACTLY:
+   badge_number, sewadar_name, father_husband_name, gender, centre, department, age, badge_status
+4. In Supabase left sidebar, click "Table Editor"
+5. Click "sewadars" table
+6. Click "Import data from CSV" button (top right area)
+7. Upload your CSV file
+8. Map columns if asked
+9. Click Import. Done!
+
+Option B: If column names are different in your Excel
+------------------------------------------------------
+In Excel, rename the header row to match exactly:
+- Badge Number → badge_number
+- Sewadar Name → sewadar_name
+- Father/Husband Name → father_husband_name
+- Gender → gender (values must be "Male" or "Female")
+- Centre → centre
+- Department → department
+- Age → age
+- Badge Status → badge_status (values: "Active" or "Inactive")
+
+Then follow Option A above.
+
+=============================================================
+STEP 5 — CREATE GITHUB REPOSITORY (5 minutes)
+=============================================================
+
+1. Go to https://github.com and sign in (or create free account)
+2. Click the "+" icon (top right) → "New repository"
+3. Repository name: sewadar-attendance
+4. Select "Private" (keep your code private)
+5. DO NOT check "Initialize repository"
+6. Click "Create repository"
+7. GitHub will show you a page with commands. KEEP THIS PAGE OPEN.
+
+=============================================================
+STEP 6 — UPLOAD CODE TO GITHUB (10 minutes)
+=============================================================
+
+You need Git installed. Check by opening Command Prompt / Terminal and typing:
+  git --version
+
+If not installed, download from: https://git-scm.com/download
+
+--- UPLOAD STEPS ---
+
+1. Open Command Prompt (Windows) or Terminal (Mac)
+2. Navigate to the project folder:
+   cd path/to/sewadar-attendance
+
+3. Create your .env file (from the .env.example):
+   - Copy .env.example and rename it to .env
+   - Open .env and fill in your Supabase values:
+     VITE_SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
+     VITE_SUPABASE_ANON_KEY=YOUR_ANON_KEY
+
+4. Run these commands one by one:
+   git init
+   git add .
+   git commit -m "Initial commit"
+   git branch -M main
+   git remote add origin https://github.com/YOUR_USERNAME/sewadar-attendance.git
+   git push -u origin main
+
+   (Replace YOUR_USERNAME with your GitHub username)
+
+5. If it asks for username/password, use your GitHub credentials
+   (You may need a Personal Access Token — GitHub will guide you)
+
+=============================================================
+STEP 7 — DEPLOY ON VERCEL (5 minutes)
+=============================================================
+
+1. Go to https://vercel.com and click "Sign Up"
+2. Sign up with your GitHub account (same account)
+3. Click "Add New Project"
+4. You will see "sewadar-attendance" in the list — click "Import"
+5. In "Configure Project":
+   - Framework Preset: Vite (select from dropdown)
+   - Root Directory: ./ (leave default)
+6. Click "Environment Variables" — ADD THESE TWO:
+   Name: VITE_SUPABASE_URL
+   Value: https://YOUR_PROJECT_ID.supabase.co
+
+   Name: VITE_SUPABASE_ANON_KEY
+   Value: YOUR_ANON_KEY
+
+7. Click "Deploy"
+8. Wait 2-3 minutes
+9. Vercel will give you a URL like: https://sewadar-attendance.vercel.app
+10. THAT IS YOUR APP! Open it on your phone.
+
+=============================================================
+STEP 8 — INSTALL ON PHONES (2 minutes per phone)
+=============================================================
+
+Android Chrome:
+1. Open the app URL in Chrome
+2. You will see a banner "Add to Home Screen" — tap it
+3. OR tap the 3-dot menu → "Add to Home Screen"
+4. App icon appears on your home screen
+5. Open it — it works like a native app!
+
+iPhone Safari:
+1. Open the app URL in Safari (NOT Chrome)
+2. Tap the Share button (box with arrow)
+3. Scroll down and tap "Add to Home Screen"
+4. Tap "Add"
+5. App icon appears on home screen
+
+=============================================================
+STEP 9 — CREATE CENTRE USER ACCOUNTS
+=============================================================
+
+1. Log in to your app as Super Admin
+2. Go to "Control" tab (bottom nav)
+3. Click "Add User"
+4. Fill in the scanner person's:
+   - Name
+   - Badge Number
+   - Email (they will use this to log in)
+   - Password (you set it, share with them)
+   - Role: Centre User
+   - Centre: Their centre name
+5. Share the app URL + email + password with them
+6. They open URL, log in, install to home screen. Done!
+
+=============================================================
+HOW TO UPDATE DATA (ongoing)
+=============================================================
+
+To change/add sewadars:
+- Go to supabase.com → your project → Table Editor → sewadars
+- Click any cell to edit directly (just like Excel)
+- Press Enter to save
+- Change reflects instantly in the app
+
+To bulk update:
+- Export your updated Excel as CSV
+- In Supabase → sewadars table → Import CSV
+- Use "Upsert" option to update existing + add new rows
+
+=============================================================
+TROUBLESHOOTING
+=============================================================
+
+App shows blank screen:
+→ Check Vercel environment variables are set correctly
+→ Open browser console (F12) to see error
+
+Camera not working:
+→ App must be opened over HTTPS (Vercel URL is always HTTPS ✓)
+→ iPhone: must use Safari, not Chrome
+→ Allow camera permission when browser asks
+
+Login fails:
+→ Check email/password are correct
+→ Make sure you ran the INSERT INTO users... query in Step 3
+
+Scan shows "Badge Not Found":
+→ Sewadar data not imported yet (do Step 4)
+→ Badge number format mismatch — check it matches FB####[GF]A####
+
+=============================================================
+SUPPORT
+=============================================================
+
+If you get stuck on any step, share:
+1. Which step number you're on
+2. The exact error message
+And I will help you fix it.
+
+=============================================================
