@@ -171,12 +171,12 @@ export default function DashboardPage() {
   return (
     <div className="page-wide pb-nav" style={{ maxWidth: 1000 }}>
       {/* Header */}
-      <div className="flex items-center justify-between mt-2 mb-3">
+      <div className="dashboard-header mt-2 mb-3">
         <div>
-          <h2 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', fontSize: '1.3rem', fontWeight: 700 }}>
+          <h2 className="dashboard-title">
             Dashboard
           </h2>
-          <p className="text-muted text-xs mt-1 flex items-center gap-1">
+          <p className="dashboard-subtitle">
             <Clock size={12} />
             Refreshed {lastRefresh.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
           </p>
@@ -234,20 +234,20 @@ export default function DashboardPage() {
 
       {/* Stats - 4 cards including Inside Now */}
       <div className="stats-grid-4 mb-3">
-        <div className="stat-card" style={{ borderColor: 'rgba(201,168,76,0.3)' }}>
+        <div className="stat-card stat-card-primary">
           <div className="stat-number">{stats.total}</div>
           <div className="stat-label">Total Scans</div>
         </div>
-        <div className="stat-card" style={{ borderColor: 'rgba(76,175,125,0.3)' }}>
-          <div className="stat-number" style={{ color: 'var(--green)' }}>{stats.ins}</div>
+        <div className="stat-card stat-card-success">
+          <div className="stat-number" style={{ color: 'var(--office-green)' }}>{stats.ins}</div>
           <div className="stat-label">IN</div>
         </div>
-        <div className="stat-card" style={{ borderColor: 'rgba(224,92,92,0.3)' }}>
-          <div className="stat-number" style={{ color: 'var(--red)' }}>{stats.outs}</div>
+        <div className="stat-card stat-card-danger">
+          <div className="stat-number" style={{ color: 'var(--office-red)' }}>{stats.outs}</div>
           <div className="stat-label">OUT</div>
         </div>
-        <div className="stat-card" style={{ borderColor: 'rgba(147, 197, 253, 0.5)' }}>
-          <div className="stat-number" style={{ color: 'var(--blue)' }}>
+        <div className="stat-card stat-card-info">
+          <div className="stat-number" style={{ color: 'var(--office-blue)' }}>
             <Radio size={16} style={{ verticalAlign: 'middle', marginRight: '4px' }} />
             {stats.insideNow}
           </div>
@@ -257,20 +257,20 @@ export default function DashboardPage() {
 
       {/* Centre breakdown chart — admin/super admin */}
       {isSuperAdminOrAdmin && centreStats.length > 0 && (
-        <div className="card mb-3">
-          <h3 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+        <div className="chart-container">
+          <h3 className="chart-title">
             Centre-wise Attendance
           </h3>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={centreStats} margin={{ top: 0, right: 0, left: -20, bottom: 40 }}>
-              <XAxis dataKey="centre" tick={{ fill: '#5a5570', fontSize: 10 }} angle={-35} textAnchor="end" />
-              <YAxis tick={{ fill: '#5a5570', fontSize: 11 }} />
+              <XAxis dataKey="centre" tick={{ fill: '#6B7280', fontSize: 10 }} angle={-35} textAnchor="end" />
+              <YAxis tick={{ fill: '#6B7280', fontSize: 11 }} />
               <Tooltip
-                contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8 }}
-                labelStyle={{ color: 'var(--text-primary)' }}
+                contentStyle={{ background: 'var(--office-white)', border: '1px solid var(--office-border)', borderRadius: 8 }}
+                labelStyle={{ color: 'var(--office-text)' }}
               />
-              <Bar dataKey="in" name="IN" fill="var(--green)" radius={[4,4,0,0]} />
-              <Bar dataKey="out" name="OUT" fill="var(--red)" radius={[4,4,0,0]} />
+              <Bar dataKey="in" name="IN" fill="var(--office-green)" radius={[4,4,0,0]} />
+              <Bar dataKey="out" name="OUT" fill="var(--office-red)" radius={[4,4,0,0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -278,9 +278,9 @@ export default function DashboardPage() {
 
       {/* Live scan feed */}
       <div className="card">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="pulse-dot green" />
-          <h3 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+        <div className="live-feed">
+          <span className="pulse-dot" />
+          <h3 className="live-feed-title">
             Live Scan Feed
           </h3>
         </div>
@@ -302,9 +302,9 @@ export default function DashboardPage() {
               <tbody>
                 {recentScans.map(r => (
                   <tr key={r.id}>
-                    <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>{timeFmt(r.scan_time)}</td>
+                    <td style={{ color: 'var(--office-text-muted)', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>{timeFmt(r.scan_time)}</td>
                     <td style={{ fontWeight: 500 }}>{r.sewadar_name}</td>
-                    <td style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--gold)' }}>{r.badge_number}</td>
+                    <td style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--office-amber)' }}>{r.badge_number}</td>
                     <td style={{ fontSize: '0.82rem' }}>{r.centre}</td>
                     <td>
                       <span className={`badge ${r.type === 'IN' ? 'badge-green' : 'badge-red'}`}>{r.type}</span>

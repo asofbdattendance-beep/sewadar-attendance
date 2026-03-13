@@ -114,11 +114,11 @@ export default function AdminPage() {
 
   return (
     <div className="page-wide pb-nav" style={{ maxWidth: 900 }}>
-      <div className="mt-2 mb-3">
-        <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>
-          Sewadar History
-        </h2>
-        <p className="text-muted text-xs mt-1">Search and view attendance history</p>
+      <div className="page-header">
+        <div>
+          <h2 className="page-title">Sewadar History</h2>
+          <p className="page-subtitle">Search and view attendance history</p>
+        </div>
       </div>
 
       {/* Search Section */}

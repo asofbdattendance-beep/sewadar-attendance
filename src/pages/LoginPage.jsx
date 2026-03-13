@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { Eye, EyeOff, ScanLine } from 'lucide-react'
+import { Eye, EyeOff } from 'lucide-react'
 
 export default function LoginPage() {
   const { signIn } = useAuth()
@@ -28,7 +28,7 @@ export default function LoginPage() {
       <div className="login-card animate-slide-up">
         <div className="login-header">
           <div className="login-icon">
-            <ScanLine size={32} color="white" />
+            🙏
           </div>
           <h1 className="login-title">Sewadar Attendance</h1>
           <p className="login-subtitle">Sign in to continue</p>
@@ -84,11 +84,11 @@ export default function LoginPage() {
 
           {error && (
             <div style={{ 
-              background: 'var(--red-bg)', 
-              border: '1px solid rgba(239, 68, 68, 0.3)', 
+              background: 'var(--office-red-bg)', 
+              border: '1px solid var(--office-red-border)', 
               borderRadius: 'var(--radius-md)', 
               padding: '0.85rem 1rem', 
-              color: 'var(--red)', 
+              color: 'var(--office-red)', 
               fontSize: '0.85rem', 
               marginBottom: '1.25rem' 
             }}>

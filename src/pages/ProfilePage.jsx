@@ -42,9 +42,9 @@ export default function ProfilePage({ isOnline }) {
   }
 
   const roleColor = { 
-    super_admin: 'var(--gold)', 
-    admin: 'var(--blue)', 
-    centre_user: 'var(--green)' 
+    super_admin: 'var(--office-amber)', 
+    admin: 'var(--office-blue)', 
+    centre_user: 'var(--office-green)' 
   }
   const roleName = { 
     super_admin: 'Super Admin', 
@@ -54,18 +54,18 @@ export default function ProfilePage({ isOnline }) {
 
   return (
     <div className="page pb-nav">
-      <div className="mt-2 mb-3">
-        <h2 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', fontSize: '1.3rem', fontWeight: 700 }}>
-          My Profile
-        </h2>
+      <div className="page-header">
+        <div>
+          <h2 className="page-title">My Profile</h2>
+        </div>
       </div>
 
       <div className="profile-card">
         <div className="flex items-center gap-3 mb-4">
           <div style={{
             width: 64, height: 64,
-            background: `${roleColor[profile?.role]}20`,
-            border: `2px solid ${roleColor[profile?.role]}40`,
+            background: `${roleColor[profile?.role]}15`,
+            border: `2px solid ${roleColor[profile?.role]}30`,
             borderRadius: '16px',
             display: 'flex', alignItems: 'center', justifyContent: 'center'
           }}>
@@ -73,7 +73,7 @@ export default function ProfilePage({ isOnline }) {
           </div>
           <div>
             <div style={{ fontWeight: 700, fontSize: '1.15rem' }}>{profile?.name || profile?.sewadar_name || 'User'}</div>
-            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.85rem', color: 'var(--gold)' }}>{profile?.badge_number}</div>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.85rem', color: 'var(--office-amber)' }}>{profile?.badge_number}</div>
           </div>
         </div>
         
@@ -81,7 +81,7 @@ export default function ProfilePage({ isOnline }) {
         
         <div className="info-row">
           <span className="info-label">Role</span>
-          <span className="badge" style={{ background: `${roleColor[profile?.role]}20`, color: roleColor[profile?.role], border: `1px solid ${roleColor[profile?.role]}40` }}>
+          <span className="badge" style={{ background: `${roleColor[profile?.role]}15`, color: roleColor[profile?.role], border: `1px solid ${roleColor[profile?.role]}30` }}>
             {roleName[profile?.role]}
           </span>
         </div>
@@ -101,11 +101,11 @@ export default function ProfilePage({ isOnline }) {
         <div className="queue-card">
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-3">
-              <div style={{ width: 40, height: 40, background: 'var(--red-bg)', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <AlertCircle size={20} color="var(--red)" />
+              <div style={{ width: 40, height: 40, background: 'var(--office-red-bg)', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--office-red-border)' }}>
+                <AlertCircle size={20} color="var(--office-red)" />
               </div>
               <div>
-                <p style={{ fontWeight: 600, color: 'var(--red)', fontSize: '0.95rem' }}>{pendingCount} scans pending</p>
+                <p style={{ fontWeight: 600, color: 'var(--office-red)', fontSize: '0.95rem' }}>{pendingCount} scans pending</p>
                 <p className="text-muted text-xs mt-1">Will sync when back online</p>
               </div>
             </div>
@@ -113,7 +113,7 @@ export default function ProfilePage({ isOnline }) {
               className="btn btn-outline" 
               onClick={manualSync} 
               disabled={!isOnline || syncing} 
-              style={{ borderColor: 'var(--red)', color: 'var(--red)' }}
+              style={{ borderColor: 'var(--office-red)', color: 'var(--office-red)' }}
             >
               <RefreshCw size={14} /> Sync
             </button>
@@ -124,7 +124,7 @@ export default function ProfilePage({ isOnline }) {
       <div className="cache-card">
         <div className="flex justify-between items-center mb-2">
           <div className="flex items-center gap-2">
-            <Database size={18} color="var(--text-muted)" />
+            <Database size={18} color="var(--office-text-muted)" />
             <span style={{ fontWeight: 600 }}>Offline Cache</span>
           </div>
           <button 
@@ -143,11 +143,11 @@ export default function ProfilePage({ isOnline }) {
 
       {syncMsg && (
         <div style={{
-          background: 'var(--green-bg)', 
-          border: '1px solid rgba(16, 185, 129, 0.2)',
+          background: 'var(--office-green-bg)', 
+          border: '1px solid var(--office-green-border)',
           borderRadius: 'var(--radius-md)', 
           padding: '0.85rem 1rem', 
-          color: 'var(--green)', 
+          color: 'var(--office-green)', 
           fontSize: '0.85rem', 
           marginBottom: '1rem',
           display: 'flex',
@@ -161,7 +161,7 @@ export default function ProfilePage({ isOnline }) {
       <button 
         className="btn btn-outline btn-full" 
         onClick={signOut} 
-        style={{ marginTop: '1rem', borderColor: 'var(--red)', color: 'var(--red)' }}
+        style={{ marginTop: '1rem', borderColor: 'var(--office-red)', color: 'var(--office-red)' }}
       >
         <LogOut size={16} /> Sign Out
       </button>

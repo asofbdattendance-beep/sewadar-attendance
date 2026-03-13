@@ -42,22 +42,22 @@ function AppLayout() {
   }, [])
 
   if (loading) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg-main)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--office-bg)' }}>
       <div style={{ textAlign: 'center' }}>
         <div className="spinner" style={{ margin: '0 auto 1rem' }} />
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Loading…</p>
+        <p style={{ color: 'var(--office-text-muted)', fontSize: '0.9rem' }}>Loading…</p>
       </div>
     </div>
   )
 
   if (error) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', background: 'var(--bg-main)', textAlign: 'center' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', background: 'var(--office-bg)', textAlign: 'center' }}>
       <div>
-        <div style={{ width: 64, height: 64, background: 'var(--red-bg)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
-          <XCircle size={32} color="var(--red)" />
+        <div style={{ width: 64, height: 64, background: 'var(--office-red-bg)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem', border: '1px solid var(--office-red-border)' }}>
+          <XCircle size={32} color="var(--office-red)" />
         </div>
-        <h2 style={{ color: 'var(--red)', marginBottom: '0.5rem', fontSize: '1.25rem' }}>Something went wrong</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1rem' }}>{error}</p>
+        <h2 style={{ color: 'var(--office-red)', marginBottom: '0.5rem', fontSize: '1.25rem' }}>Something went wrong</h2>
+        <p style={{ color: 'var(--office-text-muted)', fontSize: '0.9rem', marginBottom: '1rem' }}>{error}</p>
         <button className="btn btn-primary" onClick={() => window.location.reload()}>Refresh Page</button>
       </div>
     </div>
@@ -66,13 +66,13 @@ function AppLayout() {
   if (!profile) return <LoginPage />
 
   if (!profile.is_active) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', background: 'var(--bg-main)', textAlign: 'center' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', background: 'var(--office-bg)', textAlign: 'center' }}>
       <div>
-        <div style={{ width: 64, height: 64, background: 'var(--red-bg)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
-          <Shield size={32} color="var(--red)" />
+        <div style={{ width: 64, height: 64, background: 'var(--office-red-bg)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem', border: '1px solid var(--office-red-border)' }}>
+          <Shield size={32} color="var(--office-red)" />
         </div>
-        <h2 style={{ color: 'var(--red)', marginBottom: '0.5rem', fontSize: '1.25rem' }}>Account Inactive</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Your account has been deactivated. Contact Super Admin.</p>
+        <h2 style={{ color: 'var(--office-red)', marginBottom: '0.5rem', fontSize: '1.25rem' }}>Account Inactive</h2>
+        <p style={{ color: 'var(--office-text-muted)', fontSize: '0.9rem' }}>Your account has been deactivated. Contact Super Admin.</p>
       </div>
     </div>
   )
@@ -98,12 +98,12 @@ function AppLayout() {
       {/* Navbar */}
       <nav className="navbar">
         <div className="navbar-brand">
-          <span style={{ fontSize: '1rem' }}>⬛</span>
-          Sewadar Attendance
+          <div className="navbar-logo">🙏</div>
+          <span className="navbar-title">Sewadar Attendance</span>
           <span className="navbar-pill">{rolePill}</span>
         </div>
         {!isOnline && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(230,81,0,0.25)', border: '1px solid rgba(255,255,255,0.3)', padding: '0.25rem 0.6rem', borderRadius: '6px', color: '#FFD54F', fontSize: '0.72rem', fontWeight: 600 }}>
+          <div className="offline-indicator">
             <WifiOff size={12} /> OFFLINE {pendingSync > 0 ? `· ${pendingSync}` : ''}
           </div>
         )}

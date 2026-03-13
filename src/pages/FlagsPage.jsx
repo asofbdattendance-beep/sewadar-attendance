@@ -169,7 +169,7 @@ export default function FlagsPage() {
         </div>
       ) : flags.length === 0 ? (
         <div className="flags-empty">
-          <Flag size={36} color="var(--text-muted)" />
+          <Flag size={36} color="var(--office-text-muted)" />
           <p>No {statusFilter !== 'all' ? statusFilter : ''} flags</p>
         </div>
       ) : (

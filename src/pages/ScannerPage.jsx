@@ -344,7 +344,7 @@ export default function ScannerPage({ isOnline }) {
             GPS {gpsStatus === 'success' ? '✓' : gpsStatus === 'failed' ? '✗' : '…'}
           </span>
           {offlineQueueCount > 0 && (
-            <span className="scanner-pill pill-queue" onClick={syncQueue} title="Tap to sync">
+            <span className="scanner-pill pill-queue" onClick={syncQueue} title="Tap to sync" style={{ background: 'var(--office-amber-bg)', color: 'var(--office-amber)', border: '1px solid var(--office-amber-border)' }}>
               <RefreshCw size={11} />
               {offlineQueueCount} pending
             </span>

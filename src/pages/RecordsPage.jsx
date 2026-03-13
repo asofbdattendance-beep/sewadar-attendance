@@ -206,10 +206,10 @@ export default function RecordsPage() {
 
   return (
     <div className="page-wide pb-nav" style={{ maxWidth: 1100 }}>
-      <div className="records-page-header">
+      <div className="page-header">
         <div>
-          <h2 className="records-page-title">Attendance Records</h2>
-          <p className="records-page-sub">IN / OUT overview per sewadar per day</p>
+          <h2 className="page-title">Attendance Records</h2>
+          <p className="page-subtitle">IN / OUT overview per sewadar per day</p>
         </div>
         <button className="btn-export" onClick={exportToCSV}>
           <Download size={15} /> Export
@@ -236,7 +236,7 @@ export default function RecordsPage() {
             onChange={e => setDateFilter(e.target.value)}
           />
           {dateFilter && (
-            <button onClick={() => setDateFilter('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
+            <button onClick={() => setDateFilter('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--office-text-muted)', display: 'flex' }}>
               <X size={14} />
             </button>
           )}
@@ -276,12 +276,12 @@ export default function RecordsPage() {
             <tbody>
               {records.map((r, i) => (
                 <tr key={i}>
-                  <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.82rem' }}>
+                  <td style={{ fontFamily: 'monospace', color: 'var(--office-amber)', fontSize: '0.82rem' }}>
                     {r.badge_number}
                   </td>
                   <td style={{ fontWeight: 500 }}>{r.sewadar_name}</td>
-                  {isAdmin && <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{r.centre}</td>}
-                  <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                  {isAdmin && <td style={{ fontSize: '0.82rem', color: 'var(--office-text-secondary)' }}>{r.centre}</td>}
+                  <td style={{ fontSize: '0.82rem', color: 'var(--office-text-muted)' }}>
                     {new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
                   </td>
                   <td>
@@ -343,19 +343,19 @@ export default function RecordsPage() {
           <div className="overlay-sheet flag-modal" onClick={e => e.stopPropagation()}>
             {flagSuccess ? (
               <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
-                <div style={{ width: 52, height: 52, background: 'var(--green-bg)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                <div style={{ width: 52, height: 52, background: 'var(--office-green-bg)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem', border: '1px solid var(--office-green-border)' }}>
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--office-green)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                 </div>
-                <p style={{ fontWeight: 600, color: 'var(--green)' }}>Flag raised successfully</p>
+                <p style={{ fontWeight: 600, color: 'var(--office-green)' }}>Flag raised successfully</p>
               </div>
             ) : (
               <>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Flag size={18} color="var(--red)" />
+                    <Flag size={18} color="var(--office-red)" />
                     <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Raise Flag</h3>
                   </div>
-                  <button onClick={() => setFlagModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                  <button onClick={() => setFlagModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--office-text-muted)' }}>
                     <X size={18} />
                   </button>
                 </div>
@@ -364,7 +364,7 @@ export default function RecordsPage() {
                 <div className="flag-modal-record">
                   <div className="flag-modal-record-name">{flagModal.sewadar_name}</div>
                   <div className="flag-modal-record-meta">
-                    <span style={{ fontFamily: 'monospace', color: 'var(--gold)' }}>{flagModal.badge_number}</span>
+                    <span style={{ fontFamily: 'monospace', color: 'var(--office-amber)' }}>{flagModal.badge_number}</span>
                     <span>·</span>
                     <span>{new Date(flagModal.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
                     {flagModal.in_time && <><span>·</span><span className="flag-modal-in">IN {formatTime(flagModal.in_time)}</span></>}
@@ -385,12 +385,12 @@ export default function RecordsPage() {
                         <option key={f.value} value={f.value}>{f.label}</option>
                       ))}
                     </select>
-                    <ChevronDown size={16} style={{ position: 'absolute', right: '0.85rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-muted)' }} />
+                    <ChevronDown size={16} style={{ position: 'absolute', right: '0.85rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--office-text-muted)' }} />
                   </div>
                 </div>
 
                 <div style={{ marginBottom: '1.25rem' }}>
-                  <label className="label">Additional note <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--text-muted)' }}>(optional)</span></label>
+                  <label className="label">Additional note <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--office-text-muted)' }}>(optional)</span></label>
                   <textarea
                     className="input"
                     rows={3}

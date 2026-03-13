@@ -242,11 +242,11 @@ export default function SuperAdminPage() {
 
   return (
     <div className="page-wide pb-nav" style={{ maxWidth: 1000 }}>
-      <div className="mt-2 mb-3">
-        <h2 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', fontSize: '1.4rem', fontWeight: 800 }}>
-          Control Panel
-        </h2>
-        <p className="text-muted text-xs mt-1">Super Admin Dashboard</p>
+      <div className="page-header">
+        <div>
+          <h2 className="page-title">Control Panel</h2>
+          <p className="page-subtitle">Super Admin Dashboard</p>
+        </div>
       </div>
 
       <div className="tab-nav">
@@ -405,8 +405,8 @@ function SewadarsTab({ sewadars, loading, searchTerm, setSearchTerm, onRefresh, 
                   title={s.geo_required ? 'Geo required' : 'Geo not required'}
                 >
                   {s.geo_required 
-                    ? <ToggleRight size={20} color="var(--green)" />
-                    : <ToggleLeft size={20} color="var(--text-muted)" />
+                    ? <ToggleRight size={20} color="var(--office-green)" />
+                    : <ToggleLeft size={20} color="var(--office-text-muted)" />
                   }
                 </button>
               </div>
@@ -462,8 +462,8 @@ function SessionsTab({ sessions, loading, onRefresh, onAdd, onToggle, onDelete }
                 title={s.is_active ? 'Deactivate' : 'Activate'}
               >
                 {s.is_active 
-                  ? <ToggleRight size={20} color="var(--green)" />
-                  : <ToggleLeft size={20} color="var(--text-muted)" />
+                  ? <ToggleRight size={20} color="var(--office-green)" />
+                  : <ToggleLeft size={20} color="var(--office-text-muted)" />
                 }
               </button>
               <button
@@ -765,8 +765,8 @@ function CentresTab({ centres, loading, onRefresh, profile }) {
                                   disabled={saving}
                                 >
                                   {child.geo_enabled 
-                                    ? <ToggleRight size={18} color="var(--green)" />
-                                    : <ToggleLeft size={18} color="var(--text-muted)" />
+                                    ? <ToggleRight size={18} color="var(--office-green)" />
+                                    : <ToggleLeft size={18} color="var(--office-text-muted)" />
                                   }
                                 </button>
                               </>
@@ -805,7 +805,7 @@ function CentresTab({ centres, loading, onRefresh, profile }) {
       {showAddCentre && (
         <div className="overlay" onClick={() => setShowAddCentre(false)}>
           <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', marginBottom: '1.5rem', fontWeight: 700 }}>Add Centre</h3>
+            <h3 style={{ fontWeight: 700, marginBottom: '1.5rem', color: 'var(--office-text)' }}>Add Centre</h3>
             
             <div className="mb-3">
               <label className="label">Centre Name</label>
@@ -881,7 +881,7 @@ function ReportsTab({ sewadarsCount, sessionsCount, onExportSewadars }) {
           <button className="btn-download" onClick={onExportSewadars}><Download size={18} /></button>
         </div>
         <div className="report-card">
-          <div className="report-icon" style={{ background: 'var(--blue-bg)', color: 'var(--blue)' }}><CalendarDays size={22} /></div>
+          <div className="report-icon" style={{ background: 'var(--office-blue-bg)', color: 'var(--office-blue)' }}><CalendarDays size={22} /></div>
           <div className="report-info">
             <div className="report-count">{sessionsCount}</div>
             <div className="report-label">Sessions</div>
@@ -896,7 +896,7 @@ function AddSewadarModal({ newSewadar, setNewSewadar, onClose, onSave }) {
   return (
     <div className="overlay" onClick={onClose}>
       <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-        <h3 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', marginBottom: '1.5rem', fontWeight: 700 }}>Add New Sewadar</h3>
+        <h3 style={{ fontWeight: 700, marginBottom: '1.5rem', color: 'var(--office-text)' }}>Add New Sewadar</h3>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
           <div className="mb-2">
             <label className="label">Badge Number</label>
@@ -947,7 +947,7 @@ function AddSessionModal({ newSession, setNewSession, onClose, onSave }) {
   return (
     <div className="overlay" onClick={onClose}>
       <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-        <h3 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', marginBottom: '1.5rem', fontWeight: 700 }}>New Session</h3>
+        <h3 style={{ fontWeight: 700, marginBottom: '1.5rem', color: 'var(--office-text)' }}>New Session</h3>
         <div className="mb-3">
           <label className="label">Session Name</label>
           <input className="input" placeholder="e.g. Morning Satsang" value={newSession.name} onChange={e => setNewSession({ ...newSession, name: e.target.value })} />
