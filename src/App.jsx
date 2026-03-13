@@ -10,7 +10,8 @@ import RecordsPage from './pages/RecordsPage'
 import AdminPage from './pages/AdminPage'
 import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
-import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff } from 'lucide-react'
+import FlagsPage from './pages/FlagsPage'
+import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff, Flag } from 'lucide-react'
 
 function AppLayout() {
   const { profile, loading } = useAuth()
@@ -44,7 +45,7 @@ function AppLayout() {
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg)' }}>
       <div style={{ textAlign: 'center' }}>
         <div className="spinner" style={{ margin: '0 auto 1rem' }} />
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading...</p>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading…</p>
       </div>
     </div>
   )
@@ -63,18 +64,21 @@ function AppLayout() {
     </div>
   )
 
+  const isCentreUser = profile.role === ROLES.CENTRE_USER
+  const isAdmin = profile.role === ROLES.ADMIN
+  const isSuperAdmin = profile.role === ROLES.SUPER_ADMIN
+
   const navItems = [
     { path: '/scan', label: 'Scan', icon: Scan },
     { path: '/dashboard', label: 'Reports', icon: BarChart2 },
     { path: '/records', label: 'Records', icon: FileText },
-    ...(profile.role !== ROLES.CENTRE_USER
-      ? [{ path: '/admin', label: 'Admin', icon: Settings }]
-      : []),
-    ...(profile.role === ROLES.SUPER_ADMIN
-      ? [{ path: '/super-admin', label: 'Control', icon: Shield }]
-      : []),
+    { path: '/flags', label: 'Flags', icon: Flag },
+    ...(!isCentreUser ? [{ path: '/admin', label: 'Admin', icon: Settings }] : []),
+    ...(isSuperAdmin ? [{ path: '/super-admin', label: 'Control', icon: Shield }] : []),
     { path: '/profile', label: 'Profile', icon: User },
   ]
+
+  const rolePill = isSuperAdmin ? 'SUPER ADMIN' : isAdmin ? 'ADMIN' : 'CENTRE USER'
 
   return (
     <div>
@@ -83,7 +87,7 @@ function AppLayout() {
         <div className="navbar-brand">
           <span style={{ fontSize: '1rem' }}>⬛</span>
           Sewadar Attendance
-          <span className="navbar-pill">{profile.role === ROLES.SUPER_ADMIN ? 'SUPER ADMIN' : profile.role === ROLES.ADMIN ? 'ADMIN' : 'CENTRE USER'}</span>
+          <span className="navbar-pill">{rolePill}</span>
         </div>
         {!isOnline && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(230,81,0,0.25)', border: '1px solid rgba(255,255,255,0.3)', padding: '0.25rem 0.6rem', borderRadius: '6px', color: '#FFD54F', fontSize: '0.72rem', fontWeight: 600 }}>
@@ -104,6 +108,7 @@ function AppLayout() {
         <Route path="/scan" element={<ScannerPage isOnline={isOnline} />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/records" element={<RecordsPage />} />
+        <Route path="/flags" element={<FlagsPage />} />
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/super-admin" element={<SuperAdminPage />} />
         <Route path="/profile" element={<ProfilePage isOnline={isOnline} />} />

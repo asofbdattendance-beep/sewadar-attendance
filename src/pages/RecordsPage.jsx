@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { ROLES } from '../lib/supabase'
-import { Search, Download, Calendar, Filter } from 'lucide-react'
+import { ROLES, FLAG_TYPES } from '../lib/supabase'
+import { Search, Download, Calendar, Filter, Flag, X, ChevronDown } from 'lucide-react'
 
 export default function RecordsPage() {
   const { profile } = useAuth()
@@ -12,6 +12,11 @@ export default function RecordsPage() {
   const [dateFilter, setDateFilter] = useState('')
   const [centreFilter, setCentreFilter] = useState('')
   const [centres, setCentres] = useState([])
+  const [flagModal, setFlagModal] = useState(null) // attendance record being flagged
+  const [flagType, setFlagType] = useState('error_entry')
+  const [flagNote, setFlagNote] = useState('')
+  const [flagSubmitting, setFlagSubmitting] = useState(false)
+  const [flagSuccess, setFlagSuccess] = useState(false)
 
   const isAdmin = [ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(profile?.role)
 
@@ -21,35 +26,49 @@ export default function RecordsPage() {
   }, [dateFilter, centreFilter])
 
   async function fetchCentres() {
-    const { data } = await supabase.from('centres').select('centre_name').order('centre_name')
-    setCentres(data?.map(c => c.centre_name) || [])
+    if (profile?.role === ROLES.SUPER_ADMIN) {
+      const { data } = await supabase.from('centres').select('centre_name').order('centre_name')
+      setCentres(data?.map(c => c.centre_name) || [])
+    } else if (profile?.role === ROLES.ADMIN) {
+      const { data } = await supabase
+        .from('centres')
+        .select('centre_name')
+        .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
+        .order('centre_name')
+      setCentres(data?.map(c => c.centre_name) || [])
+    }
   }
 
   async function fetchRecords() {
     setLoading(true)
-    
     let query = supabase
       .from('attendance')
       .select('*')
       .order('scan_time', { ascending: false })
 
     if (dateFilter) {
-      const start = new Date(dateFilter)
-      start.setHours(0, 0, 0, 0)
-      const end = new Date(dateFilter)
-      end.setHours(23, 59, 59, 999)
+      const start = new Date(dateFilter); start.setHours(0, 0, 0, 0)
+      const end = new Date(dateFilter); end.setHours(23, 59, 59, 999)
       query = query.gte('scan_time', start.toISOString()).lte('scan_time', end.toISOString())
     }
 
-    if (!isAdmin && profile?.centre) {
+    if (profile?.role === ROLES.CENTRE_USER && profile?.centre) {
       query = query.eq('centre', profile.centre)
+    } else if (profile?.role === ROLES.ADMIN && !centreFilter) {
+      // Admin: fetch parent + children
+      const { data: childData } = await supabase
+        .from('centres')
+        .select('centre_name')
+        .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
+      const centreNames = childData?.map(c => c.centre_name) || [profile.centre]
+      query = query.in('centre', centreNames)
     } else if (centreFilter) {
       query = query.eq('centre', centreFilter)
     }
 
     const { data } = await query.limit(500)
-    
-    // Group by badge_number and date
+
+    // Group by badge + date
     const grouped = {}
     data?.forEach(r => {
       const date = new Date(r.scan_time).toISOString().split('T')[0]
@@ -61,29 +80,31 @@ export default function RecordsPage() {
           centre: r.centre,
           department: r.department,
           date,
-          in_time: null,
-          out_time: null,
-          in_scanner: null,
-          out_scanner: null
+          in_time: null, out_time: null,
+          in_scanner: null, out_scanner: null,
+          in_id: null, out_id: null,
+          raw_in: null, raw_out: null,
         }
       }
       if (r.type === 'IN' && !grouped[key].in_time) {
         grouped[key].in_time = r.scan_time
         grouped[key].in_scanner = r.scanner_name
+        grouped[key].in_id = r.id
+        grouped[key].raw_in = r
       }
       if (r.type === 'OUT' && !grouped[key].out_time) {
         grouped[key].out_time = r.scan_time
         grouped[key].out_scanner = r.scanner_name
+        grouped[key].out_id = r.id
+        grouped[key].raw_out = r
       }
     })
 
     let filteredRecords = Object.values(grouped)
-    
     if (searchTerm) {
       const term = searchTerm.toUpperCase()
-      filteredRecords = filteredRecords.filter(r => 
-        r.badge_number.includes(term) || 
-        r.sewadar_name.toUpperCase().includes(term)
+      filteredRecords = filteredRecords.filter(r =>
+        r.badge_number.includes(term) || r.sewadar_name.toUpperCase().includes(term)
       )
     }
 
@@ -91,28 +112,57 @@ export default function RecordsPage() {
     setLoading(false)
   }
 
-  function exportToExcel() {
+  function exportToCSV() {
     const csv = [
       ['Badge Number', 'Name', 'Centre', 'Department', 'Date', 'IN Time', 'OUT Time', 'IN By', 'OUT By'].join(','),
       ...records.map(r => [
-        r.badge_number,
-        `"${r.sewadar_name}"`,
-        r.centre,
-        r.department || '',
+        r.badge_number, `"${r.sewadar_name}"`, r.centre, r.department || '',
         r.date,
         r.in_time ? new Date(r.in_time).toLocaleTimeString('en-IN') : '',
         r.out_time ? new Date(r.out_time).toLocaleTimeString('en-IN') : '',
-        r.in_scanner || '',
-        r.out_scanner || ''
+        r.in_scanner || '', r.out_scanner || ''
       ].join(','))
     ].join('\n')
-
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url
-    a.download = `attendance_records_${dateFilter || 'all'}.csv`
-    a.click()
+    a.href = url; a.download = `attendance_${dateFilter || 'all'}.csv`; a.click()
+  }
+
+  async function submitFlag() {
+    if (!flagModal || !profile) return
+    setFlagSubmitting(true)
+
+    const record = flagModal.raw_in || flagModal.raw_out
+    await supabase.from('queries').insert({
+      raised_by_badge: profile.badge_number,
+      raised_by_name: profile.name,
+      raised_by_centre: profile.centre,
+      raised_by_role: profile.role,
+      attendance_id: record?.id || null,
+      issue_description: flagNote.trim() || FLAG_TYPES.find(f => f.value === flagType)?.label || flagType,
+      flag_type: flagType,
+      target_centre: flagModal.centre,
+      status: 'open',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+
+    await supabase.from('logs').insert({
+      user_badge: profile.badge_number,
+      action: 'RAISE_FLAG',
+      details: `Flag raised on attendance for ${flagModal.badge_number} (${flagType})`,
+      timestamp: new Date().toISOString()
+    })
+
+    setFlagSubmitting(false)
+    setFlagSuccess(true)
+    setTimeout(() => {
+      setFlagModal(null)
+      setFlagSuccess(false)
+      setFlagType('error_entry')
+      setFlagNote('')
+    }, 1500)
   }
 
   function formatTime(iso) {
@@ -122,48 +172,57 @@ export default function RecordsPage() {
 
   return (
     <div className="page-wide pb-nav" style={{ maxWidth: 1100 }}>
-      <div className="header">
-        <h2>Attendance Records</h2>
-        <p className="text-muted text-xs">IN/OUT overview per day</p>
+      <div className="records-page-header">
+        <div>
+          <h2 className="records-page-title">Attendance Records</h2>
+          <p className="records-page-sub">IN / OUT overview per sewadar per day</p>
+        </div>
+        <button className="btn-export" onClick={exportToCSV}>
+          <Download size={15} /> Export
+        </button>
       </div>
 
+      {/* Filters */}
       <div className="records-filters">
         <div className="search-box">
-          <Search size={16} />
-          <input 
-            type="text" 
-            placeholder="Search badge or name..." 
+          <Search size={15} />
+          <input
+            type="text"
+            placeholder="Search badge or name…"
             value={searchTerm}
-            onChange={e => setSearchTerm(e.target.value)}
+            onChange={e => { setSearchTerm(e.target.value); fetchRecords() }}
           />
         </div>
-        
+
         <div className="filter-group">
-          <Calendar size={16} />
-          <input 
-            type="date" 
+          <Calendar size={15} />
+          <input
+            type="date"
             value={dateFilter}
             onChange={e => setDateFilter(e.target.value)}
           />
+          {dateFilter && (
+            <button onClick={() => setDateFilter('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
+              <X size={14} />
+            </button>
+          )}
         </div>
 
         {isAdmin && (
           <div className="filter-group">
-            <Filter size={16} />
+            <Filter size={15} />
             <select value={centreFilter} onChange={e => setCentreFilter(e.target.value)}>
               <option value="">All Centres</option>
               {centres.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
         )}
-
-        <button className="btn-export" onClick={exportToExcel}>
-          <Download size={16} /> Export
-        </button>
       </div>
 
       {loading ? (
-        <div className="spinner" style={{ margin: '2rem auto' }} />
+        <div className="text-center" style={{ padding: '3rem 0' }}>
+          <div className="spinner" style={{ margin: '0 auto' }} />
+        </div>
       ) : (
         <div className="records-table-wrap">
           <table className="records-table">
@@ -171,52 +230,140 @@ export default function RecordsPage() {
               <tr>
                 <th>Badge</th>
                 <th>Name</th>
-                <th>Centre</th>
+                {isAdmin && <th>Centre</th>}
                 <th>Date</th>
                 <th>IN</th>
                 <th>OUT</th>
                 <th>Status</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {records.map((r, i) => (
                 <tr key={i}>
-                  <td style={{ fontFamily: 'monospace', color: 'var(--gold)' }}>{r.badge_number}</td>
+                  <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.82rem' }}>
+                    {r.badge_number}
+                  </td>
                   <td style={{ fontWeight: 500 }}>{r.sewadar_name}</td>
-                  <td style={{ fontSize: '0.85rem' }}>{r.centre}</td>
-                  <td style={{ fontSize: '0.85rem' }}>{new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</td>
+                  {isAdmin && <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{r.centre}</td>}
+                  <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    {new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                  </td>
                   <td>
                     <span className={`time-cell ${r.in_time ? 'has-time' : ''}`}>
                       {formatTime(r.in_time)}
                     </span>
                   </td>
                   <td>
-                    <span className={`time-cell ${r.out_time ? 'has-time' : ''}`}>
+                    <span className={`time-cell ${r.out_time ? 'has-time out-time' : ''}`}>
                       {formatTime(r.out_time)}
                     </span>
                   </td>
                   <td>
-                    {r.in_time && r.out_time ? (
-                      <span className="status-complete">Complete</span>
-                    ) : r.in_time ? (
-                      <span className="status-in-only">IN Only</span>
-                    ) : r.out_time ? (
-                      <span className="status-out-only">OUT Only</span>
-                    ) : (
-                      <span className="status-none">—</span>
-                    )}
+                    {r.in_time && r.out_time
+                      ? <span className="status-complete">Complete</span>
+                      : r.in_time
+                        ? <span className="status-in-only">IN only</span>
+                        : r.out_time
+                          ? <span className="status-out-only">OUT only</span>
+                          : <span className="status-none">—</span>}
+                  </td>
+                  <td>
+                    <button
+                      className="records-flag-btn"
+                      onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}
+                      title="Raise a flag on this record"
+                    >
+                      <Flag size={13} />
+                    </button>
                   </td>
                 </tr>
               ))}
               {records.length === 0 && (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
+                  <td colSpan={8} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
                     No records found
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Flag Modal */}
+      {flagModal && (
+        <div className="overlay" onClick={() => { setFlagModal(null); setFlagSuccess(false) }}>
+          <div className="overlay-sheet flag-modal" onClick={e => e.stopPropagation()}>
+            {flagSuccess ? (
+              <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
+                <div style={{ width: 52, height: 52, background: 'var(--green-bg)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                </div>
+                <p style={{ fontWeight: 600, color: 'var(--green)' }}>Flag raised successfully</p>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Flag size={18} color="var(--red)" />
+                    <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Raise Flag</h3>
+                  </div>
+                  <button onClick={() => setFlagModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                    <X size={18} />
+                  </button>
+                </div>
+
+                {/* Attendance summary */}
+                <div className="flag-modal-record">
+                  <div className="flag-modal-record-name">{flagModal.sewadar_name}</div>
+                  <div className="flag-modal-record-meta">
+                    <span style={{ fontFamily: 'monospace', color: 'var(--gold)' }}>{flagModal.badge_number}</span>
+                    <span>·</span>
+                    <span>{new Date(flagModal.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
+                    {flagModal.in_time && <><span>·</span><span className="flag-modal-in">IN {formatTime(flagModal.in_time)}</span></>}
+                    {flagModal.out_time && <><span>·</span><span className="flag-modal-out">OUT {formatTime(flagModal.out_time)}</span></>}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: '1rem' }}>
+                  <label className="label">Reason</label>
+                  <div style={{ position: 'relative' }}>
+                    <select
+                      className="input"
+                      value={flagType}
+                      onChange={e => setFlagType(e.target.value)}
+                      style={{ appearance: 'none', paddingRight: '2.5rem' }}
+                    >
+                      {FLAG_TYPES.map(f => (
+                        <option key={f.value} value={f.value}>{f.label}</option>
+                      ))}
+                    </select>
+                    <ChevronDown size={16} style={{ position: 'absolute', right: '0.85rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-muted)' }} />
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: '1.25rem' }}>
+                  <label className="label">Additional note <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--text-muted)' }}>(optional)</span></label>
+                  <textarea
+                    className="input"
+                    rows={3}
+                    placeholder="Add any extra details…"
+                    value={flagNote}
+                    onChange={e => setFlagNote(e.target.value)}
+                    style={{ resize: 'none' }}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                  <button className="btn btn-outline btn-full" onClick={() => setFlagModal(null)}>Cancel</button>
+                  <button className="btn btn-full flag-submit-btn" onClick={submitFlag} disabled={flagSubmitting}>
+                    {flagSubmitting ? 'Submitting…' : 'Submit Flag'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

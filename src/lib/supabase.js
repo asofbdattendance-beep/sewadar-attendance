@@ -20,20 +20,53 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 // Badge parser utility
 export function parseBadge(badge) {
   if (!badge || badge.length < 12) return null
-  const prefix = badge.substring(0, 2)       // FB
-  const centreCode = badge.substring(2, 6)   // 5978
-  const gender = badge.substring(6, 7)       // G or F
-  const fixed = badge.substring(7, 8)        // A
-  const serial = badge.substring(8)          // 0001
+  const prefix = badge.substring(0, 2)
+  const centreCode = badge.substring(2, 6)
+  const gender = badge.substring(6, 7)
+  const fixed = badge.substring(7, 8)
+  const serial = badge.substring(8)
   if (prefix !== 'FB' || fixed !== 'A') return null
   return { prefix, centreCode, gender: gender === 'G' ? 'Male' : 'Female', serial, raw: badge }
 }
 
-// Special departments that any centre user can scan
+// Departments that any centre/SP can scan (with confirmation for non-own-centre)
 export const EXCEPTION_DEPARTMENTS = [
   'Pathis', 'Baal Pathis', 'Satsang Kartas', 'Baal Satsang Kartas',
-  'PATHIS', 'BAAL PATHIS', 'SATSANG KARTAS', 'BAAL SATSANG KARTAS'
+  'Administration',
+  'PATHIS', 'BAAL PATHIS', 'SATSANG KARTAS', 'BAAL SATSANG KARTAS',
+  'ADMINISTRATION'
 ]
+
+export function isExceptionDept(dept) {
+  if (!dept) return false
+  return EXCEPTION_DEPARTMENTS.some(d => d.toLowerCase() === dept.toLowerCase())
+}
+
+// Fetch all centre names that fall under a given parent (including the parent itself)
+// Returns array of centre_name strings
+export async function getCentreScope(centreName, role) {
+  if (role === ROLES.SUPER_ADMIN) return null // null = no filter = all centres
+
+  const { data } = await supabase
+    .from('centres')
+    .select('centre_name, parent_centre')
+    .or(`centre_name.eq.${centreName},parent_centre.eq.${centreName}`)
+
+  return data?.map(c => c.centre_name) || [centreName]
+}
+
+// Given a user profile, return the list of centre names they can VIEW data for
+export async function getViewableCentres(profile) {
+  if (!profile) return []
+  if (profile.role === ROLES.SUPER_ADMIN) return null // no restriction
+
+  if (profile.role === ROLES.ADMIN) {
+    return getCentreScope(profile.centre, ROLES.ADMIN)
+  }
+
+  // centre_user: only their own centre
+  return [profile.centre]
+}
 
 // Calculate distance between two GPS coordinates in metres
 export function getDistanceMetres(lat1, lon1, lat2, lon2) {
@@ -50,4 +83,18 @@ export const ROLES = {
   SUPER_ADMIN: 'super_admin',
   ADMIN: 'admin',
   CENTRE_USER: 'centre_user'
+}
+
+export const FLAG_TYPES = [
+  { value: 'error_entry', label: 'Error entry' },
+  { value: 'wrong_badge', label: 'Wrong badge scanned' },
+  { value: 'duplicate', label: 'Duplicate entry' },
+  { value: 'not_present', label: 'Sewadar was not present' },
+  { value: 'other', label: 'Other' },
+]
+
+export const FLAG_STATUS = {
+  OPEN: 'open',
+  IN_PROGRESS: 'in_progress',
+  RESOLVED: 'resolved',
 }
