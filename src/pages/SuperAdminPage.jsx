@@ -32,6 +32,11 @@ export default function SuperAdminPage() {
   const [reportLoading, setReportLoading] = useState(false)
   const [dateRange, setDateRange] = useState({ from: '', to: '' })
   const [expandedParent, setExpandedParent] = useState(null)
+  const [expandedChild, setExpandedChild] = useState(null) // tracks which child's geo fields are open
+
+  function toggleChild(childId) {
+    setExpandedChild(prev => prev === childId ? null : childId)
+  }
 
   if (profile?.role !== ROLES.SUPER_ADMIN) {
     return <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
@@ -380,23 +385,74 @@ export default function SuperAdminPage() {
                     </div>
                   )}
 
-                  {/* Child rows */}
+                  {/* Child rows — each independently expandable */}
                   {expandedParent === parent && children.map(child => (
-                    <div key={child.id} className="centre-child-row">
-                      <span className="centre-child-indent">└</span>
-                      <span className="centre-child-name">{child.centre_name}</span>
-                      <div className="centre-parent-geo">
-                        <span className="centre-geo-label">Geo</span>
+                    <div key={child.id}>
+                      <div className="centre-child-row">
+                        <span className="centre-child-indent">└</span>
                         <button
-                          className="btn btn-ghost"
-                          style={{ padding: '0.15rem' }}
-                          onClick={() => updateCentreGeo(child.id, 'geo_enabled', !child.geo_enabled, null)}
+                          className="centre-expand-btn"
+                          style={{ marginLeft: 2 }}
+                          onClick={() => toggleChild(child.id)}
+                          title="Edit geo settings"
                         >
-                          {child.geo_enabled
-                            ? <ToggleRight size={20} color="var(--green)" />
-                            : <ToggleLeft size={20} color="var(--text-muted)" />}
+                          {expandedChild === child.id
+                            ? <ChevronDown size={14} />
+                            : <ChevronRight size={14} />}
                         </button>
+                        <span className="centre-child-name">{child.centre_name}</span>
+                        {(child.latitude || child.longitude) && (
+                          <span className="centre-coords-pill">
+                            {child.latitude?.toFixed(4)}, {child.longitude?.toFixed(4)}
+                          </span>
+                        )}
+                        <div className="centre-parent-geo">
+                          <span className="centre-geo-label">Geo</span>
+                          <button
+                            className="btn btn-ghost"
+                            style={{ padding: '0.15rem' }}
+                            onClick={() => updateCentreGeo(child.id, 'geo_enabled', !child.geo_enabled, null)}
+                          >
+                            {child.geo_enabled
+                              ? <ToggleRight size={20} color="var(--green)" />
+                              : <ToggleLeft size={20} color="var(--text-muted)" />}
+                          </button>
+                        </div>
                       </div>
+
+                      {/* Child geo fields — shown when expanded */}
+                      {expandedChild === child.id && (
+                        <div className="centre-geo-config centre-child-geo-config">
+                          <div className="centre-geo-fields">
+                            <div className="geo-field">
+                              <label>Latitude</label>
+                              <input
+                                key={`lat-${child.id}`}
+                                defaultValue={child.latitude || ''}
+                                placeholder="e.g. 28.4595"
+                                onBlur={e => updateCentreGeo(child.id, 'latitude', parseFloat(e.target.value), null)}
+                              />
+                            </div>
+                            <div className="geo-field">
+                              <label>Longitude</label>
+                              <input
+                                key={`lng-${child.id}`}
+                                defaultValue={child.longitude || ''}
+                                placeholder="e.g. 77.0266"
+                                onBlur={e => updateCentreGeo(child.id, 'longitude', parseFloat(e.target.value), null)}
+                              />
+                            </div>
+                            <div className="geo-field">
+                              <label>Radius (m)</label>
+                              <input
+                                key={`rad-${child.id}`}
+                                defaultValue={child.geo_radius || 200}
+                                onBlur={e => updateCentreGeo(child.id, 'geo_radius', parseInt(e.target.value), null)}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
