@@ -544,3 +544,18 @@ tr:hover td { background:#FAFCFF; }
   scrollbar-width: none;
 }
 .tab-nav-scroll::-webkit-scrollbar { display: none; }
+
+/* ── JATHA PAGE ── */
+.jatha-satsang-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: rgba(22,163,74,0.09);
+  color: var(--green);
+  border: 1px solid rgba(22,163,74,0.25);
+  border-radius: 999px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-top: 0.25rem;
+}

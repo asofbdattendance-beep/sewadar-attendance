@@ -8,13 +8,8 @@ if (!supabaseUrl || !supabaseAnonKey) {
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-  },
-  realtime: {
-    params: { eventsPerSecond: 10 }
-  }
+  auth: { persistSession: true, autoRefreshToken: true },
+  realtime: { params: { eventsPerSecond: 10 } }
 })
 
 // Badge parser utility
@@ -29,20 +24,11 @@ export function parseBadge(badge) {
   return { prefix, centreCode, gender: gender === 'G' ? 'Male' : 'Female', serial, raw: badge }
 }
 
-// Departments that any centre/SP can scan (with confirmation for non-own-centre)
-// Departments that travel centre-to-centre and can be scanned by ANY authorised user
-// regardless of which centre they belong to. Comparison is always case-insensitive.
+// Departments that travel centre-to-centre — scanned by ANY authorised user
 export const EXCEPTION_DEPARTMENTS = [
-  'Administration',
-  'Office',
-  'Area Secretary Office',
-  'Pathis',
-  'Baal Pathis',
-  'Satsang Kartas',
-  'Baal Satsang Kartas',
-  'Pathi',
-  'Satsang Karta',
-  'Baal Satsang Karta',
+  'Administration', 'Office', 'Area Secretary Office',
+  'Pathis', 'Baal Pathis', 'Satsang Kartas', 'Baal Satsang Kartas',
+  'Pathi', 'Satsang Karta', 'Baal Satsang Karta',
 ]
 
 export function isExceptionDept(dept) {
@@ -51,33 +37,56 @@ export function isExceptionDept(dept) {
   return EXCEPTION_DEPARTMENTS.some(d => d.toLowerCase() === lower)
 }
 
-// Fetch all centre names that fall under a given parent (including the parent itself)
-// Returns array of centre_name strings
-export async function getCentreScope(centreName, role) {
-  if (role === ROLES.SUPER_ADMIN) return null // null = no filter = all centres
+// Count Sundays and Wednesdays (satsang days) in a date range, inclusive
+export function countSatsangDays(fromDate, toDate) {
+  let count = 0
+  const cur = new Date(fromDate + 'T00:00:00')
+  const end = new Date(toDate + 'T00:00:00')
+  while (cur <= end) {
+    const day = cur.getDay() // 0=Sun, 3=Wed
+    if (day === 0 || day === 3) count++
+    cur.setDate(cur.getDate() + 1)
+  }
+  return count
+}
 
+// Validate jatha date range: max 10 days, to >= from
+export function validateJathaRange(fromDate, toDate) {
+  if (!fromDate || !toDate) return 'Both dates are required'
+  const from = new Date(fromDate + 'T00:00:00')
+  const to   = new Date(toDate   + 'T00:00:00')
+  if (to < from) return 'End date must be on or after start date'
+  const diff = Math.round((to - from) / 86400000)
+  if (diff > 10) return `Range is ${diff} days — maximum allowed is 10 days`
+  return null
+}
+
+export const JATHA_TYPE = {
+  MAJOR_CENTRE: 'major_centre',
+  BEAS: 'beas',
+}
+
+export const JATHA_TYPE_LABEL = {
+  major_centre: 'Major Centre',
+  beas: 'Beas',
+}
+
+export async function getCentreScope(centreName, role) {
+  if (role === ROLES.SUPER_ADMIN) return null
   const { data } = await supabase
     .from('centres')
     .select('centre_name, parent_centre')
     .or(`centre_name.eq.${centreName},parent_centre.eq.${centreName}`)
-
   return data?.map(c => c.centre_name) || [centreName]
 }
 
-// Given a user profile, return the list of centre names they can VIEW data for
 export async function getViewableCentres(profile) {
   if (!profile) return []
-  if (profile.role === ROLES.SUPER_ADMIN) return null // no restriction
-
-  if (profile.role === ROLES.ADMIN) {
-    return getCentreScope(profile.centre, ROLES.ADMIN)
-  }
-
-  // centre_user: only their own centre
+  if (profile.role === ROLES.SUPER_ADMIN) return null
+  if (profile.role === ROLES.ADMIN) return getCentreScope(profile.centre, ROLES.ADMIN)
   return [profile.centre]
 }
 
-// Calculate distance between two GPS coordinates in metres
 export function getDistanceMetres(lat1, lon1, lat2, lon2) {
   const R = 6371000
   const dLat = (lat2 - lat1) * Math.PI / 180
@@ -95,11 +104,11 @@ export const ROLES = {
 }
 
 export const FLAG_TYPES = [
-  { value: 'error_entry', label: 'Error entry' },
-  { value: 'wrong_badge', label: 'Wrong badge scanned' },
-  { value: 'duplicate', label: 'Duplicate entry' },
-  { value: 'not_present', label: 'Sewadar was not present' },
-  { value: 'other', label: 'Other' },
+  { value: 'error_entry',   label: 'Error entry' },
+  { value: 'wrong_badge',   label: 'Wrong badge scanned' },
+  { value: 'duplicate',     label: 'Duplicate entry' },
+  { value: 'not_present',   label: 'Sewadar was not present' },
+  { value: 'other',         label: 'Other' },
 ]
 
 export const FLAG_STATUS = {

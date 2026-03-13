@@ -14,7 +14,6 @@ export default function ScannerPage({ isOnline }) {
   const [popupState, setPopupState] = useState(null)
   const [processing, setProcessing] = useState(false)
   const [todayCount, setTodayCount] = useState(0)
-  const [activeSession, setActiveSession] = useState(null)
   const [pendingSync, setPendingSync] = useState(0)
   const [syncing, setSyncing] = useState(false)
   const [manualModal, setManualModal] = useState(false)
@@ -39,11 +38,6 @@ export default function ScannerPage({ isOnline }) {
     })
   }, [profile?.centre])
 
-  useEffect(() => {
-    const today = new Date().toISOString().split('T')[0]
-    supabase.from('sessions').select('*').eq('date', today).eq('is_active', true).maybeSingle()
-      .then(({ data }) => setActiveSession(data || null))
-  }, [])
 
   // GPS: watchPosition for continuous refresh
   useEffect(() => {
@@ -214,7 +208,6 @@ export default function ScannerPage({ isOnline }) {
       latitude: userLocation?.lat || null,
       longitude: userLocation?.lng || null,
       device_id: navigator.userAgent.slice(0, 50),
-      session_id: activeSession?.id || null,
     }
     let success = false
     if (isOnline) {
@@ -251,7 +244,6 @@ export default function ScannerPage({ isOnline }) {
       <div className="scanner-status-bar">
         <span className="scanner-centre-name">
           {profile?.centre}
-          {activeSession && <span className="scanner-session-pill">{activeSession.name}</span>}
         </span>
         <div className="scanner-indicators">
           {pendingSync > 0 && (
@@ -278,7 +270,6 @@ export default function ScannerPage({ isOnline }) {
       <div className="scanner-live-strip">
         <span className="pulse-dot green" />
         <span className="scanner-live-count">{todayCount} IN today</span>
-        {activeSession && <span className="scanner-session-label">{activeSession.name}</span>}
         {isSuperAdmin && (
           <button className="scanner-manual-btn" onClick={() => setManualModal(true)}>
             <PenLine size={13} /> Manual

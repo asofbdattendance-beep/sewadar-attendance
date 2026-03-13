@@ -11,7 +11,8 @@ import AdminPage from './pages/AdminPage'
 import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
 import FlagsPage from './pages/FlagsPage'
-import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff, Flag } from 'lucide-react'
+import JathaPage from './pages/JathaPage'
+import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff, Flag, Plane } from 'lucide-react'
 
 function AppLayout() {
   const { profile, loading } = useAuth()
@@ -72,6 +73,7 @@ function AppLayout() {
     { path: '/scan', label: 'Scan', icon: Scan },
     { path: '/dashboard', label: 'Reports', icon: BarChart2 },
     { path: '/records', label: 'Records', icon: FileText },
+    { path: '/jatha', label: 'Jatha', icon: Plane },
     { path: '/flags', label: 'Flags', icon: Flag },
     ...(!isCentreUser ? [{ path: '/admin', label: 'Admin', icon: Settings }] : []),
     ...(isSuperAdmin ? [{ path: '/super-admin', label: 'Control', icon: Shield }] : []),
@@ -108,6 +110,7 @@ function AppLayout() {
         <Route path="/scan" element={<ScannerPage isOnline={isOnline} />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/records" element={<RecordsPage />} />
+        <Route path="/jatha" element={<JathaPage />} />
         <Route path="/flags" element={<FlagsPage />} />
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/super-admin" element={<SuperAdminPage />} />
