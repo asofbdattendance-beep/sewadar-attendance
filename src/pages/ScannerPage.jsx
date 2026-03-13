@@ -3,7 +3,7 @@ import { supabase, EXCEPTION_DEPARTMENTS, getDistanceMetres, ROLES, isExceptionD
 import { lookupBadgeOffline, getLastAttendance, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
-import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, User, RefreshCw, Download, History, Radio } from 'lucide-react'
+import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, User, RefreshCw, Download, History, Radio, Search } from 'lucide-react'
 
 let DUPLICATE_WINDOW_MS = 120000 // Default, will be loaded from app_settings
 
@@ -271,14 +271,15 @@ export default function ScannerPage({ isOnline }) {
     }
   }, [isOnline, profile, userLocation, centreConfig, childCentres])
 
-  const markAttendance = async (type) => {
-    if (!popupState?.sewadar || !profile) return
+  const markAttendance = async (type, manualRecord = null) => {
+    const sewadarData = manualRecord || popupState?.sewadar
+    if (!sewadarData || !profile) return
     const scanTime = new Date().toISOString()
     const record = {
-      badge_number: popupState.sewadar.badge_number,
-      sewadar_name: popupState.sewadar.sewadar_name,
-      centre: popupState.sewadar.centre,
-      department: popupState.sewadar.department,
+      badge_number: sewadarData.badge_number,
+      sewadar_name: sewadarData.sewadar_name,
+      centre: sewadarData.centre,
+      department: sewadarData.department,
       type,
       scan_time: scanTime,
       scanner_badge: profile.badge_number || 'UNKNOWN',
@@ -519,6 +520,7 @@ function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClos
   const [showManualEntry, setShowManualEntry] = useState(false)
   const [manualSearch, setManualSearch] = useState('')
   const [manualResults, setManualResults] = useState([])
+  const [selectedManualSewadar, setSelectedManualSewadar] = useState(null)
 
   const searchManual = async () => {
     if (!manualSearch.trim()) return
@@ -528,6 +530,19 @@ function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClos
       .or(`sewadar_name.ilike.%${manualSearch}%,badge_number.ilike.%${manualSearch.toUpperCase()}%`)
       .limit(10)
     setManualResults(data || [])
+  }
+
+  const handleManualMark = (type) => {
+    if (!selectedManualSewadar) return
+    const record = {
+      badge_number: selectedManualSewadar.badge_number,
+      sewadar_name: selectedManualSewadar.sewadar_name,
+      centre: selectedManualSewadar.centre,
+      department: selectedManualSewadar.department,
+    }
+    setShowManualEntry(false)
+    setSelectedManualSewadar(null)
+    onMark(type, record)
   }
 
   return (
@@ -599,7 +614,7 @@ function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClos
 
       {/* Manual entry modal */}
       {showManualEntry && (
-        <div className="overlay" onClick={() => setShowManualEntry(false)}>
+        <div className="overlay" onClick={() => { setShowManualEntry(false); setSelectedManualSewadar(null) }}>
           <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
             <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', marginBottom: '1rem' }}>Manual Attendance</h3>
             <div className="flex gap-1 mb-3">
@@ -614,16 +629,34 @@ function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClos
                 <Search size={16} />
               </button>
             </div>
-            {manualResults.map(s => (
-              <div key={s.id} className="manual-result" onClick={() => {
-                onMark('IN') // Or could show choice
-                setShowManualEntry(false)
-              }}>
-                <span>{s.sewadar_name}</span>
-                <span style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--gold)' }}>{s.badge_number}</span>
+            
+            {selectedManualSewadar ? (
+              <div className="manual-selected-card">
+                <div className="manual-selected-name">{selectedManualSewadar.sewadar_name}</div>
+                <div className="manual-selected-meta">
+                  <span>{selectedManualSewadar.badge_number}</span>
+                  <span>{selectedManualSewadar.centre}</span>
+                </div>
+                <div className="manual-selected-actions">
+                  <button className="btn-in" onClick={() => handleManualMark('IN')}>IN</button>
+                  <button className="btn-out" onClick={() => handleManualMark('OUT')}>OUT</button>
+                </div>
+                <button className="btn-cancel" onClick={() => setSelectedManualSewadar(null)}>Select Different</button>
               </div>
-            ))}
-            <button className="btn-cancel" onClick={() => setShowManualEntry(false)}>Close</button>
+            ) : (
+              <div className="manual-results-list">
+                {manualResults.map(s => (
+                  <div key={s.id} className="manual-result" onClick={() => setSelectedManualSewadar(s)}>
+                    <span>{s.sewadar_name}</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--gold)' }}>{s.badge_number}</span>
+                  </div>
+                ))}
+                {manualResults.length === 0 && manualSearch && (
+                  <p className="text-muted text-sm text-center">No results found</p>
+                )}
+              </div>
+            )}
+            <button className="btn-cancel" onClick={() => { setShowManualEntry(false); setSelectedManualSewadar(null) }}>Close</button>
           </div>
         </div>
       )}

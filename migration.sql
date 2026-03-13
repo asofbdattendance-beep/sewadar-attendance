@@ -3,6 +3,9 @@
 -- Add sessions table, session_id FK, and settings to existing schema
 -- ============================================================
 
+-- 0. ADD parent_centre COLUMN TO CENTRES TABLE
+ALTER TABLE centres ADD COLUMN IF NOT EXISTS parent_centre TEXT;
+
 -- 1. SESSIONS TABLE
 CREATE TABLE IF NOT EXISTS sessions (
   id BIGSERIAL PRIMARY KEY,

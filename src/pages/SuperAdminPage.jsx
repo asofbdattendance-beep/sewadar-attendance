@@ -502,22 +502,9 @@ export default function SuperAdminPage() {
         </div>
       )}
 
-      {/* ── CENTRES & GEO TAB ── (same as before) */}
+      {/* ── CENTRES & GEO TAB ── */}
       {tab === 'centres' && (
-        <div>
-          <p className="text-muted text-sm mb-3">
-            Toggling geo on/off for a parent centre automatically cascades to all its sub-centres.
-          </p>
-
-          {loading ? <div className="spinner" style={{ margin: '2rem auto' }} /> : (
-            <div className="centres-tree">
-              {/* Similar structure as before */}
-              <div className="text-center text-muted p-4">
-                Centres management view (same as previous implementation)
-              </div>
-            </div>
-          )}
-        </div>
+        <CentresGeoTab centres={centres} loading={loading} onRefresh={fetchCentres} profile={profile} />
       )}
 
       {/* ── REPORTS TAB ── */}
@@ -613,6 +600,290 @@ export default function SuperAdminPage() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '1.5rem' }}>
               <button className="btn btn-outline btn-full" onClick={() => setShowAddSession(false)}>Cancel</button>
               <button className="btn btn-gold btn-full" onClick={addSession}>Create Session</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Centres & Geo Tab Component
+function CentresGeoTab({ centres, loading, onRefresh, profile }) {
+  const [expandedParents, setExpandedParents] = useState([])
+  const [editingCentre, setEditingCentre] = useState(null)
+  const [showAddCentre, setShowAddCentre] = useState(false)
+  const [newCentre, setNewCentre] = useState({ centre_name: '', latitude: '', longitude: '', geo_radius: 200, geo_enabled: false, parent_centre: '' })
+  const [saving, setSaving] = useState(false)
+
+  // Group centres by parent
+  const parentCentres = centres.filter(c => !c.parent_centre)
+  const childCentresMap = centres.reduce((acc, c) => {
+    if (c.parent_centre) {
+      if (!acc[c.parent_centre]) acc[c.parent_centre] = []
+      acc[c.parent_centre].push(c)
+    }
+    return acc
+  }, {})
+
+  const toggleParent = (name) => {
+    setExpandedParents(prev => 
+      prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]
+    )
+  }
+
+  const toggleGeo = async (centre, current) => {
+    setSaving(true)
+    await supabase.from('centres').update({ geo_enabled: !current }).eq('id', centre.id)
+    await supabase.from('logs').insert({
+      user_badge: profile.badge_number,
+      action: 'TOGGLE_GEO',
+      details: `Geo ${!current ? 'enabled' : 'disabled'} for ${centre.centre_name}`,
+      timestamp: new Date().toISOString()
+    })
+    onRefresh()
+    setSaving(false)
+  }
+
+  const saveCentre = async () => {
+    if (!newCentre.centre_name.trim()) return
+    setSaving(true)
+    const payload = {
+      centre_name: newCentre.centre_name.toUpperCase(),
+      latitude: newCentre.latitude ? parseFloat(newCentre.latitude) : null,
+      longitude: newCentre.longitude ? parseFloat(newCentre.longitude) : null,
+      geo_radius: newCentre.geo_radius || 200,
+      geo_enabled: newCentre.geo_enabled,
+      parent_centre: newCentre.parent_centre || null
+    }
+    await supabase.from('centres').insert(payload)
+    await supabase.from('logs').insert({
+      user_badge: profile.badge_number,
+      action: 'ADD_CENTRE',
+      details: `Added centre ${payload.centre_name}`,
+      timestamp: new Date().toISOString()
+    })
+    setShowAddCentre(false)
+    setNewCentre({ centre_name: '', latitude: '', longitude: '', geo_radius: 200, geo_enabled: false, parent_centre: '' })
+    onRefresh()
+    setSaving(false)
+  }
+
+  const updateCentreGeo = async (centreId, field, value) => {
+    setSaving(true)
+    await supabase.from('centres').update({ [field]: value }).eq('id', centreId)
+    onRefresh()
+    setSaving(false)
+  }
+
+  if (loading) {
+    return <div className="spinner" style={{ margin: '2rem auto' }} />
+  }
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-3">
+        <p className="text-muted text-sm">Manage centres, GPS coordinates, and geo-fencing</p>
+        <button className="btn btn-gold" onClick={() => setShowAddCentre(true)}>
+          <MapPin size={14} /> Add Centre
+        </button>
+      </div>
+
+      {centres.length === 0 ? (
+        <div className="card text-center py-5">
+          <MapPin size={40} color="var(--text-muted)" style={{ margin: '0 auto 1rem' }} />
+          <p className="text-muted">No centres configured yet.</p>
+        </div>
+      ) : (
+        <div className="centres-list">
+          {parentCentres.map(parent => {
+            const children = childCentresMap[parent.centre_name] || []
+            const isExpanded = expandedParents.includes(parent.centre_name)
+            
+            return (
+              <div key={parent.id} className="centre-parent-card">
+                <div 
+                  className="centre-parent-header"
+                  onClick={() => toggleParent(parent.centre_name)}
+                >
+                  <div className="centre-parent-info">
+                    <span className="centre-name">{parent.centre_name}</span>
+                    {children.length > 0 && (
+                      <span className="centre-child-badge">{children.length} sub-centres</span>
+                    )}
+                  </div>
+                  <div className="centre-parent-actions">
+                    <button
+                      className={`geo-toggle ${parent.geo_enabled ? 'enabled' : ''}`}
+                      onClick={(e) => { e.stopPropagation(); toggleGeo(parent, parent.geo_enabled) }}
+                      disabled={saving}
+                      title={parent.geo_enabled ? 'Geo-fencing ON' : 'Geo-fencing OFF'}
+                    >
+                      {parent.geo_enabled ? <><span className="toggle-dot" /> GPS ON</> : 'GPS OFF'}
+                    </button>
+                    <ChevronDown size={18} className={`expand-icon ${isExpanded ? 'rotated' : ''}`} />
+                  </div>
+                </div>
+                
+                {isExpanded && (
+                  <div className="centre-parent-details">
+                    <div className="geo-fields">
+                      <div className="geo-field">
+                        <label>Latitude</label>
+                        <input
+                          type="number"
+                          step="any"
+                          placeholder="28.xxxx"
+                          value={parent.latitude || ''}
+                          onChange={(e) => updateCentreGeo(parent.id, 'latitude', parseFloat(e.target.value) || null)}
+                          disabled={saving}
+                        />
+                      </div>
+                      <div className="geo-field">
+                        <label>Longitude</label>
+                        <input
+                          type="number"
+                          step="any"
+                          placeholder="77.xxxx"
+                          value={parent.longitude || ''}
+                          onChange={(e) => updateCentreGeo(parent.id, 'longitude', parseFloat(e.target.value) || null)}
+                          disabled={saving}
+                        />
+                      </div>
+                      <div className="geo-field">
+                        <label>Radius (m)</label>
+                        <input
+                          type="number"
+                          value={parent.geo_radius || 200}
+                          onChange={(e) => updateCentreGeo(parent.id, 'geo_radius', parseInt(e.target.value) || 200)}
+                          disabled={saving}
+                        />
+                      </div>
+                    </div>
+                    
+                    {children.length > 0 && (
+                      <div className="children-list">
+                        <div className="children-header">Sub-centres</div>
+                        {children.map(child => (
+                          <div key={child.id} className="child-centre-row">
+                            <span className="child-name">{child.centre_name}</span>
+                            <span className={`child-geo ${child.geo_enabled ? 'geo-on' : ''}`}>
+                              {child.geo_enabled ? 'GPS ON' : 'GPS OFF'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          
+          {/* Centres without parent */}
+          {parentCentres.length === 0 && centres.map(centre => (
+            <div key={centre.id} className="centre-parent-card standalone">
+              <div className="centre-parent-header">
+                <div className="centre-parent-info">
+                  <span className="centre-name">{centre.centre_name}</span>
+                </div>
+                <div className="centre-parent-actions">
+                  <button
+                    className={`geo-toggle ${centre.geo_enabled ? 'enabled' : ''}`}
+                    onClick={() => toggleGeo(centre, centre.geo_enabled)}
+                    disabled={saving}
+                  >
+                    {centre.geo_enabled ? 'GPS ON' : 'GPS OFF'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add Centre Modal */}
+      {showAddCentre && (
+        <div className="overlay" onClick={() => setShowAddCentre(false)}>
+          <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', marginBottom: '1.5rem' }}>Add Centre</h3>
+            
+            <div className="mb-2">
+              <label className="label">Centre Name</label>
+              <input
+                className="input"
+                placeholder="e.g. NEW CENTRE"
+                value={newCentre.centre_name}
+                onChange={e => setNewCentre({ ...newCentre, centre_name: e.target.value })}
+                style={{ textTransform: 'uppercase' }}
+              />
+            </div>
+
+            <div className="mb-2">
+              <label className="label">Parent Centre (optional)</label>
+              <select
+                className="input"
+                value={newCentre.parent_centre}
+                onChange={e => setNewCentre({ ...newCentre, parent_centre: e.target.value })}
+              >
+                <option value="">None (Top-level centre)</option>
+                {parentCentres.map(p => (
+                  <option key={p.id} value={p.centre_name}>{p.centre_name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+              <div className="mb-2">
+                <label className="label">Latitude</label>
+                <input
+                  className="input"
+                  type="number"
+                  step="any"
+                  placeholder="28.xxxx"
+                  value={newCentre.latitude}
+                  onChange={e => setNewCentre({ ...newCentre, latitude: e.target.value })}
+                />
+              </div>
+              <div className="mb-2">
+                <label className="label">Longitude</label>
+                <input
+                  className="input"
+                  type="number"
+                  step="any"
+                  placeholder="77.xxxx"
+                  value={newCentre.longitude}
+                  onChange={e => setNewCentre({ ...newCentre, longitude: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="mb-2">
+              <label className="label">Geo Radius (meters)</label>
+              <input
+                className="input"
+                type="number"
+                value={newCentre.geo_radius}
+                onChange={e => setNewCentre({ ...newCentre, geo_radius: parseInt(e.target.value) || 200 })}
+              />
+            </div>
+
+            <div className="mb-3">
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={newCentre.geo_enabled}
+                  onChange={e => setNewCentre({ ...newCentre, geo_enabled: e.target.checked })}
+                />
+                <span>Enable geo-fencing</span>
+              </label>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '1.5rem' }}>
+              <button className="btn btn-outline btn-full" onClick={() => setShowAddCentre(false)}>Cancel</button>
+              <button className="btn btn-gold btn-full" onClick={saveCentre} disabled={saving || !newCentre.centre_name.trim()}>
+                {saving ? 'Saving...' : 'Add Centre'}
+              </button>
             </div>
           </div>
         </div>
