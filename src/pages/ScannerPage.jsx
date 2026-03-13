@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, EXCEPTION_DEPARTMENTS, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import { lookupBadgeOffline, getLastAttendance, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue } from '../lib/offline'
+import { lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getAttendanceCache } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../App'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, User, RefreshCw, Download, History, Radio, Search } from 'lucide-react'
 
@@ -9,6 +10,7 @@ let DUPLICATE_WINDOW_MS = 120000 // Default, will be loaded from app_settings
 
 export default function ScannerPage({ isOnline }) {
   const { profile } = useAuth()
+  const addToast = useToast()
   const [userLocation, setUserLocation] = useState(null)
   const [centreConfig, setCentreConfig] = useState(null)
   const [childCentres, setChildCentres] = useState([])
@@ -112,6 +114,8 @@ export default function ScannerPage({ isOnline }) {
         // Update IN count if new IN record
         if (payload.new.type === 'IN') {
           setInCount(prev => prev + 1)
+        } else if (payload.new.type === 'OUT') {
+          setInCount(prev => Math.max(0, prev - 1))
         }
         // Add to history for recent scans display
         setScanHistory(prev => [payload.new, ...prev].slice(0, 5))
@@ -191,6 +195,14 @@ export default function ScannerPage({ isOnline }) {
         todayEntries = aRes.data || []
       } else {
         found = lookupBadgeOffline(badge)
+        // Check offline cache for today's entries
+        const cached = getAttendanceCache()
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+        todayEntries = cached.filter(r => 
+          r.badge_number === badge && 
+          new Date(r.scan_time) >= today
+        ).sort((a, b) => new Date(a.scan_time) - new Date(b.scan_time))
       }
 
       if (!found) {
@@ -214,10 +226,17 @@ export default function ScannerPage({ isOnline }) {
       const hasIn = todayEntries.some(e => e.type === 'IN')
       const hasOut = todayEntries.some(e => e.type === 'OUT')
       let allowedTypes = []
-      if (!hasIn && !hasOut) allowedTypes = ['IN', 'OUT']
-      else if (hasIn && !hasOut) allowedTypes = ['OUT']
-      else if (!hasIn && hasOut) allowedTypes = ['IN']
-      else {
+      if (!hasIn && !hasOut) {
+        // First scan of the day - can do IN or OUT (flexible)
+        allowedTypes = ['IN', 'OUT']
+      } else if (hasIn && !hasOut) {
+        // Already have IN, next must be OUT
+        allowedTypes = ['OUT']
+      } else if (!hasIn && hasOut) {
+        // Already have OUT, next must be IN (rare case)
+        allowedTypes = ['IN']
+      } else {
+        // Both IN and OUT already done
         setPopupState({ type: 'both_done', sewadar: found, badge })
         setProcessing(false)
         return
@@ -298,7 +317,7 @@ export default function ScannerPage({ isOnline }) {
         await supabase.from('logs').insert({
           user_badge: profile.badge_number,
           action: 'MARK_ATTENDANCE',
-          details: `Marked ${type} for ${popupState.sewadar.badge_number}`,
+          details: `Marked ${type} for ${sewadarData.badge_number}`,
           timestamp: scanTime
         })
         success = true
@@ -311,7 +330,7 @@ export default function ScannerPage({ isOnline }) {
 
     if (success) {
       playSound(type)
-      setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
+      setPopupState({ type: 'success', sewadar: sewadarData, attendanceType: type, time: scanTime })
       setTimeout(closePopup, 2000)
     }
   }
@@ -326,7 +345,11 @@ export default function ScannerPage({ isOnline }) {
     if (!isOnline) return
     const result = await syncOfflineQueue(supabase)
     setOfflineQueueCount(0)
-    alert(`Synced ${result.synced} records${result.failed ? `, ${result.failed} failed` : ''}`)
+    if (result.failed > 0) {
+      addToast(`Synced ${result.synced} records, ${result.failed} failed`, 'error')
+    } else {
+      addToast(`Synced ${result.synced} records successfully`, 'success')
+    }
   }
 
   return (
@@ -554,8 +577,8 @@ function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClos
             {sewadar.badge_number}
           </div>
         </div>
-        <span className={`gender-badge ${sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>
-          {sewadar.gender}
+        <span className={`gender-badge ${(sewadar.gender?.toUpperCase() || 'MALE') === 'MALE' ? 'male' : 'female'}`}>
+          {sewadar.gender || 'Unknown'}
         </span>
       </div>
 
@@ -616,7 +639,7 @@ function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClos
       {showManualEntry && (
         <div className="overlay" onClick={() => { setShowManualEntry(false); setSelectedManualSewadar(null) }}>
           <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', marginBottom: '1rem' }}>Manual Attendance</h3>
+            <h3 style={{ fontWeight: 700, marginBottom: '1rem', color: 'var(--office-text)' }}>Manual Attendance</h3>
             <div className="flex gap-1 mb-3">
               <input
                 className="input"

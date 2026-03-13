@@ -2197,6 +2197,21 @@ tbody tr:hover td { background: var(--office-bg); }
 .empty-state svg {
   margin-bottom: 1rem;
   opacity: 0.5;
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.empty-icon {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.5rem;
+  color: var(--office-text-muted);
+}
+
+.empty-icon svg {
+  margin-bottom: 0;
+  opacity: 0.5;
 }
 
 /* Page title with gold accent */
@@ -2346,4 +2361,186 @@ tbody tr:hover td { background: var(--office-bg); }
   color: var(--office-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+/* Animation */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease;
+}
+
+.stagger-children > * {
+  animation: fadeIn 0.3s ease;
+}
+
+/* Empty state icons */
+.empty-icon {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.5rem;
+  color: var(--office-text-muted);
+}
+
+.empty-text {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--office-text);
+}
+
+.empty-hint {
+  font-size: 0.85rem;
+  color: var(--office-text-muted);
+  margin-top: 0.25rem;
+}
+
+/* Attendance list for SuperAdmin */
+.attendance-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.attendance-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--office-white);
+  border: 1px solid var(--office-border-light);
+  border-radius: var(--radius-md);
+  transition: all 0.15s;
+}
+
+.attendance-row:hover {
+  background: var(--office-bg);
+}
+
+.attendance-time {
+  min-width: 80px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+  color: var(--office-text);
+}
+
+.attendance-time.editable {
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.attendance-time.editable:hover {
+  background: var(--office-bg);
+  color: var(--office-teal);
+}
+
+.attendance-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--office-amber);
+  min-width: 90px;
+}
+
+.attendance-name {
+  flex: 1;
+  font-weight: 500;
+  color: var(--office-text);
+}
+
+.attendance-type {
+  min-width: 50px;
+  text-align: center;
+}
+
+/* Session status */
+.session-status {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.session-status.active {
+  background: var(--office-green-bg);
+  color: var(--office-green);
+  border: 1px solid var(--office-green-border);
+}
+
+.session-status.inactive {
+  background: var(--office-bg);
+  color: var(--office-text-muted);
+  border: 1px solid var(--office-border-light);
+}
+
+/* Toast notifications */
+.toast-container {
+  position: fixed;
+  top: 70px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 320px;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+  font-weight: 500;
+  box-shadow: var(--shadow-lg);
+  animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.toast-success {
+  background: var(--office-white);
+  color: var(--office-green);
+  border: 1px solid var(--office-green-border);
+}
+
+.toast-error {
+  background: var(--office-white);
+  color: var(--office-red);
+  border: 1px solid var(--office-red-border);
+}
+
+.toast-info {
+  background: var(--office-white);
+  color: var(--office-text);
+  border: 1px solid var(--office-border);
+}
+
+.toast-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--office-text-muted);
+  padding: 2px;
+  display: flex;
+  align-items: center;
+}
+
+.toast-close:hover {
+  color: var(--office-text);
 }

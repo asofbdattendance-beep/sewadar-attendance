@@ -23,7 +23,7 @@ export default function RecordsPage() {
   useEffect(() => {
     fetchRecords()
     if (isAdmin) fetchCentres()
-  }, [dateFilter, centreFilter])
+  }, [dateFilter, centreFilter, searchTerm])
 
   async function fetchCentres() {
     if (profile?.role === ROLES.SUPER_ADMIN) {

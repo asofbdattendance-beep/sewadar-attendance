@@ -95,13 +95,6 @@ export function setAttendanceCache(records) {
   } catch {}
 }
 
-export function getLastAttendance(badge) {
-  const cache = getAttendanceCache()
-  const filtered = cache.filter(r => r.badge_number === badge)
-  if (filtered.length === 0) return null
-  return filtered.sort((a, b) => new Date(b.scan_time) - new Date(a.scan_time))[0]
-}
-
 export async function populateAttendanceCache(supabase) {
   try {
     const { data } = await supabase

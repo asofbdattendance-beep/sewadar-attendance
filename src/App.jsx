@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, createContext, useContext } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { syncOfflineQueue, getOfflineQueueCount, populateOfflineCache, populateAttendanceCache } from './lib/offline'
@@ -11,7 +11,49 @@ import AdminPage from './pages/AdminPage'
 import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
 import FlagsPage from './pages/FlagsPage'
-import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff, Flag, XCircle } from 'lucide-react'
+import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff, Flag, XCircle, CheckCircle, AlertCircle } from 'lucide-react'
+
+// Toast Context
+const ToastContext = createContext(null)
+
+export function useToast() {
+  return useContext(ToastContext)
+}
+
+function ToastProvider({ children }) {
+  const [toasts, setToasts] = useState([])
+
+  const addToast = (message, type = 'info') => {
+    const id = Date.now()
+    setToasts(prev => [...prev, { id, message, type }])
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id))
+    }, 3000)
+  }
+
+  const removeToast = (id) => {
+    setToasts(prev => prev.filter(t => t.id !== id))
+  }
+
+  return (
+    <ToastContext.Provider value={addToast}>
+      {children}
+      <div className="toast-container">
+        {toasts.map(toast => (
+          <div key={toast.id} className={`toast toast-${toast.type}`}>
+            {toast.type === 'success' && <CheckCircle size={16} />}
+            {toast.type === 'error' && <AlertCircle size={16} />}
+            {toast.type === 'info' && <Flag size={16} />}
+            <span>{toast.message}</span>
+            <button onClick={() => removeToast(toast.id)} className="toast-close">
+              <XCircle size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </ToastContext.Provider>
+  )
+}
 
 function AppLayout() {
   const { profile, loading, error } = useAuth()
@@ -149,7 +191,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppLayout />
+        <ToastProvider>
+          <AppLayout />
+        </ToastProvider>
       </AuthProvider>
     </BrowserRouter>
   )
