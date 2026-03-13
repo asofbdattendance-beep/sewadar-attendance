@@ -30,16 +30,25 @@ export function parseBadge(badge) {
 }
 
 // Departments that any centre/SP can scan (with confirmation for non-own-centre)
+// Departments that travel centre-to-centre and can be scanned by ANY authorised user
+// regardless of which centre they belong to. Comparison is always case-insensitive.
 export const EXCEPTION_DEPARTMENTS = [
-  'Pathis', 'Baal Pathis', 'Satsang Kartas', 'Baal Satsang Kartas',
   'Administration',
-  'PATHIS', 'BAAL PATHIS', 'SATSANG KARTAS', 'BAAL SATSANG KARTAS',
-  'ADMINISTRATION'
+  'Office',
+  'Area Secretary Office',
+  'Pathis',
+  'Baal Pathis',
+  'Satsang Kartas',
+  'Baal Satsang Kartas',
+  'Pathi',
+  'Satsang Karta',
+  'Baal Satsang Karta',
 ]
 
 export function isExceptionDept(dept) {
   if (!dept) return false
-  return EXCEPTION_DEPARTMENTS.some(d => d.toLowerCase() === dept.toLowerCase())
+  const lower = dept.trim().toLowerCase()
+  return EXCEPTION_DEPARTMENTS.some(d => d.toLowerCase() === lower)
 }
 
 // Fetch all centre names that fall under a given parent (including the parent itself)
