@@ -1,17 +1,11 @@
-// src/pages/SuperAdminPage.jsx
-// SUPER_ADMIN ONLY — full management: users, sewadars, centres, sessions, attendance correction
-// CRITICAL: ALL hooks declared BEFORE conditional return (React rules of hooks)
-// All writes/deletes logged to logs table.
-
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES } from '../lib/supabase'
 import {
   UserPlus, Trash2, Shield, MapPin, ToggleLeft, ToggleRight,
-  RefreshCw, Download, FileSpreadsheet, Calendar,
-  ChevronDown, ChevronRight, Users, Building2, CalendarClock,
-  Pencil, X, Check, Search, PlusCircle, Eye, EyeOff
+  RefreshCw, Download, FileSpreadsheet, Calendar, Filter,
+  ChevronDown, ChevronRight, Users, Building2
 } from 'lucide-react'
 
 const PARENT_CENTRES = [
@@ -21,591 +15,586 @@ const PARENT_CENTRES = [
   'SECTOR-15-A','PRITHLA','SURAJ KUND','TIGAON'
 ]
 
-function log(profile, action, details) {
-  return supabase.from('logs').insert({
-    user_badge: profile.badge_number, action, details,
-    timestamp: new Date().toISOString()
-  })
-}
-
 export default function SuperAdminPage() {
   const { profile } = useAuth()
-
-  // ── ALL HOOKS FIRST ── before any conditional return
   const [tab, setTab] = useState('users')
   const [users, setUsers] = useState([])
   const [centres, setCentres] = useState([])
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [showAddUser, setShowAddUser] = useState(false)
-  const [showPw, setShowPw] = useState(false)
-  const [newUser, setNewUser] = useState({ email:'', password:'', name:'', badge_number:'', role:'centre_user', centre: PARENT_CENTRES[0] })
+  const [newUser, setNewUser] = useState({
+    email: '', password: '', name: '', badge_number: '',
+    role: 'centre_user', centre: PARENT_CENTRES[0], parent_centre: ''
+  })
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
-  const [reportData, setReportData] = useState({ users:[], centres:[], logs:[] })
+  const [reportData, setReportData] = useState({ users: [], centres: [], logs: [] })
   const [reportLoading, setReportLoading] = useState(false)
-  const [dateRange, setDateRange] = useState({ from:'', to:'' })
+  const [dateRange, setDateRange] = useState({ from: '', to: '' })
   const [expandedParent, setExpandedParent] = useState(null)
-<<<<<<< HEAD
-  const [expandedChild, setExpandedChild] = useState(null)
-  const [sessions, setSessions] = useState([])
-  const [newSession, setNewSession] = useState({ name:'', date: new Date().toISOString().split('T')[0], centre:'', notes:'' })
-  const [showAddSession, setShowAddSession] = useState(false)
-  const [sewadars, setSewadars] = useState([])
-  const [sewadarSearch, setSewadarSearch] = useState('')
-  const [sewadarCentreFilter, setSewadarCentreFilter] = useState('')
-  const [sewadarLoading, setSewadarLoading] = useState(false)
-  const [editingSewadar, setEditingSewadar] = useState(null)
-  const [sewadarForm, setSewadarForm] = useState({})
-  const [showAddSewadar, setShowAddSewadar] = useState(false)
-  const [newSewadar, setNewSewadar] = useState({ sewadar_name:'', badge_number:'', centre: PARENT_CENTRES[0], department:'', gender:'Male', age:'', father_husband_name:'' })
-  const [attSearch, setAttSearch] = useState('')
-  const [attDate, setAttDate] = useState(new Date().toISOString().split('T')[0])
-  const [attRecords, setAttRecords] = useState([])
-  const [attLoading, setAttLoading] = useState(false)
-  const [editingAtt, setEditingAtt] = useState(null)
-  const [editAttTime, setEditAttTime] = useState('')
-  const [editAttType, setEditAttType] = useState('')
-=======
+  const [expandedChild, setExpandedChild] = useState(null) // tracks which child's geo fields are open
+
+  function toggleChild(childId) {
+    setExpandedChild(prev => prev === childId ? null : childId)
+  }
 
   if (profile?.role !== ROLES.SUPER_ADMIN) {
     return <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
   }
->>>>>>> parent of 977b383 (Update)
 
   useEffect(() => {
     if (tab === 'users') fetchUsers()
-    else if (tab === 'centres') fetchCentres()
-    else if (tab === 'reports') fetchReports()
-    else if (tab === 'sessions') fetchSessions()
-    else if (tab === 'sewadars') fetchSewadars()
-    else if (tab === 'attendance') fetchAttendance()
+    if (tab === 'centres') fetchCentres()
+    if (tab === 'reports') fetchReports()
   }, [tab, dateRange])
 
-  useEffect(() => { if (tab === 'sewadars') fetchSewadars() }, [sewadarSearch, sewadarCentreFilter])
-  useEffect(() => { if (tab === 'attendance') fetchAttendance() }, [attDate, attSearch])
-
-  // ── Guard — AFTER all hooks ──
-  if (profile?.role !== ROLES.SUPER_ADMIN) return (
-    <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
-  )
-
-  // ── Users ──
   async function fetchUsers() {
     setLoading(true)
     const { data } = await supabase.from('users').select('*').order('name')
-    setUsers(data || []); setLoading(false)
-  }
-  async function toggleUserActive(u) {
-    await supabase.from('users').update({ is_active: !u.is_active }).eq('id', u.id)
-    await log(profile, 'TOGGLE_USER', `is_active=${!u.is_active} for ${u.badge_number}`)
-    fetchUsers()
-  }
-  async function deleteUser(u) {
-    if (!confirm(`Delete user ${u.name}? Cannot be undone.`)) return
-    await supabase.from('users').delete().eq('id', u.id)
-    await log(profile, 'DELETE_USER', `Deleted ${u.badge_number} ${u.name}`)
-    fetchUsers()
-  }
-  async function createUser() {
-    setSaving(true); setMessage('')
-    try {
-      const { data: auth, error: ae } = await supabase.auth.admin.createUser({ email: newUser.email, password: newUser.password, email_confirm: true })
-      if (ae) throw ae
-      const { error: pe } = await supabase.from('users').insert({ auth_id: auth.user.id, email: newUser.email, name: newUser.name, badge_number: newUser.badge_number.toUpperCase(), role: newUser.role, centre: newUser.centre, is_active: true, created_at: new Date().toISOString() })
-      if (pe) throw pe
-      await log(profile, 'CREATE_USER', `Created ${newUser.role} ${newUser.badge_number}`)
-      setMessage('✓ User created!'); setShowAddUser(false)
-      setNewUser({ email:'', password:'', name:'', badge_number:'', role:'centre_user', centre: PARENT_CENTRES[0] })
-      fetchUsers()
-    } catch (err) { setMessage('✗ ' + err.message) }
-    finally { setSaving(false) }
+    setUsers(data || [])
+    setLoading(false)
   }
 
-  // ── Centres ──
   async function fetchCentres() {
     setLoading(true)
     const { data } = await supabase.from('centres').select('*').order('centre_name')
-    setCentres(data || []); setLoading(false)
-  }
-  async function updateCentreGeo(centreId, field, value, centreName) {
-    await supabase.from('centres').update({ [field]: value }).eq('id', centreId)
-    if (field === 'geo_enabled' && centreName) {
-      const { data: ch } = await supabase.from('centres').select('id').eq('parent_centre', centreName)
-      if (ch?.length) await supabase.from('centres').update({ geo_enabled: value }).in('id', ch.map(c => c.id))
-      await log(profile, 'GEO_TOGGLE_CASCADE', `geo_enabled=${value} for ${centreName} + ${ch?.length||0} sub-centres`)
-    }
-    fetchCentres()
+    setCentres(data || [])
+    setLoading(false)
   }
 
-  // ── Reports ──
   async function fetchReports() {
     setReportLoading(true)
     const { from, to } = dateRange
-    let lq = supabase.from('logs').select('*').order('timestamp', { ascending: false }).limit(500)
-    if (from) lq = lq.gte('timestamp', new Date(from + 'T00:00:00').toISOString())
-    if (to) lq = lq.lte('timestamp', new Date(to + 'T23:59:59.999').toISOString())
-    const [ur, cr, lr] = await Promise.all([supabase.from('users').select('*').order('name'), supabase.from('centres').select('*').order('centre_name'), lq])
-    setReportData({ users: ur.data||[], centres: cr.data||[], logs: lr.data||[] })
+    let logsQ = supabase.from('logs').select('*').order('timestamp', { ascending: false }).limit(500)
+    if (from) { const s = new Date(from); s.setHours(0,0,0,0); logsQ = logsQ.gte('timestamp', s.toISOString()) }
+    if (to) { const e = new Date(to); e.setHours(23,59,59,999); logsQ = logsQ.lte('timestamp', e.toISOString()) }
+    const [uRes, cRes, lRes] = await Promise.all([
+      supabase.from('users').select('*').order('name'),
+      supabase.from('centres').select('*').order('centre_name'),
+      logsQ
+    ])
+    setReportData({ users: uRes.data || [], centres: cRes.data || [], logs: lRes.data || [] })
     setReportLoading(false)
   }
-  function dlCSV(csv, fn) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = fn; a.click() }
-  const exportUsers = () => dlCSV(['Name,Email,Badge,Role,Centre,Active,Created', ...reportData.users.map(u => [`"${u.name}"`, u.email, u.badge_number, u.role, u.centre, u.is_active?'Yes':'No', new Date(u.created_at).toLocaleDateString('en-IN')].join(','))].join('\n'), 'users_export.csv')
-  const exportCentres = () => dlCSV(['Centre,Parent,Geo,Radius,Lat,Lng', ...reportData.centres.map(c => [c.centre_name, c.parent_centre||'', c.geo_enabled?'Y':'N', c.geo_radius||'', c.latitude||'', c.longitude||''].join(','))].join('\n'), 'centres_export.csv')
-  const exportLogs = () => dlCSV(['Time,Badge,Action,Details', ...reportData.logs.map(l => [new Date(l.timestamp).toLocaleString('en-IN'), l.user_badge, l.action, `"${l.details||''}"`].join(','))].join('\n'), 'logs_export.csv')
 
-  // ── Sessions ──
-  async function fetchSessions() {
-    setLoading(true)
-    const { data } = await supabase.from('sessions').select('*').order('date', { ascending: false }).limit(50)
-    setSessions(data || []); setLoading(false)
-  }
-  async function createSession() {
-    if (!newSession.name || !newSession.date) { setMessage('✗ Name and date required'); return }
-    const { error } = await supabase.from('sessions').insert({ ...newSession, created_by: profile.badge_number, created_at: new Date().toISOString(), is_active: false })
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'CREATE_SESSION', `Created session "${newSession.name}" on ${newSession.date}`)
-    setMessage('✓ Session created!'); setShowAddSession(false)
-    setNewSession({ name:'', date: new Date().toISOString().split('T')[0], centre:'', notes:'' }); fetchSessions()
-  }
-  async function toggleSession(s) {
-    if (!s.is_active) await supabase.from('sessions').update({ is_active: false }).eq('date', s.date).eq('is_active', true)
-    await supabase.from('sessions').update({ is_active: !s.is_active }).eq('id', s.id)
-    await log(profile, 'TOGGLE_SESSION', `is_active=${!s.is_active} for "${s.name}"`)
-    fetchSessions()
-  }
-  async function deleteSession(s) {
-    if (!confirm(`Delete session "${s.name}"? Attendance records will be unlinked.`)) return
-    await supabase.from('sessions').delete().eq('id', s.id)
-    await log(profile, 'DELETE_SESSION', `Deleted session "${s.name}"`)
-    fetchSessions()
+  // ── Geo toggle with cascade to children ──
+  async function updateCentreGeo(centreId, field, value, centreName) {
+    await supabase.from('centres').update({ [field]: value }).eq('id', centreId)
+
+    // If toggling geo_enabled on a parent, cascade to all children
+    if (field === 'geo_enabled' && centreName) {
+      const { data: children } = await supabase
+        .from('centres')
+        .select('id')
+        .eq('parent_centre', centreName)
+      if (children?.length) {
+        await supabase.from('centres')
+          .update({ geo_enabled: value })
+          .in('id', children.map(c => c.id))
+      }
+      await supabase.from('logs').insert({
+        user_badge: profile.badge_number,
+        action: 'GEO_TOGGLE_CASCADE',
+        details: `Set geo_enabled=${value} for ${centreName} and ${children?.length || 0} sub-centres`,
+        timestamp: new Date().toISOString()
+      })
+    }
+
+    fetchCentres()
   }
 
-  // ── Sewadars ──
-  async function fetchSewadars() {
-    setSewadarLoading(true)
-    let q = supabase.from('sewadars').select('*').order('sewadar_name').limit(200)
-    if (sewadarSearch.length >= 2) q = q.or(`sewadar_name.ilike.%${sewadarSearch}%,badge_number.ilike.%${sewadarSearch.toUpperCase()}%,department.ilike.%${sewadarSearch}%`)
-    if (sewadarCentreFilter) q = q.eq('centre', sewadarCentreFilter)
-    const { data } = await q; setSewadars(data || []); setSewadarLoading(false)
-  }
-  async function saveSewadar() {
-    const clean = {}
-    Object.entries(sewadarForm).forEach(([k,v]) => { clean[k] = v === '' ? null : v })
-    if (clean.age !== undefined) clean.age = parseInt(clean.age) || null
-    const { error } = await supabase.from('sewadars').update(clean).eq('id', editingSewadar)
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'EDIT_SEWADAR', `Updated id=${editingSewadar} fields: ${Object.keys(clean).join(',')}`)
-    setMessage('✓ Sewadar updated!'); setEditingSewadar(null); setSewadarForm({}); fetchSewadars()
-  }
-  async function deleteSewadar(s) {
-    if (!confirm(`Delete ${s.sewadar_name} (${s.badge_number})?\n\nAttendance history is preserved but they can no longer be scanned.`)) return
-    const { error } = await supabase.from('sewadars').delete().eq('id', s.id)
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'DELETE_SEWADAR', `Deleted sewadar ${s.badge_number} ${s.sewadar_name}`)
-    setMessage('✓ Deleted'); fetchSewadars()
-  }
-  async function createSewadar() {
-    if (!newSewadar.sewadar_name || !newSewadar.badge_number) { setMessage('✗ Name and badge required'); return }
-    setSaving(true)
-    const { error } = await supabase.from('sewadars').insert({ ...newSewadar, badge_number: newSewadar.badge_number.toUpperCase(), age: parseInt(newSewadar.age)||null })
-    if (error) { setMessage('✗ ' + error.message); setSaving(false); return }
-    await log(profile, 'CREATE_SEWADAR', `Created ${newSewadar.badge_number.toUpperCase()} ${newSewadar.sewadar_name}`)
-    setMessage('✓ Sewadar created!'); setShowAddSewadar(false)
-    setNewSewadar({ sewadar_name:'', badge_number:'', centre: PARENT_CENTRES[0], department:'', gender:'Male', age:'', father_husband_name:'' })
-    fetchSewadars(); setSaving(false)
+  async function createUser() {
+    setSaving(true); setMessage('')
+    try {
+      const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
+        email: newUser.email, password: newUser.password, email_confirm: true
+      })
+      if (authErr) throw authErr
+
+      // For admin role: parent_centre IS their centre (they govern it)
+      // For centre_user at a SP: parent_centre = the SP's parent centre
+      const parentCentre = newUser.role === ROLES.ADMIN
+        ? newUser.centre
+        : newUser.parent_centre || null
+
+      const { error: profileErr } = await supabase.from('users').insert({
+        auth_id: authData.user.id,
+        email: newUser.email,
+        name: newUser.name,
+        badge_number: newUser.badge_number.toUpperCase(),
+        role: newUser.role,
+        centre: newUser.centre,
+        parent_centre: parentCentre,
+        is_active: true,
+        created_at: new Date().toISOString()
+      })
+      if (profileErr) throw profileErr
+
+      await supabase.from('logs').insert({
+        user_badge: profile.badge_number,
+        action: 'CREATE_USER',
+        details: `Created ${newUser.role} ${newUser.badge_number} for ${newUser.centre}`,
+        timestamp: new Date().toISOString()
+      })
+
+      setMessage('✓ User created successfully!')
+      setNewUser({ email:'', password:'', name:'', badge_number:'', role:'centre_user', centre: PARENT_CENTRES[0], parent_centre:'' })
+      setShowAddUser(false)
+      fetchUsers()
+    } catch (err) {
+      setMessage('✗ ' + (err.message || 'Failed to create user'))
+    } finally {
+      setSaving(false)
+    }
   }
 
-  // ── Attendance correction ──
-  async function fetchAttendance() {
-    setAttLoading(true)
-    let q = supabase.from('attendance').select('*')
-      .gte('scan_time', new Date(attDate + 'T00:00:00').toISOString())
-      .lte('scan_time', new Date(attDate + 'T23:59:59.999').toISOString())
-      .order('scan_time', { ascending: false }).limit(300)
-    if (attSearch.length >= 2) q = q.or(`sewadar_name.ilike.%${attSearch}%,badge_number.ilike.%${attSearch.toUpperCase()}%`)
-    const { data } = await q; setAttRecords(data || []); setAttLoading(false)
-  }
-  async function deleteAttRecord(r) {
-    if (!confirm(`Delete ${r.type} record for ${r.badge_number}? Cannot be undone.`)) return
-    const { error } = await supabase.from('attendance').delete().eq('id', r.id)
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'DELETE_ATTENDANCE', `Deleted ${r.type} id=${r.id} badge=${r.badge_number}`)
-    setMessage('✓ Record deleted'); fetchAttendance()
-  }
-  async function saveAttEdit() {
-    const updates = {}
-    if (editAttTime) updates.scan_time = new Date(attDate + 'T' + editAttTime).toISOString()
-    if (editAttType && editAttType !== editingAtt.type) updates.type = editAttType
-    if (!Object.keys(updates).length) { setEditingAtt(null); return }
-    const { error } = await supabase.from('attendance').update(updates).eq('id', editingAtt.id)
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'EDIT_ATTENDANCE', `Edited id=${editingAtt.id} badge=${editingAtt.badge_number}: ${JSON.stringify(updates)}`)
-    setMessage('✓ Record updated'); setEditingAtt(null); fetchAttendance()
+  async function toggleUserActive(userId, current) {
+    await supabase.from('users').update({ is_active: !current }).eq('id', userId)
+    fetchUsers()
   }
 
-  // ── Render helpers ──
-  const centreTree = PARENT_CENTRES.map(p => ({ parent: p, children: centres.filter(c => c.parent_centre === p), config: centres.find(c => c.centre_name === p) }))
+  async function deleteUser(userId) {
+    if (!confirm('Delete this user? This cannot be undone.')) return
+    await supabase.from('users').delete().eq('id', userId)
+    fetchUsers()
+  }
+
+  function downloadCSV(csv, filename) {
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = filename; a.click()
+  }
+
+  function exportUsers() {
+    const csv = [
+      ['Name','Email','Badge','Role','Centre','Parent Centre','Active','Created'].join(','),
+      ...reportData.users.map(u => [
+        `"${u.name}"`, u.email, u.badge_number, u.role, u.centre,
+        u.parent_centre || '', u.is_active ? 'Yes':'No',
+        new Date(u.created_at).toLocaleDateString('en-IN')
+      ].join(','))
+    ].join('\n')
+    downloadCSV(csv, 'users_export.csv')
+  }
+
+  function exportCentres() {
+    const csv = [
+      ['Centre Name','Parent Centre','Geo Enabled','Radius (m)','Latitude','Longitude'].join(','),
+      ...reportData.centres.map(c => [
+        c.centre_name, c.parent_centre||'',
+        c.geo_enabled?'Yes':'No', c.geo_radius||'',
+        c.latitude||'', c.longitude||''
+      ].join(','))
+    ].join('\n')
+    downloadCSV(csv, 'centres_export.csv')
+  }
+
+  function exportLogs() {
+    const csv = [
+      ['Time','User Badge','Action','Details'].join(','),
+      ...reportData.logs.map(l => [
+        new Date(l.timestamp).toLocaleString('en-IN'),
+        l.user_badge, l.action, `"${l.details}"`
+      ].join(','))
+    ].join('\n')
+    downloadCSV(csv, 'logs_export.csv')
+  }
+
+  // Group centres by parent
+  const centreTree = PARENT_CENTRES.map(parent => ({
+    parent,
+    children: centres.filter(c => c.parent_centre === parent),
+    config: centres.find(c => c.centre_name === parent)
+  }))
+
   const roleColor = { super_admin: 'var(--gold)', admin: 'var(--blue)', centre_user: 'var(--green)' }
   const roleName = { super_admin: 'Super Admin', admin: 'Admin', centre_user: 'Centre User' }
-  const TAB_BTN = (key, label, Icon) => (
-    <button key={key} onClick={() => setTab(key)} style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'0.55rem 0.9rem', borderRadius:'var(--radius)', fontFamily:'Inter,sans-serif', fontSize:'0.82rem', fontWeight:600, cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', background: tab===key ? 'var(--excel-green)' : 'white', color: tab===key ? 'white' : 'var(--text-muted)', border: tab===key ? 'none' : '1.5px solid var(--border)' }}>
-      <Icon size={13} /> {label}
-    </button>
-  )
 
   return (
-    <div className="page-wide pb-nav" style={{ maxWidth: 960 }}>
+    <div className="page-wide pb-nav" style={{ maxWidth: 900 }}>
       <div className="mt-2 mb-3">
-        <h2 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', fontSize:'1.2rem' }}>Control Panel</h2>
-        <p className="text-muted text-xs mt-1">Super Admin · Write access only</p>
+        <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>Control Panel</h2>
+        <p className="text-muted text-xs mt-1">Super Admin</p>
       </div>
 
       {message && (
-        <div className={`super-admin-msg ${message.startsWith('✓') ? 'msg-success' : 'msg-error'}`} onClick={() => setMessage('')} style={{ cursor:'pointer' }}>
-          {message} <span style={{ float:'right', opacity:0.5 }}>✕ dismiss</span>
+        <div className={`super-admin-msg ${message.startsWith('✓') ? 'msg-success' : 'msg-error'}`}>
+          {message}
         </div>
       )}
 
-      {/* Tab bar */}
-      <div style={{ overflowX:'auto', marginBottom:'1.25rem', paddingBottom:4 }}>
-        <div style={{ display:'flex', gap:4, minWidth:'max-content' }}>
-          {TAB_BTN('users', 'Users', Users)}
-          {TAB_BTN('sewadars', 'Sewadars', Shield)}
-          {TAB_BTN('centres', 'Centres', Building2)}
-          {TAB_BTN('sessions', 'Sessions', CalendarClock)}
-          {TAB_BTN('attendance', 'Correct Att', Pencil)}
-          {TAB_BTN('reports', 'Reports', FileSpreadsheet)}
-        </div>
+      {/* Tabs */}
+      <div className="tab-nav mb-3">
+        {[
+          { key: 'users', label: 'Users', Icon: Users },
+          { key: 'centres', label: 'Centres & Geo', Icon: MapPin },
+          { key: 'reports', label: 'Reports', Icon: FileSpreadsheet },
+        ].map(({ key, label, Icon }) => (
+          <button
+            key={key}
+            className={`tab-btn ${tab === key ? 'active' : ''}`}
+            onClick={() => setTab(key)}
+          >
+            <Icon size={14} /> {label}
+          </button>
+        ))}
       </div>
 
-      {/* USERS */}
+      {/* ── USERS TAB ── */}
       {tab === 'users' && (
         <div>
-          <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:'1rem' }}>
-            <button className="btn btn-gold" onClick={() => setShowAddUser(true)}><UserPlus size={15} /> Add User</button>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '1rem' }}>
+            <button className="btn btn-gold" onClick={() => setShowAddUser(true)}>
+              <UserPlus size={16} /> Add User
+            </button>
           </div>
-          {loading ? <div className="spinner" style={{ margin:'2rem auto' }} /> : (
-            <div className="table-wrap"><table>
-              <thead><tr><th>Name</th><th>Badge</th><th>Role</th><th>Centre</th><th>Status</th><th>Active</th><th></th></tr></thead>
-              <tbody>
-                {users.map(u => (
-                  <tr key={u.id}>
-                    <td style={{ fontWeight:500 }}>{u.name}</td>
-                    <td style={{ fontFamily:'monospace', fontSize:'0.82rem', color:'var(--gold)' }}>{u.badge_number}</td>
-                    <td><span className="badge" style={{ background:`${roleColor[u.role]}18`, color:roleColor[u.role], border:`1px solid ${roleColor[u.role]}30` }}>{roleName[u.role]}</span></td>
-                    <td style={{ fontSize:'0.82rem' }}>{u.centre}</td>
-                    <td><span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`}>{u.is_active ? 'Active' : 'Inactive'}</span></td>
-                    <td><button className="btn btn-ghost" style={{ padding:'0.25rem' }} onClick={() => toggleUserActive(u)}>{u.is_active ? <ToggleRight size={22} color="var(--green)" /> : <ToggleLeft size={22} color="var(--text-muted)" />}</button></td>
-                    <td>{u.role !== ROLES.SUPER_ADMIN && <button className="btn btn-ghost" style={{ padding:'0.25rem', color:'var(--red)' }} onClick={() => deleteUser(u)}><Trash2 size={15} /></button>}</td>
-                  </tr>
-                ))}
-                {!users.length && !loading && <tr><td colSpan={7} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>No users.</td></tr>}
-              </tbody>
-            </table></div>
-          )}
-        </div>
-      )}
 
-      {/* SEWADARS */}
-      {tab === 'sewadars' && (
-        <div>
-          <div style={{ display:'flex', gap:'0.75rem', marginBottom:'0.75rem', flexWrap:'wrap', alignItems:'center' }}>
-            <div className="search-box" style={{ flex:1, minWidth:200 }}>
-              <Search size={15} />
-              <input type="text" placeholder="Search name, badge or dept…" value={sewadarSearch} onChange={e => setSewadarSearch(e.target.value)} />
+          {loading ? <div className="spinner" style={{ margin: '2rem auto' }} /> : (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Badge</th>
+                    <th>Role</th>
+                    <th>Centre</th>
+                    <th>Status</th>
+                    <th>Active</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map(u => (
+                    <tr key={u.id}>
+                      <td style={{ fontWeight: 500 }}>{u.name}</td>
+                      <td style={{ fontFamily: 'monospace', fontSize: '0.82rem', color: 'var(--gold)' }}>{u.badge_number}</td>
+                      <td>
+                        <span className="badge" style={{ background: `${roleColor[u.role]}18`, color: roleColor[u.role], border: `1px solid ${roleColor[u.role]}30` }}>
+                          {roleName[u.role]}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: '0.82rem' }}>
+                        <div>{u.centre}</div>
+                        {u.parent_centre && u.parent_centre !== u.centre && (
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>↑ {u.parent_centre}</div>
+                        )}
+                      </td>
+                      <td>
+                        <span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`}>
+                          {u.is_active ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+                      <td>
+                        <button className="btn btn-ghost" style={{ padding: '0.25rem' }} onClick={() => toggleUserActive(u.id, u.is_active)}>
+                          {u.is_active
+                            ? <ToggleRight size={22} color="var(--green)" />
+                            : <ToggleLeft size={22} color="var(--text-muted)" />}
+                        </button>
+                      </td>
+                      <td>
+                        {u.role !== ROLES.SUPER_ADMIN && (
+                          <button className="btn btn-ghost" style={{ padding: '0.25rem', color: 'var(--red)' }} onClick={() => deleteUser(u.id)}>
+                            <Trash2 size={15} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-            <select className="input" style={{ width:180 }} value={sewadarCentreFilter} onChange={e => setSewadarCentreFilter(e.target.value)}>
-              <option value="">All Centres</option>
-              {PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-            <button className="btn btn-gold" onClick={() => setShowAddSewadar(true)}><PlusCircle size={15} /> Add</button>
-          </div>
-          <p className="text-muted text-xs mb-2">{sewadars.length > 0 ? `${sewadars.length} results` : 'Type ≥2 chars or choose centre'}</p>
-          {sewadarLoading ? <div className="spinner" style={{ margin:'2rem auto' }} /> : (
-            <div className="table-wrap"><table>
-              <thead><tr><th>Name</th><th>Badge</th><th>Centre</th><th>Dept</th><th>Gender</th><th>Age</th><th></th></tr></thead>
-              <tbody>
-                {sewadars.map(s => (
-                  <tr key={s.id}>
-                    {editingSewadar === s.id ? (
-                      <>
-                        <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem' }} value={sewadarForm.sewadar_name ?? s.sewadar_name} onChange={e => setSewadarForm(f => ({...f, sewadar_name: e.target.value}))} /></td>
-                        <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem', fontFamily:'monospace', textTransform:'uppercase' }} value={sewadarForm.badge_number ?? s.badge_number} onChange={e => setSewadarForm(f => ({...f, badge_number: e.target.value.toUpperCase()}))} /></td>
-                        <td><select className="input" style={{ padding:'0.3rem', fontSize:'0.82rem' }} value={sewadarForm.centre ?? s.centre} onChange={e => setSewadarForm(f => ({...f, centre: e.target.value}))}>{PARENT_CENTRES.map(c => <option key={c}>{c}</option>)}{centres.filter(c => c.parent_centre).map(c => <option key={c.centre_name}>{c.centre_name}</option>)}</select></td>
-                        <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem' }} value={sewadarForm.department ?? (s.department??'')} onChange={e => setSewadarForm(f => ({...f, department: e.target.value}))} /></td>
-                        <td><select className="input" style={{ padding:'0.3rem', fontSize:'0.82rem' }} value={sewadarForm.gender ?? s.gender} onChange={e => setSewadarForm(f => ({...f, gender: e.target.value}))}><option>Male</option><option>Female</option></select></td>
-                        <td><input className="input" type="number" style={{ padding:'0.3rem', fontSize:'0.82rem', width:60 }} value={sewadarForm.age ?? (s.age??'')} onChange={e => setSewadarForm(f => ({...f, age: e.target.value}))} /></td>
-                        <td style={{ display:'flex', gap:4 }}><button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveSewadar}><Check size={15} /></button><button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => { setEditingSewadar(null); setSewadarForm({}) }}><X size={15} /></button></td>
-                      </>
-                    ) : (
-                      <>
-                        <td style={{ fontWeight:500 }}>{s.sewadar_name}</td>
-                        <td style={{ fontFamily:'monospace', fontSize:'0.82rem', color:'var(--gold)' }}>{s.badge_number}</td>
-                        <td style={{ fontSize:'0.82rem' }}>{s.centre}</td>
-                        <td style={{ fontSize:'0.82rem', color:'var(--text-muted)' }}>{s.department||'—'}</td>
-                        <td style={{ fontSize:'0.82rem' }}>{s.gender||'—'}</td>
-                        <td style={{ fontSize:'0.82rem' }}>{s.age||'—'}</td>
-                        <td style={{ display:'flex', gap:4 }}>
-                          <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--blue)' }} title="Edit" onClick={() => { setEditingSewadar(s.id); setSewadarForm({}) }}><Pencil size={14} /></button>
-                          <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--red)' }} title="Delete" onClick={() => deleteSewadar(s)}><Trash2 size={14} /></button>
-                        </td>
-                      </>
-                    )}
-                  </tr>
-                ))}
-                {!sewadars.length && !sewadarLoading && <tr><td colSpan={7} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>No results.</td></tr>}
-              </tbody>
-            </table></div>
           )}
         </div>
       )}
 
-      {/* CENTRES */}
+      {/* ── CENTRES & GEO TAB ── */}
       {tab === 'centres' && (
         <div>
-          <p className="text-muted text-sm mb-3">Toggling geo on a parent cascades to all sub-centres.</p>
-          {loading ? <div className="spinner" style={{ margin:'2rem auto' }} /> : (
+          <p className="text-muted text-sm mb-3">
+            Toggling geo on/off for a parent centre automatically cascades to all its sub-centres.
+          </p>
+
+          {loading ? <div className="spinner" style={{ margin: '2rem auto' }} /> : (
             <div className="centres-tree">
               {centreTree.map(({ parent, children, config }) => (
                 <div key={parent} className="centre-parent-block">
+                  {/* Parent row */}
                   <div className="centre-parent-row">
-                    <button className="centre-expand-btn" onClick={() => setExpandedParent(expandedParent === parent ? null : parent)}>{expandedParent===parent ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}</button>
+                    <button
+                      className="centre-expand-btn"
+                      onClick={() => setExpandedParent(expandedParent === parent ? null : parent)}
+                    >
+                      {expandedParent === parent ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
                     <Building2 size={15} color="var(--gold)" />
                     <span className="centre-parent-name">{parent}</span>
-                    {children.length > 0 && <span className="centre-child-count">{children.length} sub-centres</span>}
+                    {children.length > 0 && (
+                      <span className="centre-child-count">{children.length} sub-centres</span>
+                    )}
                     <div className="centre-parent-geo">
-                      {config && (<>
-                        <span className="centre-geo-label">Geo</span>
-                        <button className="btn btn-ghost" style={{ padding:'0.15rem' }} onClick={() => updateCentreGeo(config.id, 'geo_enabled', !config.geo_enabled, parent)}>{config.geo_enabled ? <ToggleRight size={22} color="var(--green)"/> : <ToggleLeft size={22} color="var(--text-muted)"/>}</button>
-                        {config.geo_enabled && <span className="badge badge-green" style={{ fontSize:'0.7rem' }}>ON</span>}
-                      </>)}
+                      {config && (
+                        <>
+                          <span className="centre-geo-label">Geo</span>
+                          <button
+                            className="btn btn-ghost"
+                            style={{ padding: '0.15rem' }}
+                            onClick={() => updateCentreGeo(config.id, 'geo_enabled', !config.geo_enabled, parent)}
+                            title={config.geo_enabled ? 'Disable geo (will cascade to sub-centres)' : 'Enable geo'}
+                          >
+                            {config.geo_enabled
+                              ? <ToggleRight size={22} color="var(--green)" />
+                              : <ToggleLeft size={22} color="var(--text-muted)" />}
+                          </button>
+                          {config.geo_enabled && (
+                            <span className="badge badge-green" style={{ fontSize: '0.7rem' }}>ON</span>
+                          )}
+                        </>
+                      )}
                     </div>
                   </div>
-                  {expandedParent===parent && config && (
-                    <div className="centre-geo-config"><div className="centre-geo-fields">
-                      <div className="geo-field"><label>Latitude</label><input defaultValue={config.latitude||''} placeholder="28.4595" onBlur={e => updateCentreGeo(config.id,'latitude',parseFloat(e.target.value)||null,null)}/></div>
-                      <div className="geo-field"><label>Longitude</label><input defaultValue={config.longitude||''} placeholder="77.0266" onBlur={e => updateCentreGeo(config.id,'longitude',parseFloat(e.target.value)||null,null)}/></div>
-                      <div className="geo-field"><label>Radius (m)</label><input defaultValue={config.geo_radius||200} onBlur={e => updateCentreGeo(config.id,'geo_radius',parseInt(e.target.value)||200,null)}/></div>
-                    </div></div>
+
+                  {/* Parent geo config row */}
+                  {expandedParent === parent && config && (
+                    <div className="centre-geo-config">
+                      <div className="centre-geo-fields">
+                        <div className="geo-field">
+                          <label>Latitude</label>
+                          <input
+                            defaultValue={config.latitude || ''}
+                            placeholder="e.g. 28.4595"
+                            onBlur={e => updateCentreGeo(config.id, 'latitude', parseFloat(e.target.value), null)}
+                          />
+                        </div>
+                        <div className="geo-field">
+                          <label>Longitude</label>
+                          <input
+                            defaultValue={config.longitude || ''}
+                            placeholder="e.g. 77.0266"
+                            onBlur={e => updateCentreGeo(config.id, 'longitude', parseFloat(e.target.value), null)}
+                          />
+                        </div>
+                        <div className="geo-field">
+                          <label>Radius (m)</label>
+                          <input
+                            defaultValue={config.geo_radius || 200}
+                            onBlur={e => updateCentreGeo(config.id, 'geo_radius', parseInt(e.target.value), null)}
+                          />
+                        </div>
+                      </div>
+                    </div>
                   )}
-<<<<<<< HEAD
-                  {expandedParent===parent && children.map(child => (
+
+                  {/* Child rows — each independently expandable */}
+                  {expandedParent === parent && children.map(child => (
                     <div key={child.id}>
                       <div className="centre-child-row">
                         <span className="centre-child-indent">└</span>
-                        <button className="centre-expand-btn" style={{ marginLeft:2 }} onClick={() => setExpandedChild(expandedChild===child.id ? null : child.id)}>{expandedChild===child.id ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}</button>
+                        <button
+                          className="centre-expand-btn"
+                          style={{ marginLeft: 2 }}
+                          onClick={() => toggleChild(child.id)}
+                          title="Edit geo settings"
+                        >
+                          {expandedChild === child.id
+                            ? <ChevronDown size={14} />
+                            : <ChevronRight size={14} />}
+                        </button>
                         <span className="centre-child-name">{child.centre_name}</span>
-                        {(child.latitude||child.longitude) && <span className="centre-coords-pill">{child.latitude?.toFixed(4)}, {child.longitude?.toFixed(4)}</span>}
+                        {(child.latitude || child.longitude) && (
+                          <span className="centre-coords-pill">
+                            {child.latitude?.toFixed(4)}, {child.longitude?.toFixed(4)}
+                          </span>
+                        )}
                         <div className="centre-parent-geo">
                           <span className="centre-geo-label">Geo</span>
-                          <button className="btn btn-ghost" style={{ padding:'0.15rem' }} onClick={() => updateCentreGeo(child.id,'geo_enabled',!child.geo_enabled,null)}>{child.geo_enabled ? <ToggleRight size={20} color="var(--green)"/> : <ToggleLeft size={20} color="var(--text-muted)"/>}</button>
+                          <button
+                            className="btn btn-ghost"
+                            style={{ padding: '0.15rem' }}
+                            onClick={() => updateCentreGeo(child.id, 'geo_enabled', !child.geo_enabled, null)}
+                          >
+                            {child.geo_enabled
+                              ? <ToggleRight size={20} color="var(--green)" />
+                              : <ToggleLeft size={20} color="var(--text-muted)" />}
+                          </button>
                         </div>
                       </div>
-                      {expandedChild===child.id && (
-                        <div className="centre-geo-config centre-child-geo-config"><div className="centre-geo-fields">
-                          <div className="geo-field"><label>Latitude</label><input key={`lat-${child.id}`} defaultValue={child.latitude||''} onBlur={e => updateCentreGeo(child.id,'latitude',parseFloat(e.target.value)||null,null)}/></div>
-                          <div className="geo-field"><label>Longitude</label><input key={`lng-${child.id}`} defaultValue={child.longitude||''} onBlur={e => updateCentreGeo(child.id,'longitude',parseFloat(e.target.value)||null,null)}/></div>
-                          <div className="geo-field"><label>Radius (m)</label><input key={`rad-${child.id}`} defaultValue={child.geo_radius||200} onBlur={e => updateCentreGeo(child.id,'geo_radius',parseInt(e.target.value)||200,null)}/></div>
-                        </div></div>
-                      )}
-=======
 
-                  {/* Child rows */}
-                  {expandedParent === parent && children.map(child => (
-                    <div key={child.id} className="centre-child-row">
-                      <span className="centre-child-indent">└</span>
-                      <span className="centre-child-name">{child.centre_name}</span>
-                      <div className="centre-parent-geo">
-                        <span className="centre-geo-label">Geo</span>
-                        <button
-                          className="btn btn-ghost"
-                          style={{ padding: '0.15rem' }}
-                          onClick={() => updateCentreGeo(child.id, 'geo_enabled', !child.geo_enabled, null)}
-                        >
-                          {child.geo_enabled
-                            ? <ToggleRight size={20} color="var(--green)" />
-                            : <ToggleLeft size={20} color="var(--text-muted)" />}
-                        </button>
-                      </div>
->>>>>>> parent of 977b383 (Update)
+                      {/* Child geo fields — shown when expanded */}
+                      {expandedChild === child.id && (
+                        <div className="centre-geo-config centre-child-geo-config">
+                          <div className="centre-geo-fields">
+                            <div className="geo-field">
+                              <label>Latitude</label>
+                              <input
+                                key={`lat-${child.id}`}
+                                defaultValue={child.latitude || ''}
+                                placeholder="e.g. 28.4595"
+                                onBlur={e => updateCentreGeo(child.id, 'latitude', parseFloat(e.target.value), null)}
+                              />
+                            </div>
+                            <div className="geo-field">
+                              <label>Longitude</label>
+                              <input
+                                key={`lng-${child.id}`}
+                                defaultValue={child.longitude || ''}
+                                placeholder="e.g. 77.0266"
+                                onBlur={e => updateCentreGeo(child.id, 'longitude', parseFloat(e.target.value), null)}
+                              />
+                            </div>
+                            <div className="geo-field">
+                              <label>Radius (m)</label>
+                              <input
+                                key={`rad-${child.id}`}
+                                defaultValue={child.geo_radius || 200}
+                                onBlur={e => updateCentreGeo(child.id, 'geo_radius', parseInt(e.target.value), null)}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
               ))}
+
+              {/* Centres not assigned to any parent */}
+              {centres.filter(c => !c.parent_centre && !PARENT_CENTRES.includes(c.centre_name)).length > 0 && (
+                <div className="centre-parent-block">
+                  <div className="centre-parent-row">
+                    <Building2 size={15} color="var(--text-muted)" />
+                    <span className="centre-parent-name" style={{ color: 'var(--text-muted)' }}>Unassigned centres</span>
+                  </div>
+                  {centres.filter(c => !c.parent_centre && !PARENT_CENTRES.includes(c.centre_name)).map(c => (
+                    <div key={c.id} className="centre-child-row">
+                      <span className="centre-child-indent">└</span>
+                      <span className="centre-child-name">{c.centre_name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
 
-      {/* SESSIONS */}
-      {tab === 'sessions' && (
-        <div>
-          <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:'0.75rem', gap:'1rem' }}>
-            <p className="text-muted text-sm">Sessions tag attendance per-satsang. Only one session can be active per date.</p>
-            <button className="btn btn-gold" style={{ flexShrink:0 }} onClick={() => setShowAddSession(true)}><PlusCircle size={15}/> New Session</button>
-          </div>
-          {loading ? <div className="spinner" style={{ margin:'2rem auto' }}/> : (
-            <div className="table-wrap"><table>
-              <thead><tr><th>Name</th><th>Date</th><th>Centre</th><th>Notes</th><th>Active</th><th></th></tr></thead>
-              <tbody>
-                {sessions.map(s => (
-                  <tr key={s.id}>
-                    <td style={{ fontWeight:500 }}>{s.name}</td>
-                    <td style={{ fontSize:'0.82rem', color:'var(--text-muted)', whiteSpace:'nowrap' }}>{new Date(s.date+'T12:00:00').toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' })}</td>
-                    <td style={{ fontSize:'0.82rem' }}>{s.centre||'All'}</td>
-                    <td style={{ fontSize:'0.82rem', color:'var(--text-muted)', maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.notes||'—'}</td>
-                    <td><button className="btn btn-ghost" style={{ padding:'0.2rem' }} onClick={() => toggleSession(s)}>{s.is_active ? <ToggleRight size={22} color="var(--green)"/> : <ToggleLeft size={22} color="var(--text-muted)"/>}</button></td>
-                    <td><button className="btn btn-ghost" style={{ padding:'0.25rem', color:'var(--red)' }} onClick={() => deleteSession(s)}><Trash2 size={14}/></button></td>
-                  </tr>
-                ))}
-                {!sessions.length && !loading && <tr><td colSpan={6} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>No sessions. Create one before a satsang.</td></tr>}
-              </tbody>
-            </table></div>
-          )}
-        </div>
-      )}
-
-      {/* ATTENDANCE CORRECTION */}
-      {tab === 'attendance' && (
-        <div>
-          <div className="super-admin-note" style={{ marginBottom:'1rem' }}>
-            Super Admin only. Edit scan time, change IN↔OUT type, or delete records. All changes are permanently logged.
-          </div>
-          <div style={{ display:'flex', gap:'0.75rem', marginBottom:'1rem', flexWrap:'wrap', alignItems:'center' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:'0.5rem', background:'white', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'0.4rem 0.75rem' }}>
-              <Calendar size={14} color="var(--text-muted)"/>
-              <input type="date" value={attDate} onChange={e => setAttDate(e.target.value)} style={{ border:'none', background:'none', color:'var(--text-primary)', fontSize:'0.875rem', outline:'none' }}/>
-            </div>
-            <div className="search-box" style={{ flex:1, minWidth:200 }}>
-              <Search size={15}/>
-              <input type="text" placeholder="Filter by name or badge…" value={attSearch} onChange={e => setAttSearch(e.target.value)}/>
-            </div>
-            <button className="btn btn-ghost" onClick={fetchAttendance} style={{ padding:'0.4rem 0.75rem' }}><RefreshCw size={14}/></button>
-          </div>
-          <p className="text-muted text-xs mb-2">{attRecords.length} records{attSearch ? ` matching "${attSearch}"` : ''} for {attDate}</p>
-          {attLoading ? <div className="spinner" style={{ margin:'2rem auto' }}/> : (
-            <div className="table-wrap"><table>
-              <thead><tr><th>Time</th><th>Type</th><th>Name</th><th>Badge</th><th>Centre</th><th>Scanned By</th><th></th></tr></thead>
-              <tbody>
-                {attRecords.map(r => (
-                  <tr key={r.id} style={editingAtt?.id===r.id ? { background:'#fffbeb' } : {}}>
-                    <td style={{ fontSize:'0.82rem', whiteSpace:'nowrap' }}>
-                      {editingAtt?.id===r.id
-                        ? <input type="time" value={editAttTime} onChange={e => setEditAttTime(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem 0.4rem', fontSize:'0.82rem', background:'white', color:'var(--text-primary)' }}/>
-                        : new Date(r.scan_time).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' })}
-                    </td>
-                    <td>
-                      {editingAtt?.id===r.id
-                        ? <select value={editAttType} onChange={e => setEditAttType(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem 0.4rem', fontSize:'0.82rem', background:'white', color:'var(--text-primary)' }}><option value="IN">IN</option><option value="OUT">OUT</option></select>
-                        : <span className={`badge ${r.type==='IN' ? 'badge-green' : 'badge-red'}`}>{r.type}</span>}
-                    </td>
-                    <td style={{ fontWeight:500 }}>{r.sewadar_name}</td>
-                    <td style={{ fontFamily:'monospace', fontSize:'0.82rem', color:'var(--gold)' }}>{r.badge_number}</td>
-                    <td style={{ fontSize:'0.82rem', color:'var(--text-muted)' }}>{r.centre}</td>
-                    <td style={{ fontSize:'0.78rem', color:'var(--text-muted)' }}>{r.scanner_name||'—'}</td>
-                    <td>
-                      <div style={{ display:'flex', gap:4, alignItems:'center' }}>
-                        {editingAtt?.id===r.id ? (
-                          <><button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveAttEdit}><Check size={14}/></button><button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => setEditingAtt(null)}><X size={14}/></button></>
-                        ) : (
-                          <><button className="btn btn-ghost" style={{ color:'var(--blue)', padding:'0.2rem' }} title="Edit" onClick={() => { setEditingAtt(r); setEditAttTime(new Date(r.scan_time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})); setEditAttType(r.type) }}><Pencil size={13}/></button><button className="btn btn-ghost" style={{ color:'var(--red)', padding:'0.2rem' }} title="Delete" onClick={() => deleteAttRecord(r)}><Trash2 size={13}/></button></>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {!attRecords.length && !attLoading && <tr><td colSpan={7} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>No records for this date/filter.</td></tr>}
-              </tbody>
-            </table></div>
-          )}
-        </div>
-      )}
-
-      {/* REPORTS */}
+      {/* ── REPORTS TAB ── */}
       {tab === 'reports' && (
         <div>
           <div className="reports-header">
             <div className="date-filters">
-              <div className="filter-item"><Calendar size={14}/><input type="date" value={dateRange.from} onChange={e => setDateRange({...dateRange, from:e.target.value})}/></div>
-              <span style={{ color:'var(--text-muted)', fontSize:'0.82rem' }}>→</span>
-              <div className="filter-item"><Calendar size={14}/><input type="date" value={dateRange.to} onChange={e => setDateRange({...dateRange, to:e.target.value})}/></div>
-              <button className="btn-refresh" onClick={fetchReports}><RefreshCw size={14}/> Refresh</button>
+              <div className="filter-item">
+                <Calendar size={14} />
+                <input type="date" value={dateRange.from} onChange={e => setDateRange({ ...dateRange, from: e.target.value })} />
+              </div>
+              <div className="filter-item">
+                <Calendar size={14} />
+                <input type="date" value={dateRange.to} onChange={e => setDateRange({ ...dateRange, to: e.target.value })} />
+              </div>
+              <button className="btn-refresh" onClick={fetchReports}>
+                <RefreshCw size={14} /> Refresh
+              </button>
             </div>
           </div>
-          {reportLoading ? <div className="spinner" style={{ margin:'2rem auto' }}/> : (
+
+          {reportLoading ? <div className="spinner" style={{ margin: '2rem auto' }} /> : (
             <div className="reports-grid">
-              <div className="report-card"><div className="report-icon"><Users size={20}/></div><div className="report-info"><div className="report-count">{reportData.users.length}</div><div className="report-label">Users</div></div><button className="btn-download" onClick={exportUsers}><Download size={16}/></button></div>
-              <div className="report-card"><div className="report-icon"><MapPin size={20}/></div><div className="report-info"><div className="report-count">{reportData.centres.length}</div><div className="report-label">Centres</div></div><button className="btn-download" onClick={exportCentres}><Download size={16}/></button></div>
-              <div className="report-card"><div className="report-icon"><Shield size={20}/></div><div className="report-info"><div className="report-count">{reportData.logs.length}</div><div className="report-label">System Logs</div></div><button className="btn-download" onClick={exportLogs}><Download size={16}/></button></div>
+              <div className="report-card">
+                <div className="report-icon"><Users size={20} /></div>
+                <div className="report-info">
+                  <div className="report-count">{reportData.users.length}</div>
+                  <div className="report-label">Users</div>
+                </div>
+                <button className="btn-download" onClick={exportUsers}><Download size={16} /></button>
+              </div>
+              <div className="report-card">
+                <div className="report-icon"><MapPin size={20} /></div>
+                <div className="report-info">
+                  <div className="report-count">{reportData.centres.length}</div>
+                  <div className="report-label">Centres</div>
+                </div>
+                <button className="btn-download" onClick={exportCentres}><Download size={16} /></button>
+              </div>
+              <div className="report-card">
+                <div className="report-icon"><Shield size={20} /></div>
+                <div className="report-info">
+                  <div className="report-count">{reportData.logs.length}</div>
+                  <div className="report-label">System Logs</div>
+                </div>
+                <button className="btn-download" onClick={exportLogs}><Download size={16} /></button>
+              </div>
             </div>
           )}
         </div>
       )}
 
-      {/* ADD USER MODAL */}
+      {/* ── ADD USER MODAL ── */}
       {showAddUser && (
         <div className="overlay" onClick={() => setShowAddUser(false)}>
-          <div className="overlay-sheet" style={{ maxHeight:'90vh', overflowY:'auto' }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', marginBottom:'1.5rem' }}>Add New User</h3>
-            <div className="mb-2"><label className="label">Full Name</label><input className="input" placeholder="Ravi Kumar" value={newUser.name} onChange={e => setNewUser({...newUser, name:e.target.value})}/></div>
-            <div className="mb-2"><label className="label">Badge Number</label><input className="input" placeholder="FB5978GA0001" style={{ textTransform:'uppercase' }} value={newUser.badge_number} onChange={e => setNewUser({...newUser, badge_number:e.target.value})}/></div>
-            <div className="mb-2"><label className="label">Email</label><input className="input" type="email" value={newUser.email} onChange={e => setNewUser({...newUser, email:e.target.value})}/></div>
+          <div className="overlay-sheet" style={{ maxHeight: '90vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', marginBottom: '1.5rem' }}>Add New User</h3>
+
+            <div className="mb-2">
+              <label className="label">Full Name</label>
+              <input className="input" placeholder="Ravi Kumar" value={newUser.name} onChange={e => setNewUser({ ...newUser, name: e.target.value })} />
+            </div>
+            <div className="mb-2">
+              <label className="label">Badge Number</label>
+              <input className="input" placeholder="FB5978GA0001" style={{ textTransform: 'uppercase' }} value={newUser.badge_number} onChange={e => setNewUser({ ...newUser, badge_number: e.target.value })} />
+            </div>
+            <div className="mb-2">
+              <label className="label">Email</label>
+              <input className="input" type="email" placeholder="user@email.com" value={newUser.email} onChange={e => setNewUser({ ...newUser, email: e.target.value })} />
+            </div>
             <div className="mb-2">
               <label className="label">Password</label>
-              <div style={{ position:'relative' }}>
-                <input className="input" type={showPw?'text':'password'} placeholder="Min 8 characters" value={newUser.password} onChange={e => setNewUser({...newUser, password:e.target.value})} style={{ paddingRight:'2.5rem' }}/>
-                <button type="button" onClick={() => setShowPw(v => !v)} style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', display:'flex' }}>{showPw ? <EyeOff size={16}/> : <Eye size={16}/>}</button>
+              <input className="input" type="password" placeholder="Min 8 characters" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+              <div>
+                <label className="label">Role</label>
+                <select className="input" value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
+                  <option value="centre_user">Centre User</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">
+                  {newUser.role === ROLES.ADMIN ? 'Parent Centre (governs)' : 'Centre'}
+                </label>
+                <select className="input" value={newUser.centre} onChange={e => setNewUser({ ...newUser, centre: e.target.value, parent_centre: newUser.role === ROLES.ADMIN ? e.target.value : newUser.parent_centre })}>
+                  {/* For admins: only parent centres. For centre_users: all centres from DB */}
+                  {newUser.role === ROLES.ADMIN
+                    ? PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)
+                    : centres.map(c => <option key={c.centre_name} value={c.centre_name}>{c.centre_name}</option>)
+                  }
+                </select>
               </div>
             </div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem', marginBottom:'1rem' }}>
-              <div><label className="label">Role</label><select className="input" value={newUser.role} onChange={e => setNewUser({...newUser, role:e.target.value})}><option value="centre_user">Centre User</option><option value="admin">Admin</option></select></div>
-              <div><label className="label">Centre</label><select className="input" value={newUser.centre} onChange={e => setNewUser({...newUser, centre:e.target.value})}>{PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}{centres.filter(c => c.parent_centre).map(c => <option key={c.centre_name} value={c.centre_name}>{c.centre_name}</option>)}</select></div>
-            </div>
-            {newUser.role===ROLES.ADMIN && <div className="super-admin-note mb-2">Admin governs <strong>{newUser.centre}</strong> and all its sub-centres.</div>}
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem', marginTop:'1.5rem' }}>
+
+            {/* Parent centre picker for SP centre_users */}
+            {newUser.role === ROLES.CENTRE_USER && (
+              <div className="mb-2">
+                <label className="label">Parent Centre <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--text-muted)' }}>(if this is a sub-centre/SP)</span></label>
+                <select className="input" value={newUser.parent_centre} onChange={e => setNewUser({ ...newUser, parent_centre: e.target.value })}>
+                  <option value="">— None (is a parent centre) —</option>
+                  {PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            )}
+
+            {newUser.role === ROLES.ADMIN && (
+              <div className="super-admin-note">
+                This admin will automatically see data for <strong>{newUser.centre}</strong> and all its sub-centres.
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '1.5rem' }}>
               <button className="btn btn-outline btn-full" onClick={() => setShowAddUser(false)}>Cancel</button>
-              <button className="btn btn-gold btn-full" onClick={createUser} disabled={saving}>{saving?'Creating…':'Create User'}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ADD SEWADAR MODAL */}
-      {showAddSewadar && (
-        <div className="overlay" onClick={() => setShowAddSewadar(false)}>
-          <div className="overlay-sheet" style={{ maxHeight:'90vh', overflowY:'auto' }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', marginBottom:'1.5rem' }}>Add New Sewadar</h3>
-            <div className="mb-2"><label className="label">Full Name *</label><input className="input" placeholder="Ravi Kumar" value={newSewadar.sewadar_name} onChange={e => setNewSewadar({...newSewadar, sewadar_name:e.target.value})}/></div>
-            <div className="mb-2"><label className="label">Badge Number *</label><input className="input" placeholder="FB5978GA0001" style={{ textTransform:'uppercase' }} value={newSewadar.badge_number} onChange={e => setNewSewadar({...newSewadar, badge_number:e.target.value})}/></div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem', marginBottom:'1rem' }}>
-              <div><label className="label">Centre</label><select className="input" value={newSewadar.centre} onChange={e => setNewSewadar({...newSewadar, centre:e.target.value})}>{PARENT_CENTRES.map(c => <option key={c}>{c}</option>)}{centres.filter(c => c.parent_centre).map(c => <option key={c.centre_name}>{c.centre_name}</option>)}</select></div>
-              <div><label className="label">Department</label><input className="input" placeholder="e.g. Pathis" value={newSewadar.department} onChange={e => setNewSewadar({...newSewadar, department:e.target.value})}/></div>
-            </div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'1rem', marginBottom:'1rem' }}>
-              <div><label className="label">Gender</label><select className="input" value={newSewadar.gender} onChange={e => setNewSewadar({...newSewadar, gender:e.target.value})}><option>Male</option><option>Female</option></select></div>
-              <div><label className="label">Age</label><input className="input" type="number" min="1" max="120" value={newSewadar.age} onChange={e => setNewSewadar({...newSewadar, age:e.target.value})}/></div>
-              <div><label className="label">Father/Husband</label><input className="input" value={newSewadar.father_husband_name} onChange={e => setNewSewadar({...newSewadar, father_husband_name:e.target.value})}/></div>
-            </div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem', marginTop:'1rem' }}>
-              <button className="btn btn-outline btn-full" onClick={() => setShowAddSewadar(false)}>Cancel</button>
-              <button className="btn btn-gold btn-full" onClick={createSewadar} disabled={saving}>{saving?'Creating…':'Create Sewadar'}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ADD SESSION MODAL */}
-      {showAddSession && (
-        <div className="overlay" onClick={() => setShowAddSession(false)}>
-          <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', marginBottom:'1.5rem' }}>New Session</h3>
-            <div className="mb-2"><label className="label">Session Name *</label><input className="input" placeholder="e.g. Morning Satsang" value={newSession.name} onChange={e => setNewSession({...newSession, name:e.target.value})}/></div>
-            <div className="mb-2"><label className="label">Date *</label><input className="input" type="date" value={newSession.date} onChange={e => setNewSession({...newSession, date:e.target.value})}/></div>
-            <div className="mb-2"><label className="label">Centre <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, color:'var(--text-muted)' }}>(blank = all centres)</span></label><select className="input" value={newSession.centre} onChange={e => setNewSession({...newSession, centre:e.target.value})}><option value="">All Centres</option>{PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}</select></div>
-            <div className="mb-2"><label className="label">Notes <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, color:'var(--text-muted)' }}>(optional)</span></label><textarea className="input" rows={2} value={newSession.notes} onChange={e => setNewSession({...newSession, notes:e.target.value})} style={{ resize:'none' }}/></div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem', marginTop:'1rem' }}>
-              <button className="btn btn-outline btn-full" onClick={() => setShowAddSession(false)}>Cancel</button>
-              <button className="btn btn-gold btn-full" onClick={createSession}>Create Session</button>
+              <button className="btn btn-gold btn-full" onClick={createUser} disabled={saving}>
+                {saving ? 'Creating…' : 'Create User'}
+              </button>
             </div>
           </div>
         </div>

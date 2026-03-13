@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { supabase, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import { lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue } from '../lib/offline'
+import { supabase, EXCEPTION_DEPARTMENTS, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
+import { lookupBadgeOffline, getLastAttendance, addToAttendanceCache, addToOfflineQueue } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
-import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, RefreshCw, Activity, PenLine } from 'lucide-react'
+import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, User } from 'lucide-react'
+
+const DUPLICATE_WINDOW_MS = 120000
 
 export default function ScannerPage({ isOnline }) {
   const { profile } = useAuth()
@@ -13,193 +15,152 @@ export default function ScannerPage({ isOnline }) {
   const [gpsStatus, setGpsStatus] = useState('loading')
   const [popupState, setPopupState] = useState(null)
   const [processing, setProcessing] = useState(false)
-  const [todayCount, setTodayCount] = useState(0)
-  const [activeSession, setActiveSession] = useState(null)
-  const [pendingSync, setPendingSync] = useState(0)
-  const [syncing, setSyncing] = useState(false)
-  const [manualModal, setManualModal] = useState(false)
-  const [manualSearch, setManualSearch] = useState('')
-  const [manualResults, setManualResults] = useState([])
-  const [manualSearching, setManualSearching] = useState(false)
-  const soundEnabled = localStorage.getItem('sa_sound') !== 'false'
 
   const scannerRef = useRef(null)
   const lastScanRef = useRef({ badge: null, time: 0 })
-  const watchIdRef = useRef(null)
-  const audioCtxRef = useRef(null)
 
+  // Load centre config and child centres list
   useEffect(() => {
     if (!profile?.centre) return
     Promise.all([
-      supabase.from('centres').select('latitude,longitude,geo_radius,geo_enabled').eq('centre_name', profile.centre).maybeSingle(),
-      supabase.from('centres').select('centre_name').eq('parent_centre', profile.centre)
+      supabase.from('centres')
+        .select('latitude,longitude,geo_radius,geo_enabled')
+        .eq('centre_name', profile.centre)
+        .maybeSingle(),
+      supabase.from('centres')
+        .select('centre_name')
+        .eq('parent_centre', profile.centre)
     ]).then(([centreRes, childRes]) => {
       setCentreConfig(centreRes.data)
-      setChildCentres(childRes.data?.map(c => c.centre_name) || [])
+      const children = childRes.data?.map(c => c.centre_name) || []
+      setChildCentres(children)
     })
   }, [profile?.centre])
 
-  useEffect(() => {
-    const today = new Date().toISOString().split('T')[0]
-    supabase.from('sessions').select('*').eq('date', today).eq('is_active', true).maybeSingle()
-      .then(({ data }) => setActiveSession(data || null))
-  }, [])
-
-  // GPS: watchPosition for continuous refresh
+  // GPS
   useEffect(() => {
     if (!navigator.geolocation) { setGpsStatus('failed'); return }
-    const success = (pos) => {
-      setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
-      setGpsStatus('success')
+    let retries = 0
+    const tryGet = () => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+          setGpsStatus('success')
+        },
+        () => { retries++ < 3 ? setTimeout(tryGet, 2000) : setGpsStatus('failed') },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+      )
     }
-    const fail = () => setGpsStatus(s => s !== 'success' ? 'failed' : s)
-    const opts = { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 }
-    navigator.geolocation.getCurrentPosition(success, fail, opts)
-    watchIdRef.current = navigator.geolocation.watchPosition(success, fail, opts)
-    return () => { if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current) }
+    tryGet()
   }, [])
-
-  // Live IN count subscription
-  useEffect(() => {
-    fetchTodayCount()
-    const channel = supabase.channel('scanner-count')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, fetchTodayCount)
-      .subscribe()
-    return () => supabase.removeChannel(channel)
-  }, [profile?.centre, profile?.role])
-
-  async function fetchTodayCount() {
-    const today = new Date(); today.setHours(0, 0, 0, 0)
-    let q = supabase.from('attendance').select('id', { count: 'exact', head: true })
-      .gte('scan_time', today.toISOString()).eq('type', 'IN')
-    if (profile?.role === ROLES.CENTRE_USER && profile?.centre) q = q.eq('centre', profile.centre)
-    const { count } = await q
-    setTodayCount(count || 0)
-  }
-
-  useEffect(() => {
-    setPendingSync(getOfflineQueueCount())
-    const id = setInterval(() => setPendingSync(getOfflineQueueCount()), 5000)
-    return () => clearInterval(id)
-  }, [])
-
-  async function handleManualSync() {
-    if (!isOnline) return
-    setSyncing(true)
-    await syncOfflineQueue(supabase)
-    setPendingSync(getOfflineQueueCount())
-    setSyncing(false)
-  }
-
-  function playBeep(type) {
-    if (!soundEnabled) return
-    try {
-      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
-      const ctx = audioCtxRef.current
-      const osc = ctx.createOscillator(); const gain = ctx.createGain()
-      osc.connect(gain); gain.connect(ctx.destination)
-      osc.frequency.value = type === 'IN' ? 880 : 440
-      osc.type = 'sine'
-      gain.gain.setValueAtTime(0.3, ctx.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25)
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.25)
-    } catch {}
-    if (navigator.vibrate) navigator.vibrate(type === 'IN' ? [40] : [40, 30, 40])
-  }
-
-  async function searchSewadars(term) {
-    if (!term || term.length < 2) { setManualResults([]); return }
-    setManualSearching(true)
-    const { data } = await supabase.from('sewadars')
-      .select('*').or(`badge_number.ilike.%${term.toUpperCase()}%,sewadar_name.ilike.%${term}%`).limit(10)
-    setManualResults(data || [])
-    setManualSearching(false)
-  }
-
-  async function selectManualSewadar(sewadar) {
-    setManualModal(false); setManualSearch(''); setManualResults([])
-    await processSewadar(sewadar)
-  }
-
-  // Ladder: strictly alternate IN→OUT→IN→OUT...
-  // First scan of day: both allowed. After that: must follow last type.
-  function computeAllowedTypes(todayEntries) {
-    if (todayEntries.length === 0) return ['IN', 'OUT']
-    const last = todayEntries[todayEntries.length - 1]
-    return last.type === 'IN' ? ['OUT'] : ['IN']
-  }
 
   const handleScan = useCallback(async (badge) => {
     const now = Date.now()
     if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) return
     lastScanRef.current = { badge, time: now }
     setProcessing(true)
-    let found = null
+
     try {
+      let found = null
+      let todayEntries = []
+
       if (isOnline) {
-        const { data } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
-        found = data
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+        const [sRes, aRes] = await Promise.all([
+          supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle(),
+          supabase.from('attendance')
+            .select('*')
+            .eq('badge_number', badge)
+            .gte('scan_time', today.toISOString())
+            .order('scan_time', { ascending: true })
+        ])
+        found = sRes.data
+        todayEntries = aRes.data || []
       } else {
         found = lookupBadgeOffline(badge)
       }
-    } catch {}
-    if (!found) {
-      setPopupState({ type: 'not_found', badge }); setProcessing(false); return
-    }
-    await processSewadar(found, badge)
-  }, [isOnline, profile, userLocation, centreConfig, childCentres])
 
-  async function processSewadar(found, badge) {
-    const now = Date.now()
-    setProcessing(true)
-    const b = badge || found.badge_number
-    let todayEntries = []
-    if (isOnline) {
-      const today = new Date(); today.setHours(0, 0, 0, 0)
-      const { data } = await supabase.from('attendance').select('*').eq('badge_number', b)
-        .gte('scan_time', today.toISOString()).order('scan_time', { ascending: true })
-      todayEntries = data || []
-    }
-
-    const lastEntry = todayEntries.length > 0 ? todayEntries[todayEntries.length - 1] : null
-    if (lastEntry?.scan_time) {
-      const diff = now - new Date(lastEntry.scan_time).getTime()
-      if (diff < 120000) {
-        setPopupState({ type: 'recent', sewadar: found, lastEntry, badge: b, todayEntries })
-        setProcessing(false); return
+      if (!found) {
+        setPopupState({ type: 'not_found', badge })
+        setProcessing(false)
+        return
       }
-    }
 
-    const allowedTypes = computeAllowedTypes(todayEntries)
-    const scanCount = todayEntries.length
-    const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
-    const isAdminRole = profile?.role === ROLES.ADMIN
-    const isSameCentre = found.centre === profile?.centre
-    const isChildCentre = isAdminRole && childCentres.includes(found.centre)
-    const isException = isExceptionDept(found.department)
-
-    if (found.geo_required && userLocation && centreConfig?.geo_enabled) {
-      if (centreConfig.latitude && centreConfig.longitude) {
-        const dist = getDistanceMetres(userLocation.lat, userLocation.lng, centreConfig.latitude, centreConfig.longitude)
-        if (dist > (centreConfig.geo_radius || 200)) {
-          setPopupState({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away`, badge: b })
-          setProcessing(false); return
+      // Check duplicate within 2 minutes
+      const lastEntry = todayEntries.length > 0 ? todayEntries[todayEntries.length - 1] : null
+      if (lastEntry?.scan_time) {
+        const diff = now - new Date(lastEntry.scan_time).getTime()
+        if (diff < DUPLICATE_WINDOW_MS) {
+          setPopupState({ type: 'recent', sewadar: found, lastEntry, badge })
+          setProcessing(false)
+          return
         }
       }
-    }
 
-    if (!isSuperAdmin && !isAdminRole && !isSameCentre && !isException) {
-      setPopupState({ type: 'auth_fail', sewadar: found, badge: b }); setProcessing(false); return
-    }
-    if (!isSuperAdmin && !isAdminRole && !isSameCentre && isException) {
-      setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount }); setProcessing(false); return
-    }
+      // Determine allowed types
+      const hasIn = todayEntries.some(e => e.type === 'IN')
+      const hasOut = todayEntries.some(e => e.type === 'OUT')
+      let allowedTypes = []
+      if (!hasIn && !hasOut) allowedTypes = ['IN', 'OUT']
+      else if (hasIn && !hasOut) allowedTypes = ['OUT']
+      else if (!hasIn && hasOut) allowedTypes = ['IN']
+      else {
+        setPopupState({ type: 'both_done', sewadar: found, badge })
+        setProcessing(false)
+        return
+      }
 
-    setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount })
-    setProcessing(false)
-  }
+      const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
+      const isAdmin = profile?.role === ROLES.ADMIN
+      const isSameCentre = found.centre === profile?.centre
+      // Admin can scan own centre + all child centres without any confirmation
+      const isChildCentre = isAdmin && childCentres.includes(found.centre)
+      const isException = isExceptionDept(found.department)
 
-  const markAttendance = async (type, overrideNote = null) => {
+      // Geo check
+      if (found.geo_required && userLocation && centreConfig?.geo_enabled) {
+        if (centreConfig.latitude && centreConfig.longitude) {
+          const dist = getDistanceMetres(userLocation.lat, userLocation.lng, centreConfig.latitude, centreConfig.longitude)
+          if (dist > (centreConfig.geo_radius || 200)) {
+            setPopupState({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away`, badge })
+            setProcessing(false)
+            return
+          }
+        }
+      }
+
+      // Auth check
+      if (!isSuperAdmin && !isAdmin && !isSameCentre && !isException) {
+        setPopupState({ type: 'auth_fail', sewadar: found, badge })
+        setProcessing(false)
+        return
+      }
+
+      // Admin scanning sub-centre badge: no confirmation needed
+      if (isAdmin && isChildCentre) {
+        setPopupState({ type: 'found', sewadar: found, badge, allowedTypes, hasIn, hasOut })
+        setProcessing(false)
+        return
+      }
+
+      // Exception dept from different centre: show confirmation first
+      if (!isSuperAdmin && !isAdmin && !isSameCentre && isException) {
+        setPopupState({ type: 'exception_confirm', sewadar: found, badge, allowedTypes, hasIn, hasOut })
+        setProcessing(false)
+        return
+      }
+
+      setPopupState({ type: 'found', sewadar: found, badge, allowedTypes, hasIn, hasOut })
+      setProcessing(false)
+    } catch (err) {
+      console.error(err)
+      setPopupState({ type: 'error', badge })
+      setProcessing(false)
+    }
+  }, [isOnline, profile, userLocation, centreConfig, childCentres])
+
+  const markAttendance = async (type) => {
     if (!popupState?.sewadar || !profile) return
     const scanTime = new Date().toISOString()
     const record = {
@@ -207,32 +168,35 @@ export default function ScannerPage({ isOnline }) {
       sewadar_name: popupState.sewadar.sewadar_name,
       centre: popupState.sewadar.centre,
       department: popupState.sewadar.department,
-      type, scan_time: scanTime,
+      type,
+      scan_time: scanTime,
       scanner_badge: profile.badge_number || 'UNKNOWN',
       scanner_name: profile.name || 'Unknown',
       scanner_centre: profile.centre || 'UNKNOWN',
       latitude: userLocation?.lat || null,
       longitude: userLocation?.lng || null,
-      device_id: navigator.userAgent.slice(0, 50),
-      session_id: activeSession?.id || null,
+      device_id: navigator.userAgent.slice(0, 50)
     }
+
     let success = false
     if (isOnline) {
       const { error } = await supabase.from('attendance').insert(record)
       if (!error) {
         await supabase.from('logs').insert({
           user_badge: profile.badge_number,
-          action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
-          details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
+          action: 'MARK_ATTENDANCE',
+          details: `Marked ${type} for ${popupState.sewadar.badge_number}`,
           timestamp: scanTime
         })
         success = true
       }
     } else {
-      addToOfflineQueue(record); success = true
+      addToOfflineQueue(record)
+      success = true
     }
+    addToAttendanceCache(record)
+
     if (success) {
-      playBeep(type)
       setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
       setTimeout(closePopup, 2000)
     }
@@ -244,85 +208,107 @@ export default function ScannerPage({ isOnline }) {
     if (scannerRef.current) scannerRef.current.resume()
   }
 
-  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
-
   return (
     <div className="page pb-nav">
+      {/* Status bar */}
       <div className="scanner-status-bar">
-        <span className="scanner-centre-name">
-          {profile?.centre}
-          {activeSession && <span className="scanner-session-pill">{activeSession.name}</span>}
-        </span>
+        <span className="scanner-centre-name">{profile?.centre}</span>
         <div className="scanner-indicators">
-          {pendingSync > 0 && (
-            <button className="scanner-pill pill-pending" onClick={handleManualSync} disabled={!isOnline || syncing} title="Tap to sync offline records">
-              {syncing ? <RefreshCw size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Activity size={11} />}
-              {pendingSync} pending
-            </button>
-          )}
           <span className={`scanner-pill ${isOnline ? 'pill-online' : 'pill-offline'}`}>
             {isOnline ? <Wifi size={11} /> : <WifiOff size={11} />}
             {isOnline ? 'Online' : 'Offline'}
           </span>
-          <span
-            className={`scanner-pill ${gpsStatus === 'success' ? 'pill-gps-ok' : gpsStatus === 'failed' ? 'pill-gps-fail' : 'pill-gps-loading'}`}
-            onClick={gpsStatus === 'failed' ? () => { setGpsStatus('loading'); navigator.geolocation?.getCurrentPosition(p => { setUserLocation({ lat: p.coords.latitude, lng: p.coords.longitude }); setGpsStatus('success') }, () => setGpsStatus('failed'), { enableHighAccuracy: true, timeout: 15000 }) } : undefined}
-            style={gpsStatus === 'failed' ? { cursor: 'pointer' } : {}}
-          >
+          <span className={`scanner-pill ${gpsStatus === 'success' ? 'pill-gps-ok' : gpsStatus === 'failed' ? 'pill-gps-fail' : 'pill-gps-loading'}`}>
             <MapPin size={11} />
             GPS {gpsStatus === 'success' ? '✓' : gpsStatus === 'failed' ? '✗' : '…'}
           </span>
         </div>
       </div>
 
-      <div className="scanner-live-strip">
-        <span className="pulse-dot green" />
-        <span className="scanner-live-count">{todayCount} IN today</span>
-        {activeSession && <span className="scanner-session-label">{activeSession.name}</span>}
-        {isSuperAdmin && (
-          <button className="scanner-manual-btn" onClick={() => setManualModal(true)}>
-            <PenLine size={13} /> Manual
-          </button>
-        )}
-      </div>
-
       <BarcodeScanner ref={scannerRef} onScan={handleScan} />
 
       {processing && (
         <div className="scanner-processing">
-          <div className="scanner-processing-dot" />Processing…
+          <div className="scanner-processing-dot" />
+          Processing…
         </div>
       )}
 
+      {/* ── POPUP ── */}
       {popupState && (
         <div className="popup-overlay" onClick={closePopup}>
           <div className="popup-card" onClick={e => e.stopPropagation()}>
 
-            {popupState.type === 'found' && (
-              <SewadarFoundCard sewadar={popupState.sewadar} allowedTypes={popupState.allowedTypes}
-                scanCount={popupState.scanCount} onMark={markAttendance} onClose={closePopup} />
+            {/* FOUND */}
+            {(popupState.type === 'found') && (
+              <SewadarFoundCard
+                sewadar={popupState.sewadar}
+                allowedTypes={popupState.allowedTypes}
+                hasIn={popupState.hasIn}
+                hasOut={popupState.hasOut}
+                onMark={markAttendance}
+                onClose={closePopup}
+              />
             )}
 
+            {/* EXCEPTION CONFIRMATION — different centre, exception dept */}
             {popupState.type === 'exception_confirm' && (
               <div className="popup-exception">
-                <div className="popup-exception-banner"><AlertTriangle size={18} /><span>Sewadar from another centre</span></div>
+                <div className="popup-exception-banner">
+                  <AlertTriangle size={18} />
+                  <span>Sewadar from another centre</span>
+                </div>
                 <div className="popup-exception-name">{popupState.sewadar.sewadar_name}</div>
                 <div className="popup-exception-badge">{popupState.sewadar.badge_number}</div>
-                <div className="popup-exception-detail"><span>Centre</span><strong>{popupState.sewadar.centre}</strong></div>
-                <div className="popup-exception-detail"><span>Dept</span><strong>{popupState.sewadar.department}</strong></div>
-                <p className="popup-exception-note">Exception department. Confirm to mark attendance here.</p>
+                <div className="popup-exception-detail">
+                  <span>Centre</span>
+                  <strong>{popupState.sewadar.centre}</strong>
+                </div>
+                <div className="popup-exception-detail">
+                  <span>Dept</span>
+                  <strong>{popupState.sewadar.department}</strong>
+                </div>
+                <p className="popup-exception-note">
+                  This sewadar belongs to their respective centre. Confirm to mark attendance here.
+                </p>
                 <div className="popup-actions">
-                  {popupState.allowedTypes?.includes('IN') && <button className="btn-in" onClick={() => markAttendance('IN')}>IN</button>}
-                  {popupState.allowedTypes?.includes('OUT') && <button className="btn-out" onClick={() => markAttendance('OUT')}>OUT</button>}
+                  {popupState.allowedTypes?.includes('IN') && (
+                    <button className="btn-in" onClick={() => {
+                      setPopupState({ ...popupState, type: 'found' })
+                      markAttendance('IN')
+                    }}>IN</button>
+                  )}
+                  {popupState.allowedTypes?.includes('OUT') && (
+                    <button className="btn-out" onClick={() => {
+                      setPopupState({ ...popupState, type: 'found' })
+                      markAttendance('OUT')
+                    }}>OUT</button>
+                  )}
                 </div>
                 <button className="btn-cancel" onClick={closePopup}>Cancel</button>
               </div>
             )}
 
+            {/* RECENT */}
             {popupState.type === 'recent' && (
-              <RecentPopup popupState={popupState} onOverride={(t) => markAttendance(t, 'duplicate_override')} onClose={closePopup} isSuperAdmin={isSuperAdmin} />
+              <div className="popup-recent">
+                <div className="popup-recent-icon">
+                  <Clock size={28} color="#b45309" />
+                </div>
+                <div className="recent-name">{popupState.sewadar.sewadar_name}</div>
+                <div className="recent-badge">{popupState.sewadar.badge_number}</div>
+                <div className="recent-entry">
+                  <span className={popupState.lastEntry.type === 'IN' ? 'text-green' : 'text-red'}>
+                    {popupState.lastEntry.type}
+                  </span>
+                  <span>{new Date(popupState.lastEntry.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+                <div className="recent-msg">Already marked within 2 min</div>
+                <button className="btn-cancel" onClick={closePopup}>Scan Another</button>
+              </div>
             )}
 
+            {/* NOT FOUND */}
             {popupState.type === 'not_found' && (
               <div className="popup-error">
                 <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
@@ -333,6 +319,7 @@ export default function ScannerPage({ isOnline }) {
               </div>
             )}
 
+            {/* AUTH FAIL */}
             {popupState.type === 'auth_fail' && (
               <div className="popup-error">
                 <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
@@ -343,6 +330,7 @@ export default function ScannerPage({ isOnline }) {
               </div>
             )}
 
+            {/* GEO FAIL */}
             {popupState.type === 'geo_fail' && (
               <div className="popup-error">
                 <MapPin size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
@@ -353,6 +341,18 @@ export default function ScannerPage({ isOnline }) {
               </div>
             )}
 
+            {/* BOTH DONE */}
+            {popupState.type === 'both_done' && (
+              <div className="popup-error">
+                <CheckCircle size={32} color="#16a34a" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title" style={{ color: '#16a34a' }}>Already Complete</div>
+                <div className="error-name">{popupState.sewadar.sewadar_name}</div>
+                <div className="error-msg">IN and OUT already marked today</div>
+                <button className="btn-cancel" onClick={closePopup}>Scan Another</button>
+              </div>
+            )}
+
+            {/* SUCCESS */}
             {popupState.type === 'success' && (
               <div className="popup-success">
                 <div className={`success-icon-ring ${popupState.attendanceType === 'IN' ? 'ring-green' : 'ring-red'}`}>
@@ -368,6 +368,7 @@ export default function ScannerPage({ isOnline }) {
               </div>
             )}
 
+            {/* ERROR */}
             {popupState.type === 'error' && (
               <div className="popup-error">
                 <div className="error-title">Error</div>
@@ -378,101 +379,61 @@ export default function ScannerPage({ isOnline }) {
           </div>
         </div>
       )}
-
-      {/* Manual entry modal — super_admin only */}
-      {manualModal && (
-        <div className="overlay" onClick={() => setManualModal(false)}>
-          <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1rem' }}>Manual Entry</h3>
-              <button onClick={() => setManualModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '1.3rem', lineHeight: 1 }}>×</button>
-            </div>
-            <input
-              type="text" placeholder="Search by name or badge…" value={manualSearch} autoFocus
-              onChange={e => { setManualSearch(e.target.value); searchSewadars(e.target.value) }}
-              className="input" style={{ width: '100%', marginBottom: '0.75rem' }}
-            />
-            {manualSearching && <div className="spinner" style={{ margin: '1rem auto' }} />}
-            <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
-              {manualResults.map(s => (
-                <button key={s.badge_number} onClick={() => selectManualSewadar(s)}
-                  style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', padding: '0.7rem 0.85rem', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', cursor: 'pointer', textAlign: 'left' }}>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>{s.sewadar_name}</div>
-                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{s.centre} · {s.department || '—'}</div>
-                  </div>
-                  <span style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--gold)' }}>{s.badge_number}</span>
-                </button>
-              ))}
-              {manualSearch.length >= 2 && !manualSearching && manualResults.length === 0 && (
-                <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem', padding: '1rem 0' }}>No sewadars found</p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
 
-function SewadarFoundCard({ sewadar, allowedTypes, scanCount, onMark, onClose }) {
+// Extracted sewadar found card for cleanliness
+function SewadarFoundCard({ sewadar, allowedTypes, hasIn, hasOut, onMark, onClose }) {
   return (
     <>
       <div className="popup-header">
         <div className="sewadar-info">
           <div className="name">{sewadar.sewadar_name}</div>
-          <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>{sewadar.badge_number}</div>
+          <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>
+            {sewadar.badge_number}
+          </div>
         </div>
-        <span className={`gender-badge ${sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>{sewadar.gender}</span>
+        <span className={`gender-badge ${sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>
+          {sewadar.gender}
+        </span>
       </div>
+
       <div className="popup-details">
-        <div className="detail"><span>Father/Husband</span><span>{sewadar.father_husband_name || '—'}</span></div>
-        <div className="detail"><span>Age</span><span>{sewadar.age || '—'}</span></div>
-        <div className="detail"><span>Centre</span><span>{sewadar.centre}</span></div>
-        <div className="detail"><span>Dept</span><span>{sewadar.department || '—'}</span></div>
+        <div className="detail">
+          <span>Father/Husband</span>
+          <span>{sewadar.father_husband_name || '—'}</span>
+        </div>
+        <div className="detail">
+          <span>Age</span>
+          <span>{sewadar.age || '—'}</span>
+        </div>
+        <div className="detail">
+          <span>Centre</span>
+          <span>{sewadar.centre}</span>
+        </div>
+        <div className="detail">
+          <span>Dept</span>
+          <span>{sewadar.department || '—'}</span>
+        </div>
       </div>
-      {scanCount > 0 && (
-        <div className="popup-scan-history">
-          {Array.from({ length: scanCount }).map((_, i) => (
-            <span key={i} className={`scan-dot ${i % 2 === 0 ? 'dot-in' : 'dot-out'}`} />
-          ))}
-          <span className="scan-history-label">
-            {scanCount} scan{scanCount !== 1 ? 's' : ''} today · next: {allowedTypes[0]}
-          </span>
+
+      {(hasIn || hasOut) && (
+        <div className="popup-status-msg">
+          {hasIn && <span className="status-in">✓ IN marked</span>}
+          {hasOut && <span className="status-out">✓ OUT marked</span>}
         </div>
       )}
+
       <div className="popup-actions">
-        {allowedTypes?.includes('IN') && <button className="btn-in" onClick={() => onMark('IN')}>IN</button>}
-        {allowedTypes?.includes('OUT') && <button className="btn-out" onClick={() => onMark('OUT')}>OUT</button>}
+        {allowedTypes?.includes('IN') && (
+          <button className="btn-in" onClick={() => onMark('IN')}>IN</button>
+        )}
+        {allowedTypes?.includes('OUT') && (
+          <button className="btn-out" onClick={() => onMark('OUT')}>OUT</button>
+        )}
       </div>
       <button className="btn-cancel" onClick={onClose}>Cancel</button>
     </>
-  )
-}
-
-function RecentPopup({ popupState, onOverride, onClose, isSuperAdmin }) {
-  const last = popupState.todayEntries?.length > 0 ? popupState.todayEntries[popupState.todayEntries.length - 1] : null
-  const overrideTypes = last ? (last.type === 'IN' ? ['OUT'] : ['IN']) : ['IN', 'OUT']
-  return (
-    <div className="popup-recent">
-      <div className="popup-recent-icon"><Clock size={28} color="#b45309" /></div>
-      <div className="recent-name">{popupState.sewadar.sewadar_name}</div>
-      <div className="recent-badge">{popupState.sewadar.badge_number}</div>
-      <div className="recent-entry">
-        <span className={popupState.lastEntry.type === 'IN' ? 'text-green' : 'text-red'}>{popupState.lastEntry.type}</span>
-        <span>{new Date(popupState.lastEntry.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>
-      </div>
-      <div className="recent-msg">Scanned within 2 minutes</div>
-      {isSuperAdmin && (
-        <div style={{ marginTop: '0.75rem', borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
-          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem', textAlign: 'center' }}>Super Admin Override</p>
-          <div className="popup-actions" style={{ marginTop: 0 }}>
-            {overrideTypes.includes('IN') && <button className="btn-in" style={{ fontSize: '0.85rem' }} onClick={() => onOverride('IN')}>Force IN</button>}
-            {overrideTypes.includes('OUT') && <button className="btn-out" style={{ fontSize: '0.85rem' }} onClick={() => onOverride('OUT')}>Force OUT</button>}
-          </div>
-        </div>
-      )}
-      <button className="btn-cancel" onClick={onClose} style={{ marginTop: '0.5rem' }}>Dismiss</button>
-    </div>
   )
 }

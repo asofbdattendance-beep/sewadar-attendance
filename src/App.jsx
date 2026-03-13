@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from 'react'
+import { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { syncOfflineQueue, getOfflineQueueCount, populateOfflineCache, populateAttendanceCache } from './lib/offline'
@@ -11,52 +11,10 @@ import AdminPage from './pages/AdminPage'
 import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
 import FlagsPage from './pages/FlagsPage'
-import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff, Flag, XCircle, CheckCircle, AlertCircle } from 'lucide-react'
-
-// Toast Context
-const ToastContext = createContext(null)
-
-export function useToast() {
-  return useContext(ToastContext)
-}
-
-function ToastProvider({ children }) {
-  const [toasts, setToasts] = useState([])
-
-  const addToast = (message, type = 'info') => {
-    const id = Date.now()
-    setToasts(prev => [...prev, { id, message, type }])
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id))
-    }, 3000)
-  }
-
-  const removeToast = (id) => {
-    setToasts(prev => prev.filter(t => t.id !== id))
-  }
-
-  return (
-    <ToastContext.Provider value={addToast}>
-      {children}
-      <div className="toast-container">
-        {toasts.map(toast => (
-          <div key={toast.id} className={`toast toast-${toast.type}`}>
-            {toast.type === 'success' && <CheckCircle size={16} />}
-            {toast.type === 'error' && <AlertCircle size={16} />}
-            {toast.type === 'info' && <Flag size={16} />}
-            <span>{toast.message}</span>
-            <button onClick={() => removeToast(toast.id)} className="toast-close">
-              <XCircle size={14} />
-            </button>
-          </div>
-        ))}
-      </div>
-    </ToastContext.Provider>
-  )
-}
+import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff, Flag } from 'lucide-react'
 
 function AppLayout() {
-  const { profile, loading, error } = useAuth()
+  const { profile, loading } = useAuth()
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingSync, setPendingSync] = useState(0)
   const navigate = useNavigate()
@@ -84,23 +42,10 @@ function AppLayout() {
   }, [])
 
   if (loading) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--office-bg)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg)' }}>
       <div style={{ textAlign: 'center' }}>
         <div className="spinner" style={{ margin: '0 auto 1rem' }} />
-        <p style={{ color: 'var(--office-text-muted)', fontSize: '0.9rem' }}>Loading…</p>
-      </div>
-    </div>
-  )
-
-  if (error) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', background: 'var(--office-bg)', textAlign: 'center' }}>
-      <div>
-        <div style={{ width: 64, height: 64, background: 'var(--office-red-bg)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem', border: '1px solid var(--office-red-border)' }}>
-          <XCircle size={32} color="var(--office-red)" />
-        </div>
-        <h2 style={{ color: 'var(--office-red)', marginBottom: '0.5rem', fontSize: '1.25rem' }}>Something went wrong</h2>
-        <p style={{ color: 'var(--office-text-muted)', fontSize: '0.9rem', marginBottom: '1rem' }}>{error}</p>
-        <button className="btn btn-primary" onClick={() => window.location.reload()}>Refresh Page</button>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading…</p>
       </div>
     </div>
   )
@@ -108,13 +53,13 @@ function AppLayout() {
   if (!profile) return <LoginPage />
 
   if (!profile.is_active) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', background: 'var(--office-bg)', textAlign: 'center' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', textAlign: 'center' }}>
       <div>
-        <div style={{ width: 64, height: 64, background: 'var(--office-red-bg)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem', border: '1px solid var(--office-red-border)' }}>
-          <Shield size={32} color="var(--office-red)" />
+        <div style={{ width: 56, height: 56, background: 'var(--red-bg)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+          <Shield size={28} color="var(--red)" />
         </div>
-        <h2 style={{ color: 'var(--office-red)', marginBottom: '0.5rem', fontSize: '1.25rem' }}>Account Inactive</h2>
-        <p style={{ color: 'var(--office-text-muted)', fontSize: '0.9rem' }}>Your account has been deactivated. Contact Super Admin.</p>
+        <h2 style={{ color: 'var(--red)', marginBottom: '0.5rem' }}>Account Inactive</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Your account has been deactivated. Contact Super Admin.</p>
       </div>
     </div>
   )
@@ -140,12 +85,12 @@ function AppLayout() {
       {/* Navbar */}
       <nav className="navbar">
         <div className="navbar-brand">
-          <div className="navbar-logo">🙏</div>
-          <span className="navbar-title">Sewadar Attendance</span>
+          <span style={{ fontSize: '1rem' }}>⬛</span>
+          Sewadar Attendance
           <span className="navbar-pill">{rolePill}</span>
         </div>
         {!isOnline && (
-          <div className="offline-indicator">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(230,81,0,0.25)', border: '1px solid rgba(255,255,255,0.3)', padding: '0.25rem 0.6rem', borderRadius: '6px', color: '#FFD54F', fontSize: '0.72rem', fontWeight: 600 }}>
             <WifiOff size={12} /> OFFLINE {pendingSync > 0 ? `· ${pendingSync}` : ''}
           </div>
         )}
@@ -191,9 +136,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <ToastProvider>
-          <AppLayout />
-        </ToastProvider>
+        <AppLayout />
       </AuthProvider>
     </BrowserRouter>
   )
