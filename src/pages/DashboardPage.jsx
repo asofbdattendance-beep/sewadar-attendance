@@ -173,7 +173,7 @@ export default function DashboardPage() {
       {/* Header */}
       <div className="flex items-center justify-between mt-2 mb-3">
         <div>
-          <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>
+          <h2 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', fontSize: '1.3rem', fontWeight: 700 }}>
             Dashboard
           </h2>
           <p className="text-muted text-xs mt-1 flex items-center gap-1">
@@ -182,7 +182,7 @@ export default function DashboardPage() {
           </p>
         </div>
         <button className="btn btn-ghost" onClick={fetchData} style={{ padding: '0.5rem' }}>
-          <RefreshCw size={16} />
+          <RefreshCw size={18} />
         </button>
       </div>
 

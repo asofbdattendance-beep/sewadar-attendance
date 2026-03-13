@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { syncOfflineQueue, getOfflineQueueCount, setCachedSewadars, getCachedSewadars } from '../lib/offline'
 import { supabase } from '../lib/supabase'
-import { LogOut, RefreshCw, Wifi, WifiOff, User, Database, Shield } from 'lucide-react'
+import { LogOut, RefreshCw, Wifi, WifiOff, User, Database, Shield, Check, AlertCircle } from 'lucide-react'
 
 export default function ProfilePage({ isOnline }) {
   const { profile, signOut } = useAuth()
@@ -41,35 +41,44 @@ export default function ProfilePage({ isOnline }) {
     setSyncing(false)
   }
 
-  const roleColor = { super_admin: 'var(--gold)', admin: 'var(--blue)', centre_user: 'var(--green)' }
-  const roleName = { super_admin: 'Super Admin', admin: 'Admin', centre_user: 'Centre User' }
+  const roleColor = { 
+    super_admin: 'var(--gold)', 
+    admin: 'var(--blue)', 
+    centre_user: 'var(--green)' 
+  }
+  const roleName = { 
+    super_admin: 'Super Admin', 
+    admin: 'Admin', 
+    centre_user: 'Centre User' 
+  }
 
   return (
     <div className="page pb-nav">
       <div className="mt-2 mb-3">
-        <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>
+        <h2 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', fontSize: '1.3rem', fontWeight: 700 }}>
           My Profile
         </h2>
       </div>
 
-      {/* Profile card */}
-      <div className="card mb-2" style={{ borderColor: roleColor[profile?.role] + '40' }}>
-        <div className="flex items-center gap-2 mb-2">
+      <div className="profile-card">
+        <div className="flex items-center gap-3 mb-4">
           <div style={{
-            width: 52, height: 52,
+            width: 64, height: 64,
             background: `${roleColor[profile?.role]}20`,
-            border: `1px solid ${roleColor[profile?.role]}40`,
-            borderRadius: '50%',
+            border: `2px solid ${roleColor[profile?.role]}40`,
+            borderRadius: '16px',
             display: 'flex', alignItems: 'center', justifyContent: 'center'
           }}>
-            <User size={24} color={roleColor[profile?.role]} />
+            <User size={28} color={roleColor[profile?.role]} />
           </div>
           <div>
-            <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>{profile?.name}</div>
-            <div style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--gold)' }}>{profile?.badge_number}</div>
+            <div style={{ fontWeight: 700, fontSize: '1.15rem' }}>{profile?.name || profile?.sewadar_name || 'User'}</div>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.85rem', color: 'var(--gold)' }}>{profile?.badge_number}</div>
           </div>
         </div>
-        <div className="divider" style={{ margin: '0.75rem 0' }} />
+        
+        <div className="divider" />
+        
         <div className="info-row">
           <span className="info-label">Role</span>
           <span className="badge" style={{ background: `${roleColor[profile?.role]}20`, color: roleColor[profile?.role], border: `1px solid ${roleColor[profile?.role]}40` }}>
@@ -82,59 +91,82 @@ export default function ProfilePage({ isOnline }) {
         </div>
         <div className="info-row">
           <span className="info-label">Connection</span>
-          <span className={`status-bar ${isOnline ? 'status-online' : 'status-offline'}`} style={{ padding: '0.2rem 0.75rem' }}>
-            {isOnline ? <><Wifi size={12} /> Online</> : <><WifiOff size={12} /> Offline</>}
+          <span className={`status-bar ${isOnline ? 'status-online' : 'status-offline'}`}>
+            {isOnline ? <><Wifi size={14} /> Online</> : <><WifiOff size={14} /> Offline</>}
           </span>
         </div>
       </div>
 
-      {/* Offline queue */}
       {pendingCount > 0 && (
-        <div className="card mb-2" style={{ borderColor: 'rgba(224,92,92,0.3)', background: 'rgba(224,92,92,0.05)' }}>
+        <div className="queue-card">
           <div className="flex justify-between items-center">
-            <div>
-              <p style={{ fontWeight: 600, color: 'var(--red)' }}>{pendingCount} scans pending sync</p>
-              <p className="text-muted text-xs mt-1">These will sync when you're back online</p>
+            <div className="flex items-center gap-3">
+              <div style={{ width: 40, height: 40, background: 'var(--red-bg)', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <AlertCircle size={20} color="var(--red)" />
+              </div>
+              <div>
+                <p style={{ fontWeight: 600, color: 'var(--red)', fontSize: '0.95rem' }}>{pendingCount} scans pending</p>
+                <p className="text-muted text-xs mt-1">Will sync when back online</p>
+              </div>
             </div>
-            <button className="btn btn-outline" onClick={manualSync} disabled={!isOnline || syncing} style={{ fontSize: '0.82rem', padding: '0.5rem 1rem', borderColor: 'rgba(224,92,92,0.4)', color: 'var(--red)' }}>
-              {syncing ? '...' : 'Sync Now'}
+            <button 
+              className="btn btn-outline" 
+              onClick={manualSync} 
+              disabled={!isOnline || syncing} 
+              style={{ borderColor: 'var(--red)', color: 'var(--red)' }}
+            >
+              <RefreshCw size={14} /> Sync
             </button>
           </div>
         </div>
       )}
 
-      {/* Cache management */}
-      <div className="card mb-2">
-        <div className="flex justify-between items-center mb-1">
-          <div className="flex items-center gap-1">
-            <Database size={16} color="var(--text-muted)" />
-            <span style={{ fontWeight: 500 }}>Offline Cache</span>
+      <div className="cache-card">
+        <div className="flex justify-between items-center mb-2">
+          <div className="flex items-center gap-2">
+            <Database size={18} color="var(--text-muted)" />
+            <span style={{ fontWeight: 600 }}>Offline Cache</span>
           </div>
-          <button className="btn btn-ghost" onClick={refreshCache} disabled={!isOnline || syncing} style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}>
+          <button 
+            className="btn btn-ghost" 
+            onClick={refreshCache} 
+            disabled={!isOnline || syncing}
+            style={{ padding: '6px 12px', fontSize: '0.8rem' }}
+          >
             <RefreshCw size={14} /> Refresh
           </button>
         </div>
         <p className="text-muted text-sm">
-          {cacheInfo ? `${cacheInfo.count} sewadars cached · ${cacheInfo.note}` : 'No cache yet. Tap Refresh to download sewadar data for offline use.'}
+          {cacheInfo ? `${cacheInfo.count} sewadars cached · ${cacheInfo.note}` : 'No cache. Tap Refresh to download for offline use.'}
         </p>
       </div>
 
       {syncMsg && (
         <div style={{
-          background: 'rgba(76,175,125,0.1)', border: '1px solid rgba(76,175,125,0.2)',
-          borderRadius: 'var(--radius)', padding: '0.75rem 1rem',
-          color: 'var(--green)', fontSize: '0.85rem', marginBottom: '1rem'
+          background: 'var(--green-bg)', 
+          border: '1px solid rgba(16, 185, 129, 0.2)',
+          borderRadius: 'var(--radius-md)', 
+          padding: '0.85rem 1rem', 
+          color: 'var(--green)', 
+          fontSize: '0.85rem', 
+          marginBottom: '1rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px'
         }}>
-          {syncMsg}
+          <Check size={16} /> {syncMsg}
         </div>
       )}
 
-      {/* Sign out */}
-      <button className="btn btn-outline btn-full" onClick={signOut} style={{ marginTop: '1rem', borderColor: 'rgba(224,92,92,0.3)', color: 'var(--red)' }}>
+      <button 
+        className="btn btn-outline btn-full" 
+        onClick={signOut} 
+        style={{ marginTop: '1rem', borderColor: 'var(--red)', color: 'var(--red)' }}
+      >
         <LogOut size={16} /> Sign Out
       </button>
 
-      <p className="text-center text-muted text-xs mt-3">Sewadar Attendance System v1.0</p>
+      <p className="text-center text-muted text-xs mt-4">Sewadar Attendance System v1.0</p>
     </div>
   )
 }

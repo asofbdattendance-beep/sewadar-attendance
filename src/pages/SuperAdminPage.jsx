@@ -5,7 +5,7 @@ import { ROLES } from '../lib/supabase'
 import {
   UserPlus, Trash2, Shield, MapPin, ToggleLeft, ToggleRight,
   RefreshCw, Download, FileSpreadsheet, Calendar, Filter,
-  ChevronDown, ChevronRight, Users, Building2, Search, Edit2, Check, X, Clock, CalendarDays
+  ChevronDown, ChevronRight, Users, Building2, Search, Edit2, Check, X, Clock, CalendarDays, Plus, Save
 } from 'lucide-react'
 
 const PARENT_CENTRES = [
@@ -24,25 +24,29 @@ export default function SuperAdminPage() {
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
 
-  // Sewadars CRUD state
   const [showAddSewadar, setShowAddSewadar] = useState(false)
   const [newSewadar, setNewSewadar] = useState({
     badge_number: '', sewadar_name: '', father_husband_name: '', gender: 'Male',
     centre: PARENT_CENTRES[0], department: '', age: null, geo_required: false
   })
 
-  // Sessions state
   const [showAddSession, setShowAddSession] = useState(false)
   const [newSession, setNewSession] = useState({ name: '', session_date: new Date().toISOString().split('T')[0] })
 
-  // Correct Attendance state
   const [correctDate, setCorrectDate] = useState(new Date().toISOString().split('T')[0])
   const [correctRecords, setCorrectRecords] = useState([])
   const [editingRecord, setEditingRecord] = useState(null)
   const [editTime, setEditTime] = useState('')
 
   if (profile?.role !== ROLES.SUPER_ADMIN) {
-    return <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
+    return (
+      <div className="page text-center mt-3">
+        <div className="empty-state">
+          <div className="empty-icon"><Shield size={28} /></div>
+          <div className="empty-text">Access denied</div>
+        </div>
+      </div>
+    )
   }
 
   useEffect(() => {
@@ -95,7 +99,6 @@ export default function SuperAdminPage() {
     setLoading(false)
   }
 
-  // Sewadar CRUD operations
   async function addSewadar() {
     const { error } = await supabase.from('sewadars').insert({
       ...newSewadar,
@@ -117,16 +120,10 @@ export default function SuperAdminPage() {
 
   async function updateSewadar(id, field, value) {
     await supabase.from('sewadars').update({ [field]: value }).eq('id', id)
-    await supabase.from('logs').insert({
-      user_badge: profile.badge_number,
-      action: 'UPDATE_SEWADAR',
-      details: `Updated sewadar ${field} for ID ${id}`,
-      timestamp: new Date().toISOString()
-    })
   }
 
   async function deleteSewadar(id, badge) {
-    if (!confirm(`Delete sewadar ${badge}? This cannot be undone.`)) return
+    if (!confirm(`Delete sewadar ${badge}?`)) return
     await supabase.from('sewadars').delete().eq('id', id)
     await supabase.from('logs').insert({
       user_badge: profile.badge_number,
@@ -137,7 +134,6 @@ export default function SuperAdminPage() {
     fetchSewadars()
   }
 
-  // Session operations
   async function addSession() {
     const { error } = await supabase.from('sessions').insert({
       name: newSession.name,
@@ -180,7 +176,6 @@ export default function SuperAdminPage() {
     fetchSessions()
   }
 
-  // Correct Attendance operations
   async function saveEditTime(record) {
     if (!editTime) return
     const newTime = new Date(`${correctDate}T${editTime}`).toISOString()
@@ -208,7 +203,6 @@ export default function SuperAdminPage() {
     fetchCorrectAttendance()
   }
 
-  // Export functions
   function downloadCSV(csv, filename) {
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
@@ -238,385 +232,332 @@ export default function SuperAdminPage() {
     downloadCSV(csv, `attendance_${correctDate}.csv`)
   }
 
+  const tabs = [
+    { key: 'sewadars', label: 'Sewadars', Icon: Users },
+    { key: 'sessions', label: 'Sessions', Icon: CalendarDays },
+    { key: 'correct', label: 'Attendance', Icon: Edit2 },
+    { key: 'centres', label: 'Centres', Icon: MapPin },
+    { key: 'reports', label: 'Reports', Icon: FileSpreadsheet },
+  ]
+
   return (
     <div className="page-wide pb-nav" style={{ maxWidth: 1000 }}>
       <div className="mt-2 mb-3">
-        <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>Control Panel</h2>
-        <p className="text-muted text-xs mt-1">Super Admin</p>
+        <h2 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', fontSize: '1.4rem', fontWeight: 800 }}>
+          Control Panel
+        </h2>
+        <p className="text-muted text-xs mt-1">Super Admin Dashboard</p>
       </div>
 
-      {/* Tabs */}
-      <div className="tab-nav mb-3">
-        {[
-          { key: 'sewadars', label: 'Sewadars', Icon: Users },
-          { key: 'sessions', label: 'Sessions', Icon: CalendarDays },
-          { key: 'correct', label: 'Correct Attendance', Icon: Edit2 },
-          { key: 'centres', label: 'Centres & Geo', Icon: MapPin },
-          { key: 'reports', label: 'Reports', Icon: FileSpreadsheet },
-        ].map(({ key, label, Icon }) => (
+      <div className="tab-nav">
+        {tabs.map(({ key, label, Icon }) => (
           <button
             key={key}
             className={`tab-btn ${tab === key ? 'active' : ''}`}
             onClick={() => setTab(key)}
           >
-            <Icon size={14} /> {label}
+            <Icon size={15} /> {label}
           </button>
         ))}
       </div>
 
-      {/* ── SEWADARS TAB ── */}
       {tab === 'sewadars' && (
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
-            <div className="search-box" style={{ maxWidth: 300 }}>
-              <Search size={15} />
-              <input
-                type="text"
-                placeholder="Search sewadars..."
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-              />
-            </div>
-            <button className="btn btn-gold" onClick={() => setShowAddSewadar(true)}>
-              <UserPlus size={16} /> Add Sewadar
-            </button>
-          </div>
-
-          {loading ? <div className="spinner" style={{ margin: '2rem auto' }} /> : (
-            <div className="table-wrap">
-              <table className="sewadars-table">
-                <thead>
-                  <tr>
-                    <th style={{ width: 120 }}>Badge</th>
-                    <th>Name</th>
-                    <th style={{ width: 140 }}>Centre</th>
-                    <th style={{ width: 120 }}>Dept</th>
-                    <th style={{ width: 100 }}>Geo</th>
-                    <th style={{ width: 60 }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sewadars.map(s => (
-                    <tr key={s.id}>
-                      <td style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--gold)' }}>
-                        {s.badge_number}
-                      </td>
-                      <td style={{ fontWeight: 500 }}>
-                        <input
-                          defaultValue={s.sewadar_name}
-                          onBlur={e => updateSewadar(s.id, 'sewadar_name', e.target.value)}
-                          className="inline-edit"
-                        />
-                      </td>
-                      <td>
-                        <select
-                          defaultValue={s.centre}
-                          onChange={e => updateSewadar(s.id, 'centre', e.target.value)}
-                          className="inline-select"
-                          style={{ width: '100%' }}
-                        >
-                          {PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}
-                        </select>
-                      </td>
-                      <td>
-                        <input
-                          defaultValue={s.department || ''}
-                          placeholder="Dept"
-                          onBlur={e => updateSewadar(s.id, 'department', e.target.value)}
-                          className="inline-edit"
-                        />
-                      </td>
-                      <td>
-                        <button
-                          className="btn btn-ghost"
-                          onClick={() => updateSewadar(s.id, 'geo_required', !s.geo_required)}
-                          title={s.geo_required ? 'Geo required' : 'Geo not required'}
-                        >
-                          {s.geo_required
-                            ? <ToggleRight size={18} color="var(--green)" />
-                            : <ToggleLeft size={18} color="var(--text-muted)" />}
-                        </button>
-                      </td>
-                      <td>
-                        <button
-                          className="btn btn-ghost"
-                          style={{ color: 'var(--red)', padding: '0.25rem' }}
-                          onClick={() => deleteSewadar(s.id, s.badge_number)}
-                          title="Delete sewadar"
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+        <SewadarsTab 
+          sewadars={sewadars} 
+          loading={loading} 
+          searchTerm={searchTerm}
+          setSearchTerm={setSearchTerm}
+          onRefresh={fetchSewadars}
+          onAdd={() => setShowAddSewadar(true)}
+          onExport={exportSewadars}
+          onUpdate={updateSewadar}
+          onDelete={deleteSewadar}
+        />
       )}
 
-      {/* ── SESSIONS TAB ── */}
       {tab === 'sessions' && (
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '1rem' }}>
-            <button className="btn btn-gold" onClick={() => setShowAddSession(true)}>
-              <Calendar size={16} /> New Session
-            </button>
-          </div>
-
-          {loading ? <div className="spinner" style={{ margin: '2rem auto' }} /> : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Session Name</th>
-                    <th>Date</th>
-                    <th>Status</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sessions.map(s => (
-                    <tr key={s.id}>
-                      <td style={{ fontWeight: 500 }}>{s.name}</td>
-                      <td>{new Date(s.session_date).toLocaleDateString('en-IN')}</td>
-                      <td>
-                        <span className={`badge ${s.is_active ? 'badge-green' : 'badge-muted'}`}>
-                          {s.is_active ? 'Active' : 'Inactive'}
-                        </span>
-                      </td>
-                      <td>
-                        <button
-                          className="btn btn-ghost"
-                          onClick={() => toggleSession(s.id, s.is_active)}
-                          title="Toggle active"
-                        >
-                          {s.is_active
-                            ? <ToggleRight size={18} color="var(--green)" />
-                            : <ToggleLeft size={18} color="var(--text-muted)" />}
-                        </button>
-                        <button
-                          className="btn btn-ghost"
-                          style={{ color: 'var(--red)' }}
-                          onClick={() => deleteSession(s.id, s.name)}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+        <SessionsTab 
+          sessions={sessions}
+          loading={loading}
+          onRefresh={fetchSessions}
+          onAdd={() => setShowAddSession(true)}
+          onToggle={toggleSession}
+          onDelete={deleteSession}
+        />
       )}
 
-      {/* ── CORRECT ATTENDANCE TAB ── */}
       {tab === 'correct' && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <div className="filter-group">
-              <Calendar size={15} />
-              <input
-                type="date"
-                value={correctDate}
-                onChange={e => setCorrectDate(e.target.value)}
-              />
-            </div>
-            <button className="btn btn-outline" onClick={exportAttendance}>
-              <Download size={14} /> Export
-            </button>
-          </div>
-
-          {loading ? <div className="spinner" style={{ margin: '2rem auto' }} /> : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Badge</th>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Scanner</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {correctRecords.map(r => (
-                    <tr key={r.id}>
-                      <td>
-                        {editingRecord?.id === r.id ? (
-                          <input
-                            type="time"
-                            value={editTime}
-                            onChange={e => setEditTime(e.target.value)}
-                            onBlur={() => saveEditTime(r)}
-                            autoFocus
-                            className="inline-edit"
-                          />
-                        ) : (
-                          <span
-                            className="cursor-pointer"
-                            onClick={() => {
-                              setEditingRecord(r)
-                              const time = new Date(r.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
-                              setEditTime(time)
-                            }}
-                          >
-                            {new Date(r.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--gold)' }}>{r.badge_number}</td>
-                      <td>{r.sewadar_name}</td>
-                      <td>
-                        <span className={`badge ${r.type === 'IN' ? 'badge-green' : 'badge-red'}`}>
-                          {r.type}
-                        </span>
-                      </td>
-                      <td style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{r.scanner_name}</td>
-                      <td>
-                        <button
-                          className="btn btn-ghost"
-                          style={{ color: 'var(--red)' }}
-                          onClick={() => deleteAttendanceRecord(r.id, r.badge_number, r.type)}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {correctRecords.length === 0 && (
-                    <tr>
-                      <td colSpan={6} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                        No records found for this date
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+        <CorrectAttendanceTab 
+          records={correctRecords}
+          loading={loading}
+          date={correctDate}
+          setDate={setCorrectDate}
+          onRefresh={fetchCorrectAttendance}
+          onExport={exportAttendance}
+          editingRecord={editingRecord}
+          setEditingRecord={setEditingRecord}
+          editTime={editTime}
+          setEditTime={setEditTime}
+          onSaveTime={saveEditTime}
+          onDelete={deleteAttendanceRecord}
+        />
       )}
 
-      {/* ── CENTRES & GEO TAB ── */}
       {tab === 'centres' && (
-        <CentresGeoTab centres={centres} loading={loading} onRefresh={fetchCentres} profile={profile} />
+        <CentresTab 
+          centres={centres}
+          loading={loading}
+          onRefresh={fetchCentres}
+          profile={profile}
+        />
       )}
 
-      {/* ── REPORTS TAB ── */}
       {tab === 'reports' && (
-        <div>
-          <div className="reports-grid">
-            <div className="report-card">
-              <div className="report-icon"><Users size={20} /></div>
-              <div className="report-info">
-                <div className="report-count">{sewadars.length}</div>
-                <div className="report-label">Total Sewadars</div>
-              </div>
-              <button className="btn-download" onClick={exportSewadars}><Download size={16} /></button>
-            </div>
-            <div className="report-card">
-              <div className="report-icon"><CalendarDays size={20} /></div>
-              <div className="report-info">
-                <div className="report-count">{sessions.length}</div>
-                <div className="report-label">Sessions</div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ReportsTab 
+          sewadarsCount={sewadars.length}
+          sessionsCount={sessions.length}
+          onExportSewadars={exportSewadars}
+        />
       )}
 
-      {/* Add Sewadar Modal */}
       {showAddSewadar && (
-        <div className="overlay" onClick={() => setShowAddSewadar(false)}>
-          <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', marginBottom: '1.5rem' }}>Add Sewadar</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div>
-                <label className="label">Badge Number</label>
-                <input className="input" value={newSewadar.badge_number} onChange={e => setNewSewadar({ ...newSewadar, badge_number: e.target.value })} />
+        <AddSewadarModal 
+          newSewadar={newSewadar}
+          setNewSewadar={setNewSewadar}
+          onClose={() => setShowAddSewadar(false)}
+          onSave={addSewadar}
+        />
+      )}
+
+      {showAddSession && (
+        <AddSessionModal 
+          newSession={newSession}
+          setNewSession={setNewSession}
+          onClose={() => setShowAddSession(false)}
+          onSave={addSession}
+        />
+      )}
+    </div>
+  )
+}
+
+function SewadarsTab({ sewadars, loading, searchTerm, setSearchTerm, onRefresh, onAdd, onExport, onUpdate, onDelete }) {
+  return (
+    <div className="animate-fade-in">
+      <div className="flex justify-between items-center mb-3">
+        <div className="search-box" style={{ maxWidth: 320 }}>
+          <Search size={17} />
+          <input
+            type="text"
+            placeholder="Search sewadars..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+          />
+        </div>
+        <div className="flex gap-2">
+          <button className="btn btn-outline" onClick={onExport}>
+            <Download size={16} /> Export
+          </button>
+          <button className="btn btn-gold" onClick={onAdd}>
+            <Plus size={16} /> Add
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="spinner" style={{ margin: '3rem auto' }} />
+      ) : sewadars.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon"><Users size={28} /></div>
+          <div className="empty-text">No sewadars found</div>
+          <div className="empty-hint">Add your first sewadar to get started</div>
+        </div>
+      ) : (
+        <div className="sewadars-list stagger-children">
+          {sewadars.map(s => (
+            <div key={s.id} className="sewadar-row">
+              <span className="sewadar-badge">{s.badge_number}</span>
+              <div className="sewadar-name">
+                <input
+                  defaultValue={s.sewadar_name}
+                  onBlur={e => onUpdate(s.id, 'sewadar_name', e.target.value)}
+                />
               </div>
-              <div>
-                <label className="label">Name</label>
-                <input className="input" value={newSewadar.sewadar_name} onChange={e => setNewSewadar({ ...newSewadar, sewadar_name: e.target.value })} />
-              </div>
-              <div>
-                <label className="label">Father/Husband</label>
-                <input className="input" value={newSewadar.father_husband_name} onChange={e => setNewSewadar({ ...newSewadar, father_husband_name: e.target.value })} />
-              </div>
-              <div>
-                <label className="label">Gender</label>
-                <select className="input" value={newSewadar.gender} onChange={e => setNewSewadar({ ...newSewadar, gender: e.target.value })}>
-                  <option>Male</option>
-                  <option>Female</option>
-                </select>
-              </div>
-              <div>
-                <label className="label">Centre</label>
-                <select className="input" value={newSewadar.centre} onChange={e => setNewSewadar({ ...newSewadar, centre: e.target.value })}>
+              <div className="sewadar-centre">
+                <select
+                  defaultValue={s.centre}
+                  onChange={e => onUpdate(s.id, 'centre', e.target.value)}
+                >
                   {PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
-              <div>
-                <label className="label">Department</label>
-                <input className="input" value={newSewadar.department} onChange={e => setNewSewadar({ ...newSewadar, department: e.target.value })} />
+              <div className="sewadar-dept">
+                <input
+                  defaultValue={s.department || ''}
+                  placeholder="Dept"
+                  onBlur={e => onUpdate(s.id, 'department', e.target.value)}
+                />
               </div>
-              <div>
-                <label className="label">Age</label>
-                <input className="input" type="number" value={newSewadar.age || ''} onChange={e => setNewSewadar({ ...newSewadar, age: e.target.value })} />
+              <div className="sewadar-geo">
+                <button
+                  className="btn-icon"
+                  onClick={() => onUpdate(s.id, 'geo_required', !s.geo_required)}
+                  title={s.geo_required ? 'Geo required' : 'Geo not required'}
+                >
+                  {s.geo_required 
+                    ? <ToggleRight size={20} color="var(--green)" />
+                    : <ToggleLeft size={20} color="var(--text-muted)" />
+                  }
+                </button>
+              </div>
+              <div className="sewadar-actions">
+                <button
+                  className="btn-icon danger"
+                  onClick={() => onDelete(s.id, s.badge_number)}
+                  title="Delete"
+                >
+                  <Trash2 size={16} />
+                </button>
               </div>
             </div>
-            <div style={{ marginTop: '1rem' }}>
-              <label className="checkbox-label">
-                <input type="checkbox" checked={newSewadar.geo_required} onChange={e => setNewSewadar({ ...newSewadar, geo_required: e.target.checked })} />
-                <span>Geo verification required</span>
-              </label>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '1.5rem' }}>
-              <button className="btn btn-outline btn-full" onClick={() => setShowAddSewadar(false)}>Cancel</button>
-              <button className="btn btn-gold btn-full" onClick={addSewadar}>Add Sewadar</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add Session Modal */}
-      {showAddSession && (
-        <div className="overlay" onClick={() => setShowAddSession(false)}>
-          <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', marginBottom: '1.5rem' }}>New Session</h3>
-            <div className="mb-2">
-              <label className="label">Session Name</label>
-              <input className="input" placeholder="e.g. Morning Satsang" value={newSession.name} onChange={e => setNewSession({ ...newSession, name: e.target.value })} />
-            </div>
-            <div className="mb-2">
-              <label className="label">Date</label>
-              <input className="input" type="date" value={newSession.session_date} onChange={e => setNewSession({ ...newSession, session_date: e.target.value })} />
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '1.5rem' }}>
-              <button className="btn btn-outline btn-full" onClick={() => setShowAddSession(false)}>Cancel</button>
-              <button className="btn btn-gold btn-full" onClick={addSession}>Create Session</button>
-            </div>
-          </div>
+          ))}
         </div>
       )}
     </div>
   )
 }
 
-// Centres & Geo Tab Component
-function CentresGeoTab({ centres, loading, onRefresh, profile }) {
+function SessionsTab({ sessions, loading, onRefresh, onAdd, onToggle, onDelete }) {
+  return (
+    <div className="animate-fade-in">
+      <div className="flex justify-between items-center mb-3">
+        <p className="text-muted text-sm">Manage attendance sessions</p>
+        <button className="btn btn-gold" onClick={onAdd}>
+          <Plus size={16} /> New Session
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="spinner" style={{ margin: '3rem auto' }} />
+      ) : sessions.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon"><CalendarDays size={28} /></div>
+          <div className="empty-text">No sessions created</div>
+          <div className="empty-hint">Create a session to start tracking attendance</div>
+        </div>
+      ) : (
+        <div className="sessions-list stagger-children">
+          {sessions.map(s => (
+            <div key={s.id} className="session-row">
+              <span className={`session-status ${s.is_active ? 'active' : 'inactive'}`}>
+                {s.is_active ? 'Active' : 'Inactive'}
+              </span>
+              <span className="session-name">{s.name}</span>
+              <span className="session-date">
+                {new Date(s.session_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+              </span>
+              <button
+                className="btn-icon"
+                onClick={() => onToggle(s.id, s.is_active)}
+                title={s.is_active ? 'Deactivate' : 'Activate'}
+              >
+                {s.is_active 
+                  ? <ToggleRight size={20} color="var(--green)" />
+                  : <ToggleLeft size={20} color="var(--text-muted)" />
+                }
+              </button>
+              <button
+                className="btn-icon danger"
+                onClick={() => onDelete(s.id, s.name)}
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CorrectAttendanceTab({ records, loading, date, setDate, onRefresh, onExport, editingRecord, setEditingRecord, editTime, setEditTime, onSaveTime, onDelete }) {
+  return (
+    <div className="animate-fade-in">
+      <div className="flex items-center justify-between mb-3">
+        <div className="filter-group">
+          <Calendar size={16} />
+          <input
+            type="date"
+            value={date}
+            onChange={e => setDate(e.target.value)}
+          />
+        </div>
+        <button className="btn btn-outline" onClick={onExport}>
+          <Download size={16} /> Export
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="spinner" style={{ margin: '3rem auto' }} />
+      ) : records.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon"><Edit2 size={28} /></div>
+          <div className="empty-text">No records for this date</div>
+        </div>
+      ) : (
+        <div className="attendance-list stagger-children">
+          {records.map(r => (
+            <div key={r.id} className="attendance-row">
+              {editingRecord?.id === r.id ? (
+                <input
+                  type="time"
+                  value={editTime}
+                  onChange={e => setEditTime(e.target.value)}
+                  onBlur={() => onSaveTime(r)}
+                  onKeyDown={e => e.key === 'Enter' && onSaveTime(r)}
+                  autoFocus
+                  className="attendance-time"
+                />
+              ) : (
+                <span 
+                  className="attendance-time editable"
+                  onClick={() => {
+                    setEditingRecord(r)
+                    const time = new Date(r.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
+                    setEditTime(time)
+                  }}
+                >
+                  {new Date(r.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
+              <span className="attendance-badge">{r.badge_number}</span>
+              <span className="attendance-name">{r.sewadar_name}</span>
+              <span className={`attendance-type badge ${r.type === 'IN' ? 'badge-green' : 'badge-red'}`}>
+                {r.type}
+              </span>
+              <span className="text-muted text-sm" style={{ minWidth: 100 }}>{r.scanner_name}</span>
+              <button
+                className="btn-icon danger"
+                onClick={() => onDelete(r.id, r.badge_number, r.type)}
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CentresTab({ centres, loading, onRefresh, profile }) {
   const [expandedParents, setExpandedParents] = useState([])
-  const [editingCentre, setEditingCentre] = useState(null)
   const [showAddCentre, setShowAddCentre] = useState(false)
   const [newCentre, setNewCentre] = useState({ centre_name: '', latitude: '', longitude: '', geo_radius: 200, geo_enabled: false, parent_centre: '' })
   const [saving, setSaving] = useState(false)
+  const [editingChild, setEditingChild] = useState(null)
+  const [childData, setChildData] = useState({})
 
-  // Group centres by parent
   const parentCentres = centres.filter(c => !c.parent_centre)
   const childCentresMap = centres.reduce((acc, c) => {
     if (c.parent_centre) {
@@ -627,9 +568,7 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
   }, {})
 
   const toggleParent = (name) => {
-    setExpandedParents(prev => 
-      prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]
-    )
+    setExpandedParents(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name])
   }
 
   const toggleGeo = async (centre, current) => {
@@ -641,6 +580,13 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
       details: `Geo ${!current ? 'enabled' : 'disabled'} for ${centre.centre_name}`,
       timestamp: new Date().toISOString()
     })
+    onRefresh()
+    setSaving(false)
+  }
+
+  const updateCentreField = async (centreId, field, value) => {
+    setSaving(true)
+    await supabase.from('centres').update({ [field]: value }).eq('id', centreId)
     onRefresh()
     setSaving(false)
   }
@@ -669,43 +615,49 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
     setSaving(false)
   }
 
-  const updateCentreGeo = async (centreId, field, value) => {
+  const saveChildEdit = async (childId) => {
+    const data = childData[childId]
+    if (!data) return
     setSaving(true)
-    await supabase.from('centres').update({ [field]: value }).eq('id', centreId)
+    await supabase.from('centres').update({
+      latitude: data.latitude ? parseFloat(data.latitude) : null,
+      longitude: data.longitude ? parseFloat(data.longitude) : null,
+      geo_radius: data.geo_radius || 200,
+      geo_enabled: data.geo_enabled
+    }).eq('id', childId)
+    setEditingChild(null)
+    setChildData({})
     onRefresh()
     setSaving(false)
   }
 
   if (loading) {
-    return <div className="spinner" style={{ margin: '2rem auto' }} />
+    return <div className="spinner" style={{ margin: '3rem auto' }} />
   }
 
   return (
-    <div>
+    <div className="animate-fade-in">
       <div className="flex justify-between items-center mb-3">
-        <p className="text-muted text-sm">Manage centres, GPS coordinates, and geo-fencing</p>
+        <p className="text-muted text-sm">Manage centres, GPS coordinates & geo-fencing</p>
         <button className="btn btn-gold" onClick={() => setShowAddCentre(true)}>
-          <MapPin size={14} /> Add Centre
+          <Plus size={16} /> Add Centre
         </button>
       </div>
 
       {centres.length === 0 ? (
-        <div className="card text-center py-5">
-          <MapPin size={40} color="var(--text-muted)" style={{ margin: '0 auto 1rem' }} />
-          <p className="text-muted">No centres configured yet.</p>
+        <div className="empty-state">
+          <div className="empty-icon"><MapPin size={28} /></div>
+          <div className="empty-text">No centres configured</div>
         </div>
       ) : (
-        <div className="centres-list">
+        <div className="centres-list stagger-children">
           {parentCentres.map(parent => {
             const children = childCentresMap[parent.centre_name] || []
             const isExpanded = expandedParents.includes(parent.centre_name)
             
             return (
               <div key={parent.id} className="centre-parent-card">
-                <div 
-                  className="centre-parent-header"
-                  onClick={() => toggleParent(parent.centre_name)}
-                >
+                <div className="centre-parent-header" onClick={() => toggleParent(parent.centre_name)}>
                   <div className="centre-parent-info">
                     <span className="centre-name">{parent.centre_name}</span>
                     {children.length > 0 && (
@@ -717,11 +669,10 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
                       className={`geo-toggle ${parent.geo_enabled ? 'enabled' : ''}`}
                       onClick={(e) => { e.stopPropagation(); toggleGeo(parent, parent.geo_enabled) }}
                       disabled={saving}
-                      title={parent.geo_enabled ? 'Geo-fencing ON' : 'Geo-fencing OFF'}
                     >
                       {parent.geo_enabled ? <><span className="toggle-dot" /> GPS ON</> : 'GPS OFF'}
                     </button>
-                    <ChevronDown size={18} className={`expand-icon ${isExpanded ? 'rotated' : ''}`} />
+                    <ChevronDown size={20} className={`expand-icon ${isExpanded ? 'rotated' : ''}`} />
                   </div>
                 </div>
                 
@@ -735,7 +686,7 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
                           step="any"
                           placeholder="28.xxxx"
                           value={parent.latitude || ''}
-                          onChange={(e) => updateCentreGeo(parent.id, 'latitude', parseFloat(e.target.value) || null)}
+                          onChange={(e) => updateCentreField(parent.id, 'latitude', parseFloat(e.target.value) || null)}
                           disabled={saving}
                         />
                       </div>
@@ -746,7 +697,7 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
                           step="any"
                           placeholder="77.xxxx"
                           value={parent.longitude || ''}
-                          onChange={(e) => updateCentreGeo(parent.id, 'longitude', parseFloat(e.target.value) || null)}
+                          onChange={(e) => updateCentreField(parent.id, 'longitude', parseFloat(e.target.value) || null)}
                           disabled={saving}
                         />
                       </div>
@@ -755,7 +706,7 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
                         <input
                           type="number"
                           value={parent.geo_radius || 200}
-                          onChange={(e) => updateCentreGeo(parent.id, 'geo_radius', parseInt(e.target.value) || 200)}
+                          onChange={(e) => updateCentreField(parent.id, 'geo_radius', parseInt(e.target.value) || 200)}
                           disabled={saving}
                         />
                       </div>
@@ -766,10 +717,60 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
                         <div className="children-header">Sub-centres</div>
                         {children.map(child => (
                           <div key={child.id} className="child-centre-row">
-                            <span className="child-name">{child.centre_name}</span>
-                            <span className={`child-geo ${child.geo_enabled ? 'geo-on' : ''}`}>
-                              {child.geo_enabled ? 'GPS ON' : 'GPS OFF'}
-                            </span>
+                            {editingChild === child.id ? (
+                              <>
+                                <input
+                                  className="input"
+                                  style={{ width: '80px', padding: '6px 8px', fontSize: '0.8rem' }}
+                                  placeholder="Lat"
+                                  value={childData[child.id]?.latitude ?? child.latitude ?? ''}
+                                  onChange={e => setChildData({ ...childData, [child.id]: { ...childData[child.id], latitude: e.target.value } })}
+                                />
+                                <input
+                                  className="input"
+                                  style={{ width: '80px', padding: '6px 8px', fontSize: '0.8rem' }}
+                                  placeholder="Lng"
+                                  value={childData[child.id]?.longitude ?? child.longitude ?? ''}
+                                  onChange={e => setChildData({ ...childData, [child.id]: { ...childData[child.id], longitude: e.target.value } })}
+                                />
+                                <input
+                                  className="input"
+                                  style={{ width: '60px', padding: '6px 8px', fontSize: '0.8rem' }}
+                                  placeholder="R"
+                                  value={childData[child.id]?.geo_radius ?? child.geo_radius ?? ''}
+                                  onChange={e => setChildData({ ...childData, [child.id]: { ...childData[child.id], geo_radius: e.target.value } })}
+                                />
+                                <button className="btn btn-sm btn-primary" onClick={() => saveChildEdit(child.id)} disabled={saving}>
+                                  <Save size={14} />
+                                </button>
+                                <button className="btn btn-sm btn-outline" onClick={() => { setEditingChild(null); setChildData({}) }}>
+                                  <X size={14} />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <span className="child-name" style={{ flex: 1 }}>{child.centre_name}</span>
+                                <span className="child-geo" style={{ fontSize: '0.7rem' }}>
+                                  {child.latitude?.toFixed(4) || '—'}, {child.longitude?.toFixed(4) || '—'}
+                                </span>
+                                <span className={`child-geo ${child.geo_enabled ? 'geo-on' : ''}`}>
+                                  {child.geo_enabled ? 'ON' : 'OFF'}
+                                </span>
+                                <button className="btn-icon" onClick={() => setEditingChild(child.id)}>
+                                  <Edit2 size={14} />
+                                </button>
+                                <button
+                                  className="btn-icon"
+                                  onClick={() => toggleGeo(child, child.geo_enabled)}
+                                  disabled={saving}
+                                >
+                                  {child.geo_enabled 
+                                    ? <ToggleRight size={18} color="var(--green)" />
+                                    : <ToggleLeft size={18} color="var(--text-muted)" />
+                                  }
+                                </button>
+                              </>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -780,9 +781,8 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
             )
           })}
           
-          {/* Centres without parent */}
           {parentCentres.length === 0 && centres.map(centre => (
-            <div key={centre.id} className="centre-parent-card standalone">
+            <div key={centre.id} className="centre-parent-card">
               <div className="centre-parent-header">
                 <div className="centre-parent-info">
                   <span className="centre-name">{centre.centre_name}</span>
@@ -802,13 +802,12 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
         </div>
       )}
 
-      {/* Add Centre Modal */}
       {showAddCentre && (
         <div className="overlay" onClick={() => setShowAddCentre(false)}>
           <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', marginBottom: '1.5rem' }}>Add Centre</h3>
+            <h3 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', marginBottom: '1.5rem', fontWeight: 700 }}>Add Centre</h3>
             
-            <div className="mb-2">
+            <div className="mb-3">
               <label className="label">Centre Name</label>
               <input
                 className="input"
@@ -819,75 +818,149 @@ function CentresGeoTab({ centres, loading, onRefresh, profile }) {
               />
             </div>
 
-            <div className="mb-2">
+            <div className="mb-3">
               <label className="label">Parent Centre (optional)</label>
               <select
                 className="input"
                 value={newCentre.parent_centre}
                 onChange={e => setNewCentre({ ...newCentre, parent_centre: e.target.value })}
               >
-                <option value="">None (Top-level centre)</option>
+                <option value="">None (Top-level)</option>
                 {parentCentres.map(p => (
                   <option key={p.id} value={p.centre_name}>{p.centre_name}</option>
                 ))}
               </select>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-              <div className="mb-2">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div className="mb-3">
                 <label className="label">Latitude</label>
-                <input
-                  className="input"
-                  type="number"
-                  step="any"
-                  placeholder="28.xxxx"
-                  value={newCentre.latitude}
-                  onChange={e => setNewCentre({ ...newCentre, latitude: e.target.value })}
-                />
+                <input className="input" type="number" step="any" placeholder="28.xxxx" value={newCentre.latitude} onChange={e => setNewCentre({ ...newCentre, latitude: e.target.value })} />
               </div>
-              <div className="mb-2">
+              <div className="mb-3">
                 <label className="label">Longitude</label>
-                <input
-                  className="input"
-                  type="number"
-                  step="any"
-                  placeholder="77.xxxx"
-                  value={newCentre.longitude}
-                  onChange={e => setNewCentre({ ...newCentre, longitude: e.target.value })}
-                />
+                <input className="input" type="number" step="any" placeholder="77.xxxx" value={newCentre.longitude} onChange={e => setNewCentre({ ...newCentre, longitude: e.target.value })} />
               </div>
-            </div>
-
-            <div className="mb-2">
-              <label className="label">Geo Radius (meters)</label>
-              <input
-                className="input"
-                type="number"
-                value={newCentre.geo_radius}
-                onChange={e => setNewCentre({ ...newCentre, geo_radius: parseInt(e.target.value) || 200 })}
-              />
             </div>
 
             <div className="mb-3">
+              <label className="label">Geo Radius (meters)</label>
+              <input className="input" type="number" value={newCentre.geo_radius} onChange={e => setNewCentre({ ...newCentre, geo_radius: parseInt(e.target.value) || 200 })} />
+            </div>
+
+            <div className="mb-4">
               <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={newCentre.geo_enabled}
-                  onChange={e => setNewCentre({ ...newCentre, geo_enabled: e.target.checked })}
-                />
+                <input type="checkbox" checked={newCentre.geo_enabled} onChange={e => setNewCentre({ ...newCentre, geo_enabled: e.target.checked })} />
                 <span>Enable geo-fencing</span>
               </label>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '1.5rem' }}>
-              <button className="btn btn-outline btn-full" onClick={() => setShowAddCentre(false)}>Cancel</button>
-              <button className="btn btn-gold btn-full" onClick={saveCentre} disabled={saving || !newCentre.centre_name.trim()}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <button className="btn btn-outline" onClick={() => setShowAddCentre(false)}>Cancel</button>
+              <button className="btn btn-gold" onClick={saveCentre} disabled={saving || !newCentre.centre_name.trim()}>
                 {saving ? 'Saving...' : 'Add Centre'}
               </button>
             </div>
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function ReportsTab({ sewadarsCount, sessionsCount, onExportSewadars }) {
+  return (
+    <div className="animate-fade-in">
+      <div className="reports-grid stagger-children">
+        <div className="report-card">
+          <div className="report-icon"><Users size={22} /></div>
+          <div className="report-info">
+            <div className="report-count">{sewadarsCount}</div>
+            <div className="report-label">Total Sewadars</div>
+          </div>
+          <button className="btn-download" onClick={onExportSewadars}><Download size={18} /></button>
+        </div>
+        <div className="report-card">
+          <div className="report-icon" style={{ background: 'var(--blue-bg)', color: 'var(--blue)' }}><CalendarDays size={22} /></div>
+          <div className="report-info">
+            <div className="report-count">{sessionsCount}</div>
+            <div className="report-label">Sessions</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AddSewadarModal({ newSewadar, setNewSewadar, onClose, onSave }) {
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
+        <h3 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', marginBottom: '1.5rem', fontWeight: 700 }}>Add New Sewadar</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          <div className="mb-2">
+            <label className="label">Badge Number</label>
+            <input className="input" value={newSewadar.badge_number} onChange={e => setNewSewadar({ ...newSewadar, badge_number: e.target.value })} style={{ textTransform: 'uppercase' }} />
+          </div>
+          <div className="mb-2">
+            <label className="label">Name</label>
+            <input className="input" value={newSewadar.sewadar_name} onChange={e => setNewSewadar({ ...newSewadar, sewadar_name: e.target.value })} />
+          </div>
+          <div className="mb-2">
+            <label className="label">Father/Husband</label>
+            <input className="input" value={newSewadar.father_husband_name} onChange={e => setNewSewadar({ ...newSewadar, father_husband_name: e.target.value })} />
+          </div>
+          <div className="mb-2">
+            <label className="label">Gender</label>
+            <select className="input" value={newSewadar.gender} onChange={e => setNewSewadar({ ...newSewadar, gender: e.target.value })}>
+              <option>Male</option>
+              <option>Female</option>
+            </select>
+          </div>
+          <div className="mb-2">
+            <label className="label">Centre</label>
+            <select className="input" value={newSewadar.centre} onChange={e => setNewSewadar({ ...newSewadar, centre: e.target.value })}>
+              {PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="mb-2">
+            <label className="label">Department</label>
+            <input className="input" value={newSewadar.department} onChange={e => setNewSewadar({ ...newSewadar, department: e.target.value })} />
+          </div>
+        </div>
+        <div className="mb-3">
+          <label className="checkbox-label">
+            <input type="checkbox" checked={newSewadar.geo_required} onChange={e => setNewSewadar({ ...newSewadar, geo_required: e.target.checked })} />
+            <span>Require geo-verification</span>
+          </label>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+          <button className="btn btn-gold" onClick={onSave}>Add Sewadar</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AddSessionModal({ newSession, setNewSession, onClose, onSave }) {
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
+        <h3 style={{ fontFamily: 'Outfit, sans-serif', color: 'var(--gold)', marginBottom: '1.5rem', fontWeight: 700 }}>New Session</h3>
+        <div className="mb-3">
+          <label className="label">Session Name</label>
+          <input className="input" placeholder="e.g. Morning Satsang" value={newSession.name} onChange={e => setNewSession({ ...newSession, name: e.target.value })} />
+        </div>
+        <div className="mb-4">
+          <label className="label">Date</label>
+          <input className="input" type="date" value={newSession.session_date} onChange={e => setNewSession({ ...newSession, session_date: e.target.value })} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+          <button className="btn btn-gold" onClick={onSave}>Create Session</button>
+        </div>
+      </div>
     </div>
   )
 }

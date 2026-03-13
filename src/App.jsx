@@ -11,10 +11,10 @@ import AdminPage from './pages/AdminPage'
 import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
 import FlagsPage from './pages/FlagsPage'
-import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff, Flag } from 'lucide-react'
+import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff, Flag, XCircle } from 'lucide-react'
 
 function AppLayout() {
-  const { profile, loading } = useAuth()
+  const { profile, loading, error } = useAuth()
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingSync, setPendingSync] = useState(0)
   const navigate = useNavigate()
@@ -42,10 +42,23 @@ function AppLayout() {
   }, [])
 
   if (loading) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg-main)' }}>
       <div style={{ textAlign: 'center' }}>
         <div className="spinner" style={{ margin: '0 auto 1rem' }} />
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading…</p>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Loading…</p>
+      </div>
+    </div>
+  )
+
+  if (error) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', background: 'var(--bg-main)', textAlign: 'center' }}>
+      <div>
+        <div style={{ width: 64, height: 64, background: 'var(--red-bg)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+          <XCircle size={32} color="var(--red)" />
+        </div>
+        <h2 style={{ color: 'var(--red)', marginBottom: '0.5rem', fontSize: '1.25rem' }}>Something went wrong</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1rem' }}>{error}</p>
+        <button className="btn btn-primary" onClick={() => window.location.reload()}>Refresh Page</button>
       </div>
     </div>
   )
@@ -53,13 +66,13 @@ function AppLayout() {
   if (!profile) return <LoginPage />
 
   if (!profile.is_active) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', textAlign: 'center' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', background: 'var(--bg-main)', textAlign: 'center' }}>
       <div>
-        <div style={{ width: 56, height: 56, background: 'var(--red-bg)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
-          <Shield size={28} color="var(--red)" />
+        <div style={{ width: 64, height: 64, background: 'var(--red-bg)', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+          <Shield size={32} color="var(--red)" />
         </div>
-        <h2 style={{ color: 'var(--red)', marginBottom: '0.5rem' }}>Account Inactive</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Your account has been deactivated. Contact Super Admin.</p>
+        <h2 style={{ color: 'var(--red)', marginBottom: '0.5rem', fontSize: '1.25rem' }}>Account Inactive</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Your account has been deactivated. Contact Super Admin.</p>
       </div>
     </div>
   )
