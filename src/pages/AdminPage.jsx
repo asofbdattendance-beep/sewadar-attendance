@@ -1,281 +1,217 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES } from '../lib/supabase'
-import { Search, Flag, CheckCircle, Clock, AlertCircle } from 'lucide-react'
+import { Search, Calendar, Download, User, LogIn, LogOut, Clock } from 'lucide-react'
 
 export default function AdminPage() {
   const { profile } = useAuth()
-  const [tab, setTab] = useState('queries')
-  const [queries, setQueries] = useState([])
-  const [searchBadge, setSearchBadge] = useState('')
+  const [searchTerm, setSearchTerm] = useState('')
   const [searchResults, setSearchResults] = useState([])
-  const [selectedRecord, setSelectedRecord] = useState(null)
-  const [queryNote, setQueryNote] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [flaggedAttendance, setFlaggedAttendance] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [selected, setSelected] = useState(null)
+  const [history, setHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [dateRange, setDateRange] = useState({ from: '', to: '' })
 
-  const isAdmin = [ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(profile?.role)
-
-  useEffect(() => {
-    if (tab === 'queries') fetchQueries()
-  }, [tab])
-
-  async function fetchQueries() {
-    setLoading(true)
-    const { data: queriesData } = await supabase
-      .from('queries')
-      .select(`*, attendance(*)`)
-      .order('created_at', { ascending: false })
-
-    let filteredQueries = queriesData || []
-    
-    if (profile.role === ROLES.ADMIN && profile.centre) {
-      filteredQueries = filteredQueries.filter(q => q.attendance?.centre === profile.centre)
-    }
-
-    setQueries(filteredQueries)
-    setLoading(false)
+  const isAdminOrAbove = [ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(profile?.role)
+  if (!isAdminOrAbove) {
+    return <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
   }
 
-  async function searchAttendance() {
-    if (!searchBadge.trim()) return
-    setLoading(true)
-    const { data } = await supabase
-      .from('attendance')
+  async function searchSewadars() {
+    if (!searchTerm.trim()) return
+    setSearching(true)
+    const term = searchTerm.trim()
+    const { data } = await supabase.from('sewadars')
       .select('*')
-      .eq('badge_number', searchBadge.trim().toUpperCase())
-      .order('scan_time', { ascending: false })
-      .limit(50)
+      .or(`sewadar_name.ilike.%${term}%,badge_number.ilike.%${term.toUpperCase()}%`)
+      .limit(15)
     setSearchResults(data || [])
-    setLoading(false)
+    setSearching(false)
   }
 
-  async function raiseQuery(attendanceId) {
-    if (!queryNote.trim()) return
-    await supabase.from('queries').insert({
-      raised_by_badge: profile.badge_number,
-      raised_by_name: profile.name,
-      attendance_id: attendanceId,
-      issue_description: queryNote,
-      status: 'open',
-      created_at: new Date().toISOString()
-    })
-    await supabase.from('logs').insert({
-      user_badge: profile.badge_number,
-      action: 'RAISE_QUERY',
-      details: `Query raised on attendance ${attendanceId}: ${queryNote}`,
-      timestamp: new Date().toISOString()
-    })
-    setQueryNote('')
-    setSelectedRecord(null)
-    alert('Query raised successfully.')
+  async function loadHistory(sewadar) {
+    setSelected(sewadar)
+    setHistoryLoading(true)
+    setHistory([])
+    let q = supabase.from('attendance')
+      .select('*')
+      .eq('badge_number', sewadar.badge_number)
+      .order('scan_time', { ascending: false })
+      .limit(200)
+    if (dateRange.from) { const s = new Date(dateRange.from); s.setHours(0,0,0,0); q = q.gte('scan_time', s.toISOString()) }
+    if (dateRange.to) { const e = new Date(dateRange.to); e.setHours(23,59,59,999); q = q.lte('scan_time', e.toISOString()) }
+    const { data } = await q
+    setHistory(data || [])
+    setHistoryLoading(false)
   }
 
-  async function resolveQuery(queryId) {
-    await supabase.from('queries').update({ status: 'resolved', resolved_at: new Date().toISOString(), resolved_by: profile.badge_number }).eq('id', queryId)
-    fetchQueries()
+  function exportHistory() {
+    if (!selected || !history.length) return
+    const csv = [
+      ['Date','Time','Type','Scanned At','Scanned By','Scanner Centre'].join(','),
+      ...history.map(r => [
+        new Date(r.scan_time).toLocaleDateString('en-IN'),
+        new Date(r.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+        r.type, r.centre, r.scanner_name || '', r.scanner_centre || ''
+      ].join(','))
+    ].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
+    a.download = `history_${selected.badge_number}.csv`; a.click()
   }
 
-  function timeFmt(iso) {
-    return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
-  }
+  // Group history by date
+  const byDate = {}
+  history.forEach(r => {
+    const d = new Date(r.scan_time).toISOString().split('T')[0]
+    if (!byDate[d]) byDate[d] = []
+    byDate[d].push(r)
+  })
+  const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a))
+
+  // Stats
+  const totalDays = dates.length
+  const totalIns = history.filter(r => r.type === 'IN').length
+
+  function fmt(iso) { return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) }
+  function fmtDate(d) { return new Date(d).toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }) }
 
   return (
-    <div className="page-wide pb-nav" style={{ maxWidth: 800 }}>
+    <div className="page-wide pb-nav" style={{ maxWidth: 860 }}>
       <div className="mt-2 mb-3">
-        <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>
-          Admin Panel
-        </h2>
+        <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>Sewadar History</h2>
+        <p className="text-muted text-xs mt-1">Look up attendance history for any sewadar</p>
       </div>
 
-      <div className="tab-nav">
-        <button className={`tab-btn ${tab === 'queries' ? 'active' : ''}`} onClick={() => setTab('queries')}>
-          <Flag size={14} /> Queries
+      {/* Search */}
+      <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+        <div className="search-box" style={{ flex: 1, minWidth: 200 }}>
+          <Search size={15} />
+          <input
+            type="text" placeholder="Name or badge number…" value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && searchSewadars()}
+          />
+        </div>
+        <button className="btn btn-gold" onClick={searchSewadars} disabled={searching}>
+          {searching ? 'Searching…' : 'Search'}
         </button>
-        <button className={`tab-btn ${tab === 'search' ? 'active' : ''}`} onClick={() => setTab('search')}>
-          <Search size={14} /> Search Badge
-        </button>
-        {profile?.role === ROLES.SUPER_ADMIN && (
-          <button className={`tab-btn ${tab === 'logs' ? 'active' : ''}`} onClick={() => setTab('logs')}>
-            <Clock size={14} /> Logs
-          </button>
-        )}
       </div>
 
-      {/* Queries Tab */}
-      {tab === 'queries' && (
-        <div>
-          {queries.length === 0 ? (
-            <div className="card text-center" style={{ padding: '3rem' }}>
-              <CheckCircle size={40} color="var(--green)" style={{ margin: '0 auto 1rem' }} />
-              <p className="text-secondary">No open queries</p>
-            </div>
-          ) : (
-            queries.map(q => (
-              <div key={q.id} className="card mb-2" style={{ borderColor: q.status === 'open' ? 'rgba(224,92,92,0.3)' : 'var(--border)' }}>
-                <div className="flex items-center justify-between mb-2">
-                  <span className={`badge ${q.status === 'open' ? 'badge-red' : 'badge-green'}`}>
-                    {q.status}
-                  </span>
-                  <span className="text-muted text-xs">{timeFmt(q.created_at)}</span>
+      {/* Results */}
+      {searchResults.length > 0 && (
+        <div className="card mb-3" style={{ padding: 0, overflow: 'hidden' }}>
+          {searchResults.map((s, i) => (
+            <button
+              key={s.badge_number}
+              onClick={() => loadHistory(s)}
+              style={{
+                display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between',
+                padding: '0.75rem 1rem', background: selected?.badge_number === s.badge_number ? 'var(--gold-bg)' : 'none',
+                border: 'none', borderBottom: i < searchResults.length - 1 ? '1px solid var(--border)' : 'none',
+                cursor: 'pointer', textAlign: 'left'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'var(--gold-bg)', border: '1px solid var(--gold-border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <User size={16} color="var(--gold)" />
                 </div>
-                <p style={{ fontWeight: 500, marginBottom: '0.5rem' }}>{q.issue_description}</p>
-                <p className="text-muted text-xs">Raised by: {q.raised_by_name} ({q.raised_by_badge})</p>
-                {q.attendance && (
-                  <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: '0.75rem', marginTop: '0.75rem' }}>
-                    <p className="text-xs text-secondary">
-                      {q.attendance.sewadar_name} · {q.attendance.badge_number} · {q.attendance.type} · {timeFmt(q.attendance.scan_time)}
-                    </p>
-                  </div>
-                )}
-                {q.status === 'open' && isAdmin && (
-                  <button className="btn btn-outline mt-2" style={{ fontSize: '0.8rem', padding: '0.4rem 1rem' }} onClick={() => resolveQuery(q.id)}>
-                    Mark Resolved
-                  </button>
-                )}
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>{s.sewadar_name}</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{s.centre} · {s.department || '—'} · {s.gender || '—'}</div>
+                </div>
               </div>
-            ))
-          )}
+              <span style={{ fontFamily: 'monospace', fontSize: '0.82rem', color: 'var(--gold)' }}>{s.badge_number}</span>
+            </button>
+          ))}
         </div>
       )}
 
-      {/* Search Tab */}
-      {tab === 'search' && (
+      {/* Selected sewadar history */}
+      {selected && (
         <div>
-          <div className="flex gap-1 mb-3">
-            <input
-              className="input"
-              placeholder="Enter badge number e.g. FB5978GA0001"
-              value={searchBadge}
-              onChange={e => setSearchBadge(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && searchAttendance()}
-              style={{ textTransform: 'uppercase' }}
-            />
-            <button className="btn btn-gold" onClick={searchAttendance}>
-              <Search size={16} />
+          {/* Profile strip */}
+          <div className="card mb-3" style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.85rem 1rem' }}>
+            <div style={{ width: 44, height: 44, borderRadius: '50%', background: 'var(--gold-bg)', border: '1px solid var(--gold-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <User size={20} color="var(--gold)" />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: '1rem' }}>{selected.sewadar_name}</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{selected.badge_number} · {selected.centre} · {selected.department || '—'}</div>
+            </div>
+            <div style={{ display: 'flex', gap: '1rem', flexShrink: 0 }}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--gold)' }}>{totalDays}</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Days</div>
+              </div>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--green)' }}>{totalIns}</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Satsangs</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Date range filter + export */}
+          <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.75rem', flex: 1 }}>
+              <Calendar size={13} color="var(--text-muted)" />
+              <input type="date" value={dateRange.from} onChange={e => setDateRange({...dateRange, from: e.target.value})}
+                style={{ border: 'none', background: 'none', color: 'var(--text-primary)', fontSize: '0.82rem', outline: 'none' }} />
+              <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>→</span>
+              <input type="date" value={dateRange.to} onChange={e => setDateRange({...dateRange, to: e.target.value})}
+                style={{ border: 'none', background: 'none', color: 'var(--text-primary)', fontSize: '0.82rem', outline: 'none' }} />
+            </div>
+            <button className="btn btn-outline" onClick={() => loadHistory(selected)} style={{ fontSize: '0.82rem' }}>Apply</button>
+            <button className="btn btn-ghost" onClick={exportHistory} style={{ padding: '0.4rem 0.75rem', fontSize: '0.82rem' }}>
+              <Download size={14} /> Export
             </button>
           </div>
 
-          {loading && <div className="text-center mt-3"><div className="spinner" style={{ margin: '0 auto' }} /></div>}
-
-          {searchResults.length > 0 && (
-            <>
-              <p className="text-muted text-xs mb-2">{searchResults.length} records found for {searchBadge.toUpperCase()}</p>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Date/Time</th>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Scanner</th>
-                      {isAdmin && <th>Flag</th>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {searchResults.map(r => (
-                      <tr key={r.id}>
-                        <td style={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }}>{timeFmt(r.scan_time)}</td>
-                        <td style={{ fontWeight: 500 }}>{r.sewadar_name}</td>
-                        <td><span className={`badge ${r.type === 'IN' ? 'badge-green' : 'badge-red'}`}>{r.type}</span></td>
-                        <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{r.scanner_name}</td>
-                        {isAdmin && (
-                          <td>
-                            <button
-                              className="btn btn-ghost"
-                              style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', color: 'var(--red)' }}
-                              onClick={() => setSelectedRecord(r)}
-                            >
-                              <Flag size={12} /> Flag
-                            </button>
-                          </td>
+          {historyLoading ? (
+            <div className="spinner" style={{ margin: '2rem auto' }} />
+          ) : dates.length === 0 ? (
+            <div className="card" style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>No attendance records found.</div>
+          ) : (
+            dates.map(date => {
+              const entries = byDate[date]
+              const hasIn = entries.some(r => r.type === 'IN')
+              const hasOut = entries.some(r => r.type === 'OUT')
+              return (
+                <div key={date} className="card mb-2" style={{ padding: '0.85rem 1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.6rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <Calendar size={14} color="var(--text-muted)" />
+                      <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>{fmtDate(date)}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                      {hasIn && <span className="badge badge-green">IN</span>}
+                      {hasOut && <span className="badge badge-red">OUT</span>}
+                      {!hasIn && !hasOut && <span className="badge" style={{ background: 'var(--bg-muted)', color: 'var(--text-muted)' }}>—</span>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                    {entries.map(r => (
+                      <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.82rem' }}>
+                        {r.type === 'IN'
+                          ? <LogIn size={13} color="var(--green)" />
+                          : <LogOut size={13} color="var(--red)" />}
+                        <span style={{ fontWeight: 500, color: r.type === 'IN' ? 'var(--green)' : 'var(--red)', minWidth: 28 }}>{r.type}</span>
+                        <span style={{ color: 'var(--text-primary)' }}>{fmt(r.scan_time)}</span>
+                        {r.scanner_centre && r.scanner_centre !== selected.centre && (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>at {r.scanner_centre}</span>
                         )}
-                      </tr>
+                        <span style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>by {r.scanner_name || '—'}</span>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-
-          {searchResults.length === 0 && searchBadge && !loading && (
-            <div className="card text-center" style={{ padding: '2rem' }}>
-              <p className="text-muted">No attendance records found for this badge.</p>
-            </div>
+                  </div>
+                </div>
+              )
+            })
           )}
         </div>
       )}
-
-      {/* Logs Tab (Super Admin only) */}
-      {tab === 'logs' && profile?.role === ROLES.SUPER_ADMIN && (
-        <LogsTab />
-      )}
-
-      {/* Raise Query Modal */}
-      {selectedRecord && (
-        <div className="overlay" onClick={() => setSelectedRecord(null)}>
-          <div className="overlay-sheet" onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', marginBottom: '1rem' }}>Raise Query</h3>
-            <div className="card mb-2" style={{ padding: '1rem' }}>
-              <p style={{ fontWeight: 500 }}>{selectedRecord.sewadar_name}</p>
-              <p className="text-muted text-sm">{selectedRecord.badge_number} · {selectedRecord.type} · {timeFmt(selectedRecord.scan_time)}</p>
-            </div>
-            <label className="label">Describe the issue</label>
-            <textarea
-              className="input"
-              rows={3}
-              placeholder="e.g. Sewadar was not present, badge may have been misused..."
-              value={queryNote}
-              onChange={e => setQueryNote(e.target.value)}
-              style={{ resize: 'none', marginBottom: '1rem' }}
-            />
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-              <button className="btn btn-outline btn-full" onClick={() => setSelectedRecord(null)}>Cancel</button>
-              <button className="btn btn-gold btn-full" onClick={() => raiseQuery(selectedRecord.id)}>Submit Query</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function LogsTab() {
-  const [logs, setLogs] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    supabase.from('logs').select('*').order('timestamp', { ascending: false }).limit(100)
-      .then(({ data }) => { setLogs(data || []); setLoading(false) })
-  }, [])
-
-  if (loading) return <div className="spinner" style={{ margin: '2rem auto' }} />
-
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>User</th>
-            <th>Action</th>
-            <th>Details</th>
-          </tr>
-        </thead>
-        <tbody>
-          {logs.map(l => (
-            <tr key={l.id}>
-              <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
-                {new Date(l.timestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-              </td>
-              <td style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--gold)' }}>{l.user_badge}</td>
-              <td><span className="badge badge-muted" style={{ fontSize: '0.7rem' }}>{l.action}</span></td>
-              <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{l.details}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   )
 }
