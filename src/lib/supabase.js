@@ -17,6 +17,18 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   }
 })
 
+// Badge parser utility
+export function parseBadge(badge) {
+  if (!badge || badge.length < 12) return null
+  const prefix = badge.substring(0, 2)
+  const centreCode = badge.substring(2, 6)
+  const gender = badge.substring(6, 7)
+  const fixed = badge.substring(7, 8)
+  const serial = badge.substring(8)
+  if (prefix !== 'FB' || fixed !== 'A') return null
+  return { prefix, centreCode, gender: gender === 'G' ? 'Male' : 'Female', serial, raw: badge }
+}
+
 // Departments that any centre/SP can scan (with confirmation for non-own-centre)
 export const EXCEPTION_DEPARTMENTS = [
   'Pathis', 'Baal Pathis', 'Satsang Kartas', 'Baal Satsang Kartas',
