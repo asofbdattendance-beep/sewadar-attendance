@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
-import { Html5Qrcode } from 'html5-qrcode'
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode'
 import { CameraOff, RefreshCw } from 'lucide-react'
 
 const BADGE_REGEX = /^FB\d{4}[GL]A\d{4,}$/
@@ -31,19 +31,19 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       }
 
       scannerRef.current = new Html5Qrcode('scanner-viewport', {
-        formatsToSupport: [0, 1], // CODE_39, CODE_128
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.CODE_128
+        ],
         verbose: false,
-        experimentalFeatures: {
-          useBarCodeDetectorIfSupported: true,
-          isScanIntervalOverrideable: false
-        }
+        useBarCodeDetectorIfSupported: false
       })
 
       await scannerRef.current.start(
         { facingMode: 'environment' },
         {
           fps: 10,
-          qrbox: { width: 250, height: 100 },
+          qrbox: { width: 300, height: 100 },
         },
         (decodedText) => {
           if (!mountedRef.current || cooldownRef.current) return
@@ -66,7 +66,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             lastScanRef.current = { badge: null, time: 0 }
           }, 3000)
         },
-        () => {} // Ignore scan failures (no barcode found)
+        () => {}
       )
 
       setStatus('ready')
@@ -77,7 +77,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     }
   }
 
-  async function stopQuagga() {
+  async function stopScanner() {
     if (scannerRef.current) {
       try {
         await scannerRef.current.stop()
@@ -92,18 +92,18 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
     return () => {
       mountedRef.current = false
-      stopQuagga()
+      stopScanner()
     }
   }, [])
 
   useImperativeHandle(ref, () => ({
-    stop: () => stopQuagga(),
+    stop: () => stopScanner(),
     resume: () => {
       lastScanRef.current = { badge: null, time: 0 }
       if (status !== 'ready') startScanner()
     },
     restart: () => {
-      stopQuagga()
+      stopScanner()
       setTimeout(startScanner, 100)
     }
   }), [status])
