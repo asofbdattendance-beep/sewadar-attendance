@@ -199,13 +199,12 @@ function MarkJathaTab() {
         {!dateError && satsangDays > 0 && (
           <div className="jatha-satsang-pill">
             <Calendar size={13} />
-            <strong>{satsangDays}</strong> satsang {satsangDays === 1 ? 'day' : 'days'}
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: 2 }}>(Sundays &amp; Wednesdays)</span>
+            <strong>{satsangDays}</strong> {satsangDays === 1 ? 'day' : 'days'} total
           </div>
         )}
-        {dateFrom && dateTo && !dateError && satsangDays === 0 && (
+        {false && (
           <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
-            No satsang days in this range.
+            End date must be after start date.
           </div>
         )}
       </div>
@@ -345,7 +344,7 @@ function ViewJathaTab() {
         r.badge_number?.toUpperCase().includes(searchTerm.toUpperCase()))
     : records
 
-  const totalSatsangDays = filtered.reduce((acc, r) => acc + (r.satsang_days || 0), 0)
+  const totalDays = filtered.reduce((acc, r) => acc + (r.satsang_days || 0), 0)
   const flaggedCount = filtered.filter(r => r.flag).length
 
   function fmtDate(d) {
@@ -410,7 +409,7 @@ function ViewJathaTab() {
           <span style={{ color: 'var(--text-muted)' }}> records</span>
         </div>
         <div style={{ background: 'var(--gold-bg)', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem', color: 'var(--gold)' }}>
-          <strong>{totalSatsangDays}</strong> satsang days
+          <strong>{totalDays}</strong> total days
         </div>
         {flaggedCount > 0 && (
           <div style={{ background: 'rgba(198,40,40,0.08)', border: '1px solid rgba(198,40,40,0.25)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem', color: 'var(--red)' }}>
@@ -485,7 +484,7 @@ function ViewJathaTab() {
                 </div>
                 <div style={{ textAlign: 'right', flexShrink: 0 }}>
                   <div style={{ fontSize: '0.82rem', fontWeight: 600, whiteSpace: 'nowrap' }}>{fmtDate(r.date_from)} → {fmtDate(r.date_to)}</div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--green)', fontWeight: 700, marginTop: '0.2rem' }}>{r.satsang_days} satsang {r.satsang_days === 1 ? 'day' : 'days'}</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--green)', fontWeight: 700, marginTop: '0.2rem' }}>{r.satsang_days} {r.satsang_days === 1 ? 'day' : 'days'}</div>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>by {r.submitted_name || r.submitted_by}</div>
                 </div>
               </div>
