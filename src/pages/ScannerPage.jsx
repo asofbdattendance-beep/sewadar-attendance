@@ -132,33 +132,28 @@ export default function ScannerPage({ isOnline }) {
     if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 1500) return
     lastScanRef.current = { badge, time: now }
     setProcessing(true)
-    try {
-      if (isOnline) {
-        // Run sewadar lookup + today attendance fetch IN PARALLEL
-        const today = new Date(); today.setHours(0, 0, 0, 0)
-        const [sewadarRes, attendanceRes] = await Promise.all([
-          supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle(),
-          supabase.from('attendance')
-            .select('id, type, scan_time')
-            .eq('badge_number', badge)
-            .gte('scan_time', today.toISOString())
-            .order('scan_time', { ascending: true })
-        ])
-        const found = sewadarRes.data
-        if (!found) {
-          setPopupState({ type: 'not_found', badge }); setProcessing(false); return
-        }
-        await processSewadar(found, badge, attendanceRes.data || [])
-      } else {
-        const found = lookupBadgeOffline(badge)
-        if (!found) {
-          setPopupState({ type: 'not_found', badge }); setProcessing(false); return
-        }
-        await processSewadar(found, badge, [])
-      }
-    } catch {
-      setProcessing(false)
+
+    // ── CACHE-FIRST: zero DB calls on the read path ──
+    // Sewadar lookup from localStorage (instant)
+    let found = lookupBadgeOffline(badge)
+
+    // If not in cache yet (e.g. new sewadar added after last cache refresh), fall back to DB
+    if (!found && isOnline) {
+      const { data } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
+      found = data
     }
+
+    if (!found) {
+      setPopupState({ type: 'not_found', badge }); setProcessing(false); return
+    }
+
+    // Today's attendance from localStorage cache (instant)
+    const todayStr = new Date().toISOString().split('T')[0]
+    const todayEntries = getAttendanceCache()
+      .filter(r => r.badge_number === badge && r.scan_time && r.scan_time.startsWith(todayStr))
+      .sort((a, b) => new Date(a.scan_time) - new Date(b.scan_time))
+
+    await processSewadar(found, badge, todayEntries)
   }, [isOnline, profile, userLocation, centreConfig, childCentres])
 
   async function processSewadar(found, badge, todayEntries = []) {
@@ -221,28 +216,26 @@ export default function ScannerPage({ isOnline }) {
       longitude: userLocation?.lng || null,
       device_id: navigator.userAgent.slice(0, 50),
     }
-    let success = false
+    // ── Show success + update local cache IMMEDIATELY — don't wait for DB ──
+    addToAttendanceCache({ ...record, id: Date.now() })
+    setRecentScans(getAttendanceCache().slice(0, 5))
+    playBeep(type)
+    setPopupState({ type: 'success', sewadar, attendanceType: type, time: scanTime })
+    setTimeout(closePopup, 1200)
+
+    // DB insert + log fire-and-forget in background
     if (isOnline) {
-      const { error } = await supabase.from('attendance').insert(record)
-      if (!error) {
-        // Log is fire-and-forget — does NOT block the UI
-        supabase.from('logs').insert({
-          user_badge: profile.badge_number,
-          action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
-          details: `${type} for ${sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
-          timestamp: scanTime
-        })
-        success = true
-      }
+      supabase.from('attendance').insert(record).then(({ error }) => {
+        if (error) console.error('Attendance insert failed:', error.message)
+      })
+      supabase.from('logs').insert({
+        user_badge: profile.badge_number,
+        action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
+        details: `${type} for ${sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
+        timestamp: scanTime
+      })
     } else {
-      addToOfflineQueue(record); success = true
-    }
-    if (success) {
-      addToAttendanceCache({ ...record, id: Date.now() })
-      setRecentScans(getAttendanceCache().slice(0, 5))
-      playBeep(type)
-      setPopupState({ type: 'success', sewadar, attendanceType: type, time: scanTime })
-      setTimeout(closePopup, 1200)
+      addToOfflineQueue(record)
     }
   }
 
