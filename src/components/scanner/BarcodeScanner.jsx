@@ -1,15 +1,13 @@
 /**
- * BarcodeScanner — Dual-engine scanner
+ * BarcodeScanner — Single-engine, cross-platform
  *
- * Engine 1 — BarcodeDetector API (Android Chrome, Samsung Internet)
- *   - Hardware-accelerated, runs on GPU/ISP
- *   - ~2-8ms per frame at 60fps via requestAnimationFrame
+ * Uses BarcodeDetector API everywhere.
+ * On Android/Chrome: native hardware-accelerated (built-in, ~2-8ms/frame)
+ * On iOS/Safari + others: @undecaf/barcode-detector-polyfill (ZBar WASM, ~15-30ms/frame)
  *
- * Engine 2 — ZXing (iOS Safari + any browser without BarcodeDetector)
- *   - Best JS fallback, used by many production apps
- *   - Runs at ~15fps, still fast enough for badge scanning
- *
- * Auto-detects which engine to use on mount.
+ * Same code path for all devices — polyfill just fills the gap where native isn't available.
+ * iOS Safari does have BarcodeDetector but only supports QR/2D formats, NOT Code39/128.
+ * The polyfill replaces it entirely and supports all linear barcode formats.
  */
 
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
@@ -17,154 +15,102 @@ import { CameraOff, RefreshCw, Zap } from 'lucide-react'
 
 const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{1,2}[0-9]{4,}$/
 
-// Clean raw barcode text — strip spaces, trim, uppercase
 function clean(raw) {
   return raw.trim().toUpperCase().replace(/\s+/g, '')
 }
 
-// ── Engine detection ──
-function hasNativeBarcodeDetector() {
-  return 'BarcodeDetector' in window
+// Check if native BarcodeDetector supports linear barcodes (Code39/128)
+// iOS Safari has BarcodeDetector but only QR/2D — we need linear support
+async function hasLinearBarcodeSupport() {
+  if (!('BarcodeDetector' in window)) return false
+  try {
+    const formats = await window.BarcodeDetector.getSupportedFormats()
+    return formats.includes('code_39') || formats.includes('code_128')
+  } catch {
+    return false
+  }
+}
+
+// Load polyfill from CDN — only called on iOS/unsupported browsers
+// Uses ZBar WASM which supports Code39, Code128, and all linear formats
+async function loadPolyfill() {
+  const { BarcodeDetectorPolyfill } =
+    await import('https://cdn.jsdelivr.net/npm/@undecaf/barcode-detector-polyfill@0.9.21/dist/es/index.js')
+  // Install as global so existing code works unchanged
+  window.BarcodeDetector = BarcodeDetectorPolyfill
 }
 
 const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const videoRef = useRef(null)
   const streamRef = useRef(null)
   const rafRef = useRef(null)
-  const detectorRef = useRef(null)      // native BarcodeDetector instance
-  const zxingReaderRef = useRef(null)   // ZXing reader instance
+  const detectorRef = useRef(null)
   const mountedRef = useRef(true)
   const lastScanRef = useRef({ badge: null, time: 0 })
   const isDetectingRef = useRef(false)
-  const engineRef = useRef(null)        // 'native' | 'zxing'
 
   const [status, setStatus] = useState('starting')
   const [errorMsg, setErrorMsg] = useState('')
   const [lastScanned, setLastScanned] = useState('')
-  const [engine, setEngine] = useState(null)
+  const [engineLabel, setEngineLabel] = useState('')
   const fpsRef = useRef({ frames: 0, last: Date.now() })
   const [fps, setFps] = useState(0)
 
   const stopScanner = () => {
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
-    if (zxingReaderRef.current) {
-      try { zxingReaderRef.current.reset() } catch {}
-      zxingReaderRef.current = null
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop())
-      streamRef.current = null
-    }
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
     if (videoRef.current) videoRef.current.srcObject = null
     isDetectingRef.current = false
-  }
-
-  // Called on every successful decode from either engine
-  function handleDecoded(raw) {
-    const text = clean(raw)
-    if (!BADGE_REGEX.test(text)) return
-    const now = Date.now()
-    if (text === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) return
-    lastScanRef.current = { badge: text, time: now }
-    setLastScanned(text)
-    setTimeout(() => { if (mountedRef.current) setLastScanned('') }, 1500)
-    onScan(text)
-  }
-
-  // ── Get camera stream ──
-  async function getStream() {
-    return navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: 'environment' },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-      },
-      audio: false
-    })
-  }
-
-  // ── ENGINE 1: Native BarcodeDetector (Android / Chrome) ──
-  async function startNative() {
-    detectorRef.current = new window.BarcodeDetector({
-      formats: ['code_39', 'code_128', 'codabar']
-    })
-    engineRef.current = 'native'
-    setEngine('native')
-
-    const detect = async () => {
-      if (!mountedRef.current) return
-      fpsRef.current.frames++
-      const now = Date.now()
-      if (now - fpsRef.current.last >= 1000) {
-        setFps(fpsRef.current.frames)
-        fpsRef.current = { frames: 0, last: now }
-      }
-      if (!isDetectingRef.current && videoRef.current?.readyState === 4) {
-        isDetectingRef.current = true
-        try {
-          const barcodes = await detectorRef.current.detect(videoRef.current)
-          for (const b of barcodes) handleDecoded(b.rawValue)
-        } catch {}
-        isDetectingRef.current = false
-      }
-      rafRef.current = requestAnimationFrame(detect)
-    }
-    rafRef.current = requestAnimationFrame(detect)
-  }
-
-  // ── ENGINE 2: ZXing (iOS Safari + fallback) ──
-  async function startZXing() {
-    engineRef.current = 'zxing'
-    setEngine('zxing')
-
-    // Load ZXing from CDN — only downloaded on iOS/non-native devices
-    // Android/Chrome users never hit this path so no bundle cost for them
-    const { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } =
-      await import('https://esm.sh/@zxing/browser@0.1.5')
-
-    const hints = new Map()
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-      BarcodeFormat.CODE_39,
-      BarcodeFormat.CODE_128,
-    ])
-    hints.set(DecodeHintType.TRY_HARDER, true)
-
-    const reader = new BrowserMultiFormatReader(hints, {
-      delayBetweenScanAttempts: 50,  // ms between attempts — keep low for speed
-      delayBetweenScanSuccess: 1500, // ms cooldown after a successful scan
-    })
-    zxingReaderRef.current = reader
-
-    // ZXing decodes directly from the video stream
-    // We pass the already-running video element
-    reader.decodeFromVideoElement(videoRef.current, (result, err) => {
-      if (!mountedRef.current) return
-      if (result) {
-        fpsRef.current.frames++
-        const now = Date.now()
-        if (now - fpsRef.current.last >= 1000) {
-          setFps(fpsRef.current.frames)
-          fpsRef.current = { frames: 0, last: now }
-        }
-        handleDecoded(result.getText())
-      }
-      // err is a not-found error on most frames — expected, ignore
-    })
   }
 
   const startScanner = async () => {
     if (!mountedRef.current) return
     stopScanner()
-
     setStatus('loading')
     setErrorMsg('')
     setLastScanned('')
     lastScanRef.current = { badge: null, time: 0 }
     fpsRef.current = { frames: 0, last: Date.now() }
 
-    // ── Get camera ──
+    // ── Step 1: Ensure BarcodeDetector supports linear barcodes ──
+    const hasNative = await hasLinearBarcodeSupport()
+    if (!hasNative) {
+      // Load polyfill — replaces window.BarcodeDetector with ZBar WASM
+      try {
+        setStatus('loading') // still loading while WASM downloads
+        await loadPolyfill()
+        setEngineLabel('WASM')
+      } catch (err) {
+        if (mountedRef.current) {
+          setStatus('error')
+          setErrorMsg('Could not load barcode engine. Check internet connection and retry.')
+        }
+        return
+      }
+    } else {
+      setEngineLabel('Native')
+    }
+
+    // ── Step 2: Create detector ──
     try {
-      const stream = await getStream()
+      detectorRef.current = new window.BarcodeDetector({
+        formats: ['code_39', 'code_128', 'codabar']
+      })
+    } catch (err) {
+      if (mountedRef.current) { setStatus('error'); setErrorMsg('Failed to start barcode detector') }
+      return
+    }
+
+    // ── Step 3: Get camera stream ──
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: false
+      })
       if (!mountedRef.current) { stream.getTracks().forEach(t => t.stop()); return }
       streamRef.current = stream
       videoRef.current.srcObject = stream
@@ -172,34 +118,51 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     } catch (err) {
       if (!mountedRef.current) return
       setStatus('error')
-      setErrorMsg(err.name === 'NotAllowedError'
-        ? 'Camera permission denied. Please allow camera access and retry.'
-        : 'Camera not available on this device.')
+      setErrorMsg(
+        err.name === 'NotAllowedError'
+          ? 'Camera permission denied. Please allow camera access and retry.'
+          : 'Camera not available on this device.'
+      )
       return
     }
 
     if (!mountedRef.current) return
     setStatus('ready')
 
-    // ── Pick engine ──
-    try {
-      if (hasNativeBarcodeDetector()) {
-        await startNative()
-      } else {
-        await startZXing()
+    // ── Step 4: Detection loop ──
+    const detect = async () => {
+      if (!mountedRef.current) return
+
+      fpsRef.current.frames++
+      const now = Date.now()
+      if (now - fpsRef.current.last >= 1000) {
+        setFps(fpsRef.current.frames)
+        fpsRef.current = { frames: 0, last: now }
       }
-    } catch (err) {
-      console.error('Scanner engine error:', err)
-      // If native failed, try ZXing
-      if (engineRef.current === 'native') {
-        try { await startZXing() } catch {}
-      } else {
-        if (mountedRef.current) {
-          setStatus('error')
-          setErrorMsg('Barcode scanner could not start. Try Chrome browser.')
-        }
+
+      if (!isDetectingRef.current && videoRef.current?.readyState === 4) {
+        isDetectingRef.current = true
+        try {
+          const barcodes = await detectorRef.current.detect(videoRef.current)
+          for (const b of barcodes) {
+            const text = clean(b.rawValue)
+            if (!BADGE_REGEX.test(text)) continue
+            const t = Date.now()
+            if (text === lastScanRef.current.badge && t - lastScanRef.current.time < 2000) continue
+            lastScanRef.current = { badge: text, time: t }
+            setLastScanned(text)
+            setTimeout(() => { if (mountedRef.current) setLastScanned('') }, 1500)
+            onScan(text)
+            break
+          }
+        } catch {}
+        isDetectingRef.current = false
       }
+
+      rafRef.current = requestAnimationFrame(detect)
     }
+
+    rafRef.current = requestAnimationFrame(detect)
   }
 
   useEffect(() => {
@@ -228,18 +191,12 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   return (
     <div className="scanner-wrapper">
-      <video
-        ref={videoRef}
-        className="scanner-video"
-        playsInline
-        muted
-        autoPlay
-      />
+      <video ref={videoRef} className="scanner-video" playsInline muted autoPlay />
 
       {status === 'loading' && (
         <div className="scanner-overlay">
           <div className="scanner-spinner" />
-          <span>Starting camera...</span>
+          <span>{engineLabel === 'WASM' ? 'Loading iOS engine…' : 'Starting camera...'}</span>
         </div>
       )}
 
@@ -255,7 +212,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
           <div className="scanner-fps-badge">
             <Zap size={10} />
-            {fps}fps · {engine === 'native' ? 'Native' : 'ZXing'}
+            {fps}fps · {engineLabel}
           </div>
 
           {lastScanned && <div className="scan-result">{lastScanned}</div>}
