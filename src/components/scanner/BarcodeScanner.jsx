@@ -14,7 +14,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const [errorMsg, setErrorMsg] = useState('')
   const [lastScanned, setLastScanned] = useState('')
 
-  async function startScanner() {
+  const startScanner = async () => {
     if (!mountedRef.current) return
 
     setStatus('loading')
@@ -30,26 +30,36 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
         } catch {}
       }
 
-      scannerRef.current = new Html5Qrcode('scanner-viewport', {
+      const scanner = new Html5Qrcode('scanner-viewport', {
         formatsToSupport: [
           Html5QrcodeSupportedFormats.CODE_39,
           Html5QrcodeSupportedFormats.CODE_128
         ],
         verbose: false,
-        useBarCodeDetectorIfSupported: false
+        experimentalFeatures: {
+          useBarCodeDetectorIfSupported: true
+        }
       })
+      scannerRef.current = scanner
 
-      await scannerRef.current.start(
+      console.log('Starting camera...')
+      
+      await scanner.start(
         { facingMode: 'environment' },
         {
           fps: 10,
-          qrbox: { width: 300, height: 100 },
+          qrbox: { width: 280, height: 80 },
         },
         (decodedText) => {
           if (!mountedRef.current || cooldownRef.current) return
 
           const text = decodedText.trim().toUpperCase()
-          if (!BADGE_REGEX.test(text)) return
+          console.log('Detected:', text)
+          
+          if (!BADGE_REGEX.test(text)) {
+            console.log('Rejected - regex mismatch')
+            return
+          }
 
           const now = Date.now()
           if (text === lastScanRef.current.badge && now - lastScanRef.current.time < 3000) return
@@ -57,7 +67,6 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
           lastScanRef.current = { badge: text, time: now }
           setLastScanned(text)
           cooldownRef.current = true
-
           onScan(text)
 
           setTimeout(() => {
@@ -69,6 +78,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
         () => {}
       )
 
+      console.log('Camera started successfully')
       setStatus('ready')
     } catch (err) {
       console.error('Scanner error:', err)
@@ -77,7 +87,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     }
   }
 
-  async function stopScanner() {
+  const stopScanner = async () => {
     if (scannerRef.current) {
       try {
         await scannerRef.current.stop()
@@ -98,15 +108,12 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   useImperativeHandle(ref, () => ({
     stop: () => stopScanner(),
-    resume: () => {
-      lastScanRef.current = { badge: null, time: 0 }
-      if (status !== 'ready') startScanner()
-    },
+    resume: () => startScanner(),
     restart: () => {
       stopScanner()
       setTimeout(startScanner, 100)
     }
-  }), [status])
+  }), [])
 
   if (status === 'error') {
     return (
@@ -122,7 +129,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   return (
     <div className="scanner-wrapper">
-      <div id="scanner-viewport" className="scanner-view" />
+      <div id="scanner-viewport" className="scanner-view" style={{ width: '100%', height: '320px' }} />
 
       {status === 'loading' && (
         <div className="scanner-overlay">
