@@ -49,7 +49,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       await scanner.start(
         { facingMode: 'environment' },
         {
-          fps: 12,
+          fps: 20,
           qrbox: { width: boxW, height: boxH },
           aspectRatio: 1.7778,
         },
@@ -77,7 +77,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             cooldownRef.current = false
             setLastScanned('')
             lastScanRef.current = { badge: null, time: 0 }
-          }, 3000)
+          }, 1500)
         },
         () => {} // per-frame error — ignore
       )

@@ -129,35 +129,42 @@ export default function ScannerPage({ isOnline }) {
 
   const handleScan = useCallback(async (badge) => {
     const now = Date.now()
-    if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) return
+    if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 1500) return
     lastScanRef.current = { badge, time: now }
     setProcessing(true)
-    let found = null
     try {
       if (isOnline) {
-        const { data } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
-        found = data
+        // Run sewadar lookup + today attendance fetch IN PARALLEL
+        const today = new Date(); today.setHours(0, 0, 0, 0)
+        const [sewadarRes, attendanceRes] = await Promise.all([
+          supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle(),
+          supabase.from('attendance')
+            .select('id, type, scan_time')
+            .eq('badge_number', badge)
+            .gte('scan_time', today.toISOString())
+            .order('scan_time', { ascending: true })
+        ])
+        const found = sewadarRes.data
+        if (!found) {
+          setPopupState({ type: 'not_found', badge }); setProcessing(false); return
+        }
+        await processSewadar(found, badge, attendanceRes.data || [])
       } else {
-        found = lookupBadgeOffline(badge)
+        const found = lookupBadgeOffline(badge)
+        if (!found) {
+          setPopupState({ type: 'not_found', badge }); setProcessing(false); return
+        }
+        await processSewadar(found, badge, [])
       }
-    } catch {}
-    if (!found) {
-      setPopupState({ type: 'not_found', badge }); setProcessing(false); return
+    } catch {
+      setProcessing(false)
     }
-    await processSewadar(found, badge)
   }, [isOnline, profile, userLocation, centreConfig, childCentres])
 
-  async function processSewadar(found, badge) {
+  async function processSewadar(found, badge, todayEntries = []) {
     const now = Date.now()
     setProcessing(true)
     const b = badge || found.badge_number
-    let todayEntries = []
-    if (isOnline) {
-      const today = new Date(); today.setHours(0, 0, 0, 0)
-      const { data } = await supabase.from('attendance').select('*').eq('badge_number', b)
-        .gte('scan_time', today.toISOString()).order('scan_time', { ascending: true })
-      todayEntries = data || []
-    }
 
     const lastEntry = todayEntries.length > 0 ? todayEntries[todayEntries.length - 1] : null
     if (lastEntry?.scan_time) {
@@ -197,14 +204,15 @@ export default function ScannerPage({ isOnline }) {
     setProcessing(false)
   }
 
-  const markAttendance = async (type, overrideNote = null) => {
-    if (!popupState?.sewadar || !profile) return
+  // Core insert — accepts sewadar object directly so it works both from popup and auto-punch
+  async function markAttendanceDirect(sewadar, type, badge, overrideNote = null) {
+    if (!profile) return
     const scanTime = new Date().toISOString()
     const record = {
-      badge_number: popupState.sewadar.badge_number,
-      sewadar_name: popupState.sewadar.sewadar_name,
-      centre: popupState.sewadar.centre,
-      department: popupState.sewadar.department,
+      badge_number: sewadar.badge_number,
+      sewadar_name: sewadar.sewadar_name,
+      centre: sewadar.centre,
+      department: sewadar.department,
       type, scan_time: scanTime,
       scanner_badge: profile.badge_number || 'UNKNOWN',
       scanner_name: profile.name || 'Unknown',
@@ -217,10 +225,11 @@ export default function ScannerPage({ isOnline }) {
     if (isOnline) {
       const { error } = await supabase.from('attendance').insert(record)
       if (!error) {
-        await supabase.from('logs').insert({
+        // Log is fire-and-forget — does NOT block the UI
+        supabase.from('logs').insert({
           user_badge: profile.badge_number,
           action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
-          details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
+          details: `${type} for ${sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
           timestamp: scanTime
         })
         success = true
@@ -232,9 +241,14 @@ export default function ScannerPage({ isOnline }) {
       addToAttendanceCache({ ...record, id: Date.now() })
       setRecentScans(getAttendanceCache().slice(0, 5))
       playBeep(type)
-      setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
-      setTimeout(closePopup, 2000)
+      setPopupState({ type: 'success', sewadar, attendanceType: type, time: scanTime })
+      setTimeout(closePopup, 1200)
     }
+  }
+
+  const markAttendance = async (type, overrideNote = null) => {
+    if (!popupState?.sewadar || !profile) return
+    await markAttendanceDirect(popupState.sewadar, type, popupState.badge, overrideNote)
   }
 
   const closePopup = () => {
