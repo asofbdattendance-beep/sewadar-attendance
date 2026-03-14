@@ -1,140 +1,106 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
-import Quagga from '@ericblade/quagga2'
+import { Html5Qrcode } from 'html5-qrcode'
 import { CameraOff, RefreshCw } from 'lucide-react'
 
 const BADGE_REGEX = /^FB\d{4}[GL]A\d{4,}$/
 
 const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
-  const containerRef = useRef(null)
+  const scannerRef = useRef(null)
   const mountedRef = useRef(true)
-  const startedRef = useRef(false)
   const lastScanRef = useRef({ badge: null, time: 0 })
   const cooldownRef = useRef(false)
 
   const [status, setStatus] = useState('starting')
   const [errorMsg, setErrorMsg] = useState('')
   const [lastScanned, setLastScanned] = useState('')
-  const [detectionBox, setDetectionBox] = useState(null)
-
-  async function stopQuagga() {
-    if (startedRef.current) {
-      try { Quagga.stop() } catch {}
-      startedRef.current = false
-    }
-  }
 
   async function startScanner() {
-    await stopQuagga()
-    if (!mountedRef.current || !containerRef.current) return
+    if (!mountedRef.current) return
 
     setStatus('loading')
     setErrorMsg('')
     setLastScanned('')
-    setDetectionBox(null)
     cooldownRef.current = false
     lastScanRef.current = { badge: null, time: 0 }
 
-    return new Promise((resolve) => {
-      Quagga.init(
-        {
-          inputStream: {
-            type: 'LiveStream',
-            target: containerRef.current,
-            constraints: {
-              facingMode: 'environment',
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-            },
-          },
-          locator: {
-            patchSize: 'medium',
-            halfSample: true,
-          },
-          numOfWorkers: 2,
-          frequency: 10,
-          decoder: {
-            readers: [
-              'code_39_reader',
-              'code_128_reader',
-            ],
-          },
-          locate: true,
-        },
-        async (err) => {
-          if (!mountedRef.current) return
+    try {
+      if (scannerRef.current) {
+        try {
+          await scannerRef.current.stop()
+        } catch {}
+      }
 
-          if (err) {
-            console.error('Quagga error:', err)
-            setStatus('error')
-            setErrorMsg('Camera not available')
-            resolve(false)
-            return
-          }
-
-          startedRef.current = true
-          Quagga.start()
-          setStatus('ready')
-          resolve(true)
+      scannerRef.current = new Html5Qrcode('scanner-viewport', {
+        formatsToSupport: [0, 1], // CODE_39, CODE_128
+        verbose: false,
+        experimentalFeatures: {
+          useBarCodeDetectorIfSupported: true,
+          isScanIntervalOverrideable: false
         }
+      })
+
+      await scannerRef.current.start(
+        {
+          facingMode: 'environment',
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 15 }
+        },
+        {
+          fps: 10,
+          qrbox: { width: 250, height: 100 },
+          aspectRatio: 1.333
+        },
+        (decodedText) => {
+          if (!mountedRef.current || cooldownRef.current) return
+
+          const text = decodedText.trim().toUpperCase()
+          if (!BADGE_REGEX.test(text)) return
+
+          const now = Date.now()
+          if (text === lastScanRef.current.badge && now - lastScanRef.current.time < 3000) return
+
+          lastScanRef.current = { badge: text, time: now }
+          setLastScanned(text)
+          cooldownRef.current = true
+
+          onScan(text)
+
+          setTimeout(() => {
+            cooldownRef.current = false
+            setLastScanned('')
+            lastScanRef.current = { badge: null, time: 0 }
+          }, 3000)
+        },
+        () => {} // Ignore scan failures (no barcode found)
       )
-    })
+
+      setStatus('ready')
+    } catch (err) {
+      console.error('Scanner error:', err)
+      setStatus('error')
+      setErrorMsg(err?.message || 'Camera not available')
+    }
+  }
+
+  async function stopQuagga() {
+    if (scannerRef.current) {
+      try {
+        await scannerRef.current.stop()
+      } catch {}
+      scannerRef.current = null
+    }
   }
 
   useEffect(() => {
     mountedRef.current = true
-
-    function handleDetected(result) {
-      if (!mountedRef.current) return
-      
-      if (result?.box) {
-        setDetectionBox(result.box)
-        setTimeout(() => setDetectionBox(null), 500)
-      }
-
-      if (cooldownRef.current) return
-
-      const code = result?.codeResult?.code
-      if (!code) return
-
-      const text = code.trim().toUpperCase()
-      if (!BADGE_REGEX.test(text)) return
-
-      const now = Date.now()
-      if (text === lastScanRef.current.badge && now - lastScanRef.current.time < 3000) return
-
-      lastScanRef.current = { badge: text, time: now }
-      setLastScanned(text)
-
-      cooldownRef.current = true
-      setTimeout(() => {
-        cooldownRef.current = false
-        setLastScanned('')
-        lastScanRef.current = { badge: null, time: 0 }
-      }, 3000)
-
-      onScan(text)
-    }
-
-    function handleProcessed(result) {
-      if (!mountedRef.current || !result?.box) return
-      setDetectionBox(result.box)
-    }
-
-    Quagga.onDetected(handleDetected)
-    Quagga.onProcessed(handleProcessed)
-
-    const timer = setTimeout(() => {
-      if (mountedRef.current) startScanner()
-    }, 300)
+    startScanner()
 
     return () => {
       mountedRef.current = false
-      clearTimeout(timer)
-      Quagga.offDetected(handleDetected)
-      Quagga.offProcessed(handleProcessed)
       stopQuagga()
     }
-  }, [onScan])
+  }, [])
 
   useImperativeHandle(ref, () => ({
     stop: () => stopQuagga(),
@@ -162,7 +128,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   return (
     <div className="scanner-wrapper">
-      <div ref={containerRef} className="scanner-view" />
+      <div id="scanner-viewport" className="scanner-view" />
 
       {status === 'loading' && (
         <div className="scanner-overlay">
