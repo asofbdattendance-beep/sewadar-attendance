@@ -25,9 +25,8 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
     try {
       if (scannerRef.current) {
-        try {
-          await scannerRef.current.stop()
-        } catch {}
+        try { await scannerRef.current.stop() } catch {}
+        scannerRef.current = null
       }
 
       const scanner = new Html5Qrcode('scanner-viewport', {
@@ -36,30 +35,25 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
           Html5QrcodeSupportedFormats.CODE_128
         ],
         verbose: false,
-        experimentalFeatures: {
-          useBarCodeDetectorIfSupported: true
-        }
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true }
       })
       scannerRef.current = scanner
 
-      console.log('Starting camera...')
-      
       await scanner.start(
         { facingMode: 'environment' },
         {
           fps: 15,
-          qrbox: { width: 250, height: 60 },
+          // qrbox matches our visual scan-frame: wide, short strip for barcodes
+          qrbox: { width: 260, height: 70 },
+          // Disable the library's own shading/overlay so ours shows cleanly
+          disableFlip: false,
+          aspectRatio: 1.7778, // 16:9
         },
         (decodedText) => {
-          if (!mountedRef.current) return
+          if (!mountedRef.current || cooldownRef.current) return
 
           const text = decodedText.trim().toUpperCase()
-          console.log('Raw detected:', text)
-          
-          if (!BADGE_REGEX.test(text)) {
-            console.log('Rejected - does not match regex')
-            return
-          }
+          if (!BADGE_REGEX.test(text)) return
 
           const now = Date.now()
           if (text === lastScanRef.current.badge && now - lastScanRef.current.time < 3000) return
@@ -70,28 +64,28 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
           onScan(text)
 
           setTimeout(() => {
+            if (!mountedRef.current) return
             cooldownRef.current = false
             setLastScanned('')
             lastScanRef.current = { badge: null, time: 0 }
           }, 3000)
         },
-        () => {}
+        () => {} // per-frame error — ignore
       )
 
-      console.log('Camera started successfully')
-      setStatus('ready')
+      if (mountedRef.current) setStatus('ready')
     } catch (err) {
       console.error('Scanner error:', err)
-      setStatus('error')
-      setErrorMsg(err?.message || 'Camera not available')
+      if (mountedRef.current) {
+        setStatus('error')
+        setErrorMsg(err?.message || 'Camera not available')
+      }
     }
   }
 
   const stopScanner = async () => {
     if (scannerRef.current) {
-      try {
-        await scannerRef.current.stop()
-      } catch {}
+      try { await scannerRef.current.stop() } catch {}
       scannerRef.current = null
     }
   }
@@ -99,7 +93,6 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   useEffect(() => {
     mountedRef.current = true
     startScanner()
-
     return () => {
       mountedRef.current = false
       stopScanner()
@@ -108,11 +101,8 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   useImperativeHandle(ref, () => ({
     stop: () => stopScanner(),
-    resume: () => startScanner(),
-    restart: () => {
-      stopScanner()
-      setTimeout(startScanner, 100)
-    }
+    resume: () => { if (mountedRef.current) startScanner() },
+    restart: () => { stopScanner(); setTimeout(() => { if (mountedRef.current) startScanner() }, 150) }
   }), [])
 
   if (status === 'error') {
@@ -129,7 +119,8 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   return (
     <div className="scanner-wrapper">
-      <div id="scanner-viewport" className="scanner-view" style={{ width: '100%', height: '320px' }} />
+      {/* html5-qrcode mounts the video stream here */}
+      <div id="scanner-viewport" className="scanner-view" />
 
       {status === 'loading' && (
         <div className="scanner-overlay">
