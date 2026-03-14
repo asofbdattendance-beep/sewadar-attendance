@@ -105,20 +105,52 @@ export default function SuperAdminPage() {
   }
 
   async function toggleUserActive(u) {
-    const { error } = await supabase.from('users').update({ is_active: !u.is_active }).eq('id', u.id)
-    if (error) { showMsg('✗ ' + error.message); return }
-    await logAction(profile, 'TOGGLE_USER', `is_active=${!u.is_active} for ${u.badge_number}`)
-    fetchUsers()
+    try {
+      const { error } = await supabase.from('users').update({ is_active: !u.is_active }).eq('id', u.id)
+      if (error) {
+        showMsg('✗ Update failed: ' + error.message)
+        console.error('toggleUserActive error:', error)
+        return
+      }
+      await logAction(profile, 'TOGGLE_USER', `is_active=${!u.is_active} for ${u.badge_number}`)
+      showMsg(`✓ User ${!u.is_active ? 'activated' : 'deactivated'}`)
+      fetchUsers()
+    } catch (err) {
+      console.error('toggleUserActive exception:', err)
+      showMsg('✗ Update failed: ' + err.message)
+    }
   }
 
   async function deleteUser(u) {
     if (!confirm(`Delete user ${u.name}?\n\nThis removes their login access. Attendance records are preserved.`)) return
-    const { error, count } = await supabase.from('users').delete({ count: 'exact' }).eq('id', u.id)
-    if (error) { showMsg('✗ Delete failed: ' + error.message); return }
-    if (count === 0) { showMsg('✗ Delete blocked — check Supabase RLS policy for the users table (area_secretary must have DELETE permission)'); return }
-    await logAction(profile, 'DELETE_USER', `Deleted ${u.badge_number} ${u.name}`)
-    showMsg('✓ User deleted')
-    fetchUsers()
+    
+    try {
+      const { error, count } = await supabase.from('users').delete({ count: 'exact' }).eq('id', u.id)
+      
+      if (error) {
+        showMsg('✗ Delete failed: ' + error.message)
+        console.error('deleteUser error:', error)
+        return
+      }
+      if (count === 0) {
+        // Check if user still exists
+        const { data: checkData } = await supabase.from('users').select('id').eq('id', u.id).maybeSingle()
+        if (!checkData) {
+          showMsg('✓ User already deleted')
+          fetchUsers()
+          return
+        }
+        showMsg('✗ Delete blocked by RLS policy. Make sure you are logged in as ASO.')
+        return
+      }
+      
+      await logAction(profile, 'DELETE_USER', `Deleted ${u.badge_number} ${u.name}`)
+      showMsg('✓ User deleted successfully')
+      fetchUsers()
+    } catch (err) {
+      console.error('deleteUser exception:', err)
+      showMsg('✗ Delete failed: ' + err.message)
+    }
   }
 
   // ── CREATE USER via Edge Function (service-role, browser-safe) ──
@@ -135,21 +167,38 @@ export default function SuperAdminPage() {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) throw new Error('No active session — please sign in again')
 
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+
+      if (!supabaseUrl || !supabaseAnonKey) {
+        throw new Error('Missing Supabase configuration. Check environment variables.')
+      }
+
       const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-user`,
+        `${supabaseUrl}/functions/v1/create-user`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`,
-            'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+            'apikey': supabaseAnonKey,
           },
           body: JSON.stringify({ email, password, name, badge_number, role, centre }),
         }
       )
 
       const json = await res.json()
-      if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`)
+      
+      if (!res.ok) {
+        if (res.status === 404) {
+          throw new Error('Edge function not deployed. Deploy "create-user" function in Supabase dashboard.')
+        }
+        throw new Error(json.error || `Server error: ${res.status}`)
+      }
+      
+      if (json.error) {
+        throw new Error(json.error)
+      }
 
       await logAction(profile, 'CREATE_USER', `Created ${role} ${badge_number.toUpperCase()} via edge function`)
       showMsg('✓ User created successfully!')
@@ -157,7 +206,8 @@ export default function SuperAdminPage() {
       setNewUser({ email:'', password:'', name:'', badge_number:'', role:'sc_sp_user', centre: PARENT_CENTRES[0] })
       fetchUsers()
     } catch (err) {
-      showMsg('✗ ' + (err.message || 'Failed to create user'))
+      console.error('User creation error:', err)
+      showMsg('✗ ' + (err.message || 'Failed to create user. Make sure edge function is deployed.'))
     } finally {
       setSaving(false)
     }
@@ -166,7 +216,11 @@ export default function SuperAdminPage() {
   // ── Centres ──
   async function fetchCentres() {
     setLoading(true)
-    const { data } = await supabase.from('centres').select('*').order('centre_name')
+    const { data, error } = await supabase.from('centres').select('*').order('centre_name')
+    if (error) {
+      console.error('fetchCentres error:', error)
+      showMsg('✗ Failed to load centres: ' + error.message)
+    }
     setCentres(data || []); setLoading(false)
   }
   async function updateCentreGeo(centreId, field, value, centreName) {
@@ -216,18 +270,51 @@ export default function SuperAdminPage() {
     const clean = {}
     Object.entries(sewadarForm).forEach(([k,v]) => { clean[k] = v === '' ? null : v })
     if (clean.age !== undefined) clean.age = parseInt(clean.age) || null
-    const { error } = await supabase.from('sewadars').update(clean).eq('id', editingSewadar)
-    if (error) { showMsg('✗ ' + error.message); return }
-    await logAction(profile, 'EDIT_SEWADAR', `Updated id=${editingSewadar} fields: ${Object.keys(clean).join(',')}`)
-    showMsg('✓ Sewadar updated!'); setEditingSewadar(null); setSewadarForm({}); fetchSewadars()
+    
+    try {
+      const { error } = await supabase.from('sewadars').update(clean).eq('id', editingSewadar)
+      if (error) {
+        showMsg('✗ Update failed: ' + error.message)
+        console.error('saveSewadar error:', error)
+        return
+      }
+      await logAction(profile, 'EDIT_SEWADAR', `Updated id=${editingSewadar} fields: ${Object.keys(clean).join(',')}`)
+      showMsg('✓ Sewadar updated successfully!')
+      setEditingSewadar(null); setSewadarForm({}); fetchSewadars()
+    } catch (err) {
+      console.error('saveSewadar exception:', err)
+      showMsg('✗ Update failed: ' + err.message)
+    }
   }
   async function deleteSewadar(s) {
     if (!confirm(`Delete ${s.sewadar_name} (${s.badge_number})?\n\nAttendance history is preserved.`)) return
-    const { error, count } = await supabase.from('sewadars').delete({ count: 'exact' }).eq('id', s.id)
-    if (error) { showMsg('✗ Delete failed: ' + error.message); return }
-    if (count === 0) { showMsg('✗ Delete blocked by RLS — ensure area_secretary has DELETE on sewadars table'); return }
-    await logAction(profile, 'DELETE_SEWADAR', `Deleted sewadar ${s.badge_number} ${s.sewadar_name}`)
-    showMsg('✓ Sewadar deleted'); fetchSewadars()
+    
+    try {
+      const { error, count } = await supabase.from('sewadars').delete({ count: 'exact' }).eq('id', s.id)
+      
+      if (error) {
+        showMsg('✗ Delete failed: ' + error.message)
+        console.error('deleteSewadar error:', error)
+        return
+      }
+      if (count === 0) {
+        const { data: checkData } = await supabase.from('sewadars').select('id').eq('id', s.id).maybeSingle()
+        if (!checkData) {
+          showMsg('✓ Sewadar already deleted')
+          fetchSewadars()
+          return
+        }
+        showMsg('✗ Delete blocked by RLS. Make sure you are logged in as ASO.')
+        return
+      }
+      
+      await logAction(profile, 'DELETE_SEWADAR', `Deleted sewadar ${s.badge_number} ${s.sewadar_name}`)
+      showMsg('✓ Sewadar deleted successfully')
+      fetchSewadars()
+    } catch (err) {
+      console.error('deleteSewadar exception:', err)
+      showMsg('✗ Delete failed: ' + err.message)
+    }
   }
   async function createSewadar() {
     if (!newSewadar.sewadar_name || !newSewadar.badge_number) { showMsg('✗ Name and badge required'); return }
@@ -254,31 +341,48 @@ export default function SuperAdminPage() {
       .order('scan_time', { ascending: false }).limit(300)
     if (attSearch.length >= 2) q = q.or(`sewadar_name.ilike.%${attSearch}%,badge_number.ilike.%${attSearch.toUpperCase()}%`)
     const { data, error } = await q
-    if (error) showMsg('✗ Failed to load: ' + error.message)
+    if (error) {
+      showMsg('✗ Failed to load attendance: ' + error.message)
+      console.error('fetchAttendance error:', error)
+    }
     setAttRecords(data || []); setAttLoading(false)
   }
 
   async function deleteAttRecord(r) {
     if (!confirm(`Delete ${r.type} record for ${r.badge_number} at ${new Date(r.scan_time).toLocaleTimeString('en-IN')}?\n\nThis cannot be undone.`)) return
 
-    const { error, count } = await supabase
-      .from('attendance')
-      .delete({ count: 'exact' })
-      .eq('id', r.id)
+    try {
+      const { error, count } = await supabase
+        .from('attendance')
+        .delete({ count: 'exact' })
+        .eq('id', r.id)
 
-    if (error) {
-      showMsg(`✗ Delete failed: ${error.message}`)
-      console.error('deleteAttRecord error:', error)
-      return
-    }
-    if (count === 0) {
-      showMsg('✗ Delete was blocked. Check Supabase RLS: the "attendance" table needs a DELETE policy allowing area_secretary role. See fix instructions below.')
-      return
-    }
+      if (error) {
+        showMsg(`✗ Delete failed: ${error.message}`)
+        console.error('deleteAttRecord error:', error)
+        return
+      }
+      if (count === 0) {
+        // Try a workaround - maybe the record was already deleted or RLS blocked it
+        // Re-fetch to check if record still exists
+        const { data: checkData } = await supabase.from('attendance').select('id').eq('id', r.id).maybeSingle()
+        if (!checkData) {
+          // Record doesn't exist anyway - treat as success
+          showMsg('✓ Record already deleted or does not exist')
+          fetchAttendance()
+          return
+        }
+        showMsg('✗ Delete was blocked by RLS policy. Make sure you are logged in as ASO.')
+        return
+      }
 
-    await logAction(profile, 'DELETE_ATTENDANCE', `Deleted ${r.type} id=${r.id} badge=${r.badge_number}`)
-    showMsg('✓ Record deleted')
-    fetchAttendance()
+      await logAction(profile, 'DELETE_ATTENDANCE', `Deleted ${r.type} id=${r.id} badge=${r.badge_number}`)
+      showMsg('✓ Record deleted successfully')
+      fetchAttendance()
+    } catch (err) {
+      console.error('deleteAttRecord exception:', err)
+      showMsg('✗ Delete failed: ' + err.message)
+    }
   }
 
   async function saveAttEdit() {
@@ -286,10 +390,21 @@ export default function SuperAdminPage() {
     if (editAttTime) updates.scan_time = new Date(attDate + 'T' + editAttTime).toISOString()
     if (editAttType && editAttType !== editingAtt.type) updates.type = editAttType
     if (!Object.keys(updates).length) { setEditingAtt(null); return }
-    const { error } = await supabase.from('attendance').update(updates).eq('id', editingAtt.id)
-    if (error) { showMsg('✗ Update failed: ' + error.message); return }
-    await logAction(profile, 'EDIT_ATTENDANCE', `Edited id=${editingAtt.id} badge=${editingAtt.badge_number}: ${JSON.stringify(updates)}`)
-    showMsg('✓ Record updated'); setEditingAtt(null); fetchAttendance()
+    
+    try {
+      const { error } = await supabase.from('attendance').update(updates).eq('id', editingAtt.id)
+      if (error) {
+        showMsg('✗ Update failed: ' + error.message)
+        console.error('saveAttEdit error:', error)
+        return
+      }
+      await logAction(profile, 'EDIT_ATTENDANCE', `Edited id=${editingAtt.id} badge=${editingAtt.badge_number}: ${JSON.stringify(updates)}`)
+      showMsg('✓ Record updated successfully')
+      setEditingAtt(null); fetchAttendance()
+    } catch (err) {
+      console.error('saveAttEdit exception:', err)
+      showMsg('✗ Update failed: ' + err.message)
+    }
   }
 
   // ── Jatha Centres ──
@@ -324,11 +439,33 @@ export default function SuperAdminPage() {
   }
   async function deleteJathaCentre(jc) {
     if (!confirm(`Delete "${jc.centre_name} — ${jc.department}"? Existing jatha records are unaffected.`)) return
-    const { error, count } = await supabase.from('jatha_centres').delete({ count: 'exact' }).eq('id', jc.id)
-    if (error) { showMsg('✗ ' + error.message); return }
-    if (count === 0) { showMsg('✗ Delete blocked by RLS'); return }
-    await logAction(profile, 'DELETE_JATHA_CENTRE', `Deleted ${jc.centre_name}`)
-    showMsg('✓ Deleted'); fetchJathaCentres()
+    
+    try {
+      const { error, count } = await supabase.from('jatha_centres').delete({ count: 'exact' }).eq('id', jc.id)
+      
+      if (error) {
+        showMsg('✗ Delete failed: ' + error.message)
+        console.error('deleteJathaCentre error:', error)
+        return
+      }
+      if (count === 0) {
+        const { data: checkData } = await supabase.from('jatha_centres').select('id').eq('id', jc.id).maybeSingle()
+        if (!checkData) {
+          showMsg('✓ Jatha centre already deleted')
+          fetchJathaCentres()
+          return
+        }
+        showMsg('✗ Delete blocked by RLS. Make sure you are logged in as ASO.')
+        return
+      }
+      
+      await logAction(profile, 'DELETE_JATHA_CENTRE', `Deleted ${jc.centre_name}`)
+      showMsg('✓ Deleted successfully')
+      fetchJathaCentres()
+    } catch (err) {
+      console.error('deleteJathaCentre exception:', err)
+      showMsg('✗ Delete failed: ' + err.message)
+    }
   }
 
   // ── Render helpers ──
@@ -365,15 +502,7 @@ export default function SuperAdminPage() {
         <div className={`super-admin-msg ${message.startsWith('✓') ? 'msg-success' : 'msg-error'}`}
           onClick={() => setMessage('')} style={{ cursor:'pointer', marginBottom:'1rem' }}>
           {message}
-          {message.includes('RLS') && (
-            <div style={{ marginTop:'0.5rem', fontSize:'0.78rem', opacity:0.9, lineHeight:1.5 }}>
-              <strong>To fix in Supabase dashboard:</strong> Go to Authentication → Policies → find the table → add a policy:<br />
-              <code style={{ background:'rgba(0,0,0,0.15)', padding:'2px 6px', borderRadius:3 }}>
-                CREATE POLICY "area_secretary_delete" ON public.attendance FOR DELETE TO authenticated USING (EXISTS (SELECT 1 FROM public.users WHERE auth_id = auth.uid() AND role = 'area_secretary'));
-              </code>
-            </div>
-          )}
-          <span style={{ float:'right', opacity:0.5, marginLeft:'1rem' }}>✕ dismiss</span>
+          <span style={{ float:'right', opacity:0.5, marginLeft:'1rem' }}>✕</span>
         </div>
       )}
 
