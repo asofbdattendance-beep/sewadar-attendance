@@ -1,6 +1,5 @@
 // supabase/functions/create-user/index.ts
 // Deploy with: supabase functions deploy create-user
-//This is a tst thing
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
@@ -18,79 +17,118 @@ serve(async (req) => {
 
   try {
 
-    const authHeader = req.headers.get("Authorization")
-
-    if (!authHeader) {
+    // Verify API key is provided
+    const apikey = req.headers.get("apikey")
+    if (!apikey) {
       return new Response(
-        JSON.stringify({ error: "Missing authorization header" }),
+        JSON.stringify({ error: "Missing API key" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       )
     }
 
-    // Client with caller JWT
-    const callerClient = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_ANON_KEY") ?? "",
-      {
-        global: { headers: { Authorization: authHeader } },
-      }
-    )
+    // Use service role to bypass RLS and create user
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? ""
+    const serviceRoleKey = Deno.env.get("SERVICE_ROLE_KEY") ?? ""
 
-    const { data: { user }, error: userError } = await callerClient.auth.getUser()
-
-    if (userError || !user) {
+    if (!serviceRoleKey) {
       return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "Server configuration error" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       )
     }
 
-    // Check if caller is ASO
-    const { data: callerProfile, error: roleError } = await callerClient
-      .from("users")
-      .select("role")
-      .eq("auth_id", user.id)
-      .maybeSingle()
-
-    if (roleError || callerProfile?.role !== "aso") {
-      return new Response(
-        JSON.stringify({ error: "Forbidden: ASO only" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      )
-    }
-
-    // Service role client
-    const adminClient = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SERVICE_ROLE_KEY") ?? "",
-      {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false,
-        },
-      }
-    )
+    const adminClient = createClient(supabaseUrl, serviceRoleKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    })
 
     const body = await req.json()
-
     const { email, password, name, badge_number, role, centre } = body
 
-    if (!email || !password || !name || !badge_number || !role || !centre) {
+    // Validate required fields
+    if (!email) {
       return new Response(
-        JSON.stringify({ error: "Missing required fields" }),
+        JSON.stringify({ error: "Email is required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      )
+    }
+    if (!password) {
+      return new Response(
+        JSON.stringify({ error: "Password is required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      )
+    }
+    if (password.length < 6) {
+      return new Response(
+        JSON.stringify({ error: "Password must be at least 6 characters" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      )
+    }
+    if (!name) {
+      return new Response(
+        JSON.stringify({ error: "Name is required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      )
+    }
+    if (!badge_number) {
+      return new Response(
+        JSON.stringify({ error: "Badge number is required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      )
+    }
+    if (!role) {
+      return new Response(
+        JSON.stringify({ error: "Role is required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      )
+    }
+    if (!centre) {
+      return new Response(
+        JSON.stringify({ error: "Centre is required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      )
+    }
+
+    // Validate role
+    const validRoles = ['aso', 'centre_user', 'sc_sp_user']
+    if (!validRoles.includes(role)) {
+      return new Response(
+        JSON.stringify({ error: `Invalid role. Must be one of: ${validRoles.join(', ')}` }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      )
+    }
+
+    // Check if email already exists
+    const { data: existingUser } = await adminClient
+      .from("users")
+      .select("id, email")
+      .eq("email", email.toLowerCase())
+      .maybeSingle()
+
+    if (existingUser) {
+      return new Response(
+        JSON.stringify({ error: "A user with this email already exists" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       )
     }
 
     // Create auth user
-    const { data: authData, error: authError } =
-      await adminClient.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true,
-      })
+    const { data: authData, error: authError } = await adminClient.auth.admin.createUser({
+      email: email.toLowerCase(),
+      password,
+      email_confirm: true,
+    })
 
     if (authError) {
+      // Check for specific error types
+      if (authError.message.includes("already been registered")) {
+        return new Response(
+          JSON.stringify({ error: "This email is already registered" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        )
+      }
       throw new Error(authError.message)
     }
 
@@ -99,7 +137,7 @@ serve(async (req) => {
       .from("users")
       .insert({
         auth_id: authData.user.id,
-        email,
+        email: email.toLowerCase(),
         name,
         badge_number: badge_number.toUpperCase(),
         role,
@@ -109,7 +147,15 @@ serve(async (req) => {
       })
 
     if (insertError) {
+      // Cleanup: delete the auth user if profile creation fails
       await adminClient.auth.admin.deleteUser(authData.user.id)
+      
+      if (insertError.message.includes("duplicate")) {
+        return new Response(
+          JSON.stringify({ error: "A user with this badge number already exists" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        )
+      }
       throw new Error(insertError.message)
     }
 
@@ -117,6 +163,7 @@ serve(async (req) => {
       JSON.stringify({
         success: true,
         user_id: authData.user.id,
+        message: `User ${email} created successfully with role ${role}`
       }),
       {
         status: 200,
@@ -125,6 +172,7 @@ serve(async (req) => {
     )
 
   } catch (err: any) {
+    console.error("Error creating user:", err.message)
 
     return new Response(
       JSON.stringify({

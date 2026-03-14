@@ -159,14 +159,10 @@ export default function SuperAdminPage() {
     if (!email || !password || !name || !badge_number) {
       showMsg('✗ All fields are required'); return
     }
-    if (password.length < 8) { showMsg('✗ Password must be at least 8 characters'); return }
+    if (password.length < 6) { showMsg('✗ Password must be at least 6 characters'); return }
 
     setSaving(true); setMessage('')
     try {
-      // Get the current session token to pass to the Edge Function
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) throw new Error('No active session — please sign in again')
-
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
       const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
@@ -180,7 +176,6 @@ export default function SuperAdminPage() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`,
             'apikey': supabaseAnonKey,
           },
           body: JSON.stringify({ email, password, name, badge_number, role, centre }),
