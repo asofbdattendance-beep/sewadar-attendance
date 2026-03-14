@@ -153,7 +153,7 @@ export default function SuperAdminPage() {
     }
   }
 
-  // ── CREATE USER via Edge Function (service-role, browser-safe) ──
+  // ── CREATE USER via Edge Function ──
   async function createUser() {
     const { email, password, name, badge_number, role, centre } = newUser
     if (!email || !password || !name || !badge_number) {
@@ -167,8 +167,12 @@ export default function SuperAdminPage() {
       const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
       if (!supabaseUrl || !supabaseAnonKey) {
-        throw new Error('Missing Supabase configuration. Check environment variables.')
+        throw new Error('Missing Supabase config')
       }
+
+      // Get current session for auth
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token || ''
 
       const res = await fetch(
         `${supabaseUrl}/functions/v1/create-user`,
@@ -177,6 +181,7 @@ export default function SuperAdminPage() {
           headers: {
             'Content-Type': 'application/json',
             'apikey': supabaseAnonKey,
+            'Authorization': `Bearer ${token}`,
           },
           body: JSON.stringify({ email, password, name, badge_number, role, centre }),
         }
@@ -185,24 +190,21 @@ export default function SuperAdminPage() {
       const json = await res.json()
       
       if (!res.ok) {
-        if (res.status === 404) {
-          throw new Error('Edge function not deployed. Deploy "create-user" function in Supabase dashboard.')
-        }
-        throw new Error(json.error || `Server error: ${res.status}`)
+        throw new Error(json.error || `Error: ${res.status}`)
       }
       
       if (json.error) {
         throw new Error(json.error)
       }
 
-      await logAction(profile, 'CREATE_USER', `Created ${role} ${badge_number.toUpperCase()} via edge function`)
-      showMsg('✓ User created successfully!')
+      await logAction(profile, 'CREATE_USER', `Created ${role} ${badge_number.toUpperCase()}`)
+      showMsg('✓ User created: ' + email)
       setShowAddUser(false)
       setNewUser({ email:'', password:'', name:'', badge_number:'', role:'sc_sp_user', centre: PARENT_CENTRES[0] })
       fetchUsers()
     } catch (err) {
       console.error('User creation error:', err)
-      showMsg('✗ ' + (err.message || 'Failed to create user. Make sure edge function is deployed.'))
+      showMsg('✗ ' + (err.message || 'Failed to create user'))
     } finally {
       setSaving(false)
     }
