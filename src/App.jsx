@@ -6,7 +6,6 @@ import { supabase, ROLES } from './lib/supabase'
 import LoginPage from './pages/LoginPage'
 import ScannerPage from './pages/ScannerPage'
 import RecordsPage from './pages/RecordsPage'
-import AdminPage from './pages/AdminPage'
 import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
 import FlagsPage from './pages/FlagsPage'
@@ -118,7 +117,6 @@ function AppLayout() {
         <Route path="/records" element={<RecordsPage />} />
         <Route path="/jatha" element={<JathaPage />} />
         <Route path="/flags" element={<FlagsPage />} />
-        <Route path="/admin" element={<AdminPage />} />
         <Route path="/super-admin" element={<SuperAdminPage />} />
         <Route path="/profile" element={<ProfilePage isOnline={isOnline} />} />
         <Route path="*" element={<Navigate to="/scan" replace />} />
