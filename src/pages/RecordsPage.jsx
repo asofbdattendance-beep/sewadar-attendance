@@ -112,12 +112,13 @@ function AttendanceTab() {
 
   function exportToCSV() {
     const csv = [
-      ['Badge Number', 'Name', 'Centre', 'Department', 'Date', 'IN Time', 'OUT Time', 'IN By', 'OUT By'].join(','),
+      ['Badge Number', 'Name', 'Centre', 'Department', 'Date', 'IN Time', 'Scanned IN By', 'OUT Time', 'Scanned OUT By'].join(','),
       ...records.map(r => [
         r.badge_number, `"${r.sewadar_name}"`, r.centre, r.department || '', r.date,
         r.in_time ? new Date(r.in_time).toLocaleTimeString('en-IN') : '',
+        r.in_scanner ? `"${r.in_scanner}"` : '',
         r.out_time ? new Date(r.out_time).toLocaleTimeString('en-IN') : '',
-        r.in_scanner || '', r.out_scanner || ''
+        r.out_scanner ? `"${r.out_scanner}"` : ''
       ].join(','))
     ].join('\n')
     const a = document.createElement('a')
@@ -244,8 +245,14 @@ function AttendanceTab() {
                   <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                     {new Date(r.date + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
                   </td>
-                  <td><span className={`time-cell ${r.in_time ? 'has-time' : ''}`}>{formatTime(r.in_time)}</span></td>
-                  <td><span className={`time-cell ${r.out_time ? 'has-time out-time' : ''}`}>{formatTime(r.out_time)}</span></td>
+                  <td>
+                    <span className={`time-cell ${r.in_time ? 'has-time' : ''}`}>{formatTime(r.in_time)}</span>
+                    {r.in_scanner && <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.in_scanner}</div>}
+                  </td>
+                  <td>
+                    <span className={`time-cell ${r.out_time ? 'has-time out-time' : ''}`}>{formatTime(r.out_time)}</span>
+                    {r.out_scanner && <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.out_scanner}</div>}
+                  </td>
                   <td>
                     {r.in_time && r.out_time
                       ? <span className="status-complete">Complete</span>

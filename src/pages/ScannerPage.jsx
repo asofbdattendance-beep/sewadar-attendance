@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import { lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getAttendanceCache } from '../lib/offline'
+import { lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getAttendanceCache, getCacheAge } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, RefreshCw, Activity, PenLine } from 'lucide-react'
@@ -186,6 +186,13 @@ export default function ScannerPage({ isOnline }) {
       }
     }
 
+    // Block ineligible badge statuses — only Open, Permanent, Elderly allowed
+    const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
+    const badgeStatus = (found.badge_status || '').toLowerCase().trim()
+    if (!ALLOWED_STATUSES.includes(badgeStatus)) {
+      setPopupState({ type: 'invalid_status', sewadar: found, badge: b }); setProcessing(false); return
+    }
+
     if (!isAso && !isCentreUserRole && !isSameCentre && !isException) {
       setPopupState({ type: 'auth_fail', sewadar: found, badge: b }); setProcessing(false); return
     }
@@ -213,27 +220,26 @@ export default function ScannerPage({ isOnline }) {
       longitude: userLocation?.lng || null,
       device_id: navigator.userAgent.slice(0, 50),
     }
-    let success = false
+    // Show success immediately — DB write happens in background
+    addToAttendanceCache({ ...record, id: Date.now() })
+    setRecentScans(getAttendanceCache().slice(0, 5))
+    playBeep(type)
+    setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
+    setTimeout(closePopup, 1200)
+
+    // FIX #4: fire-and-forget with offline fallback on failure
     if (isOnline) {
-      const { error } = await supabase.from('attendance').insert(record)
-      if (!error) {
-        await supabase.from('logs').insert({
-          user_badge: profile.badge_number,
-          action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
-          details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
-          timestamp: scanTime
-        })
-        success = true
-      }
+      supabase.from('attendance').insert(record).then(({ error }) => {
+        if (error) { console.warn('Insert failed, saving offline:', error.message); addToOfflineQueue(record) }
+      })
+      supabase.from('logs').insert({
+        user_badge: profile.badge_number,
+        action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
+        details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
+        timestamp: scanTime
+      })
     } else {
-      addToOfflineQueue(record); success = true
-    }
-    if (success) {
-      addToAttendanceCache({ ...record, id: Date.now() })
-      setRecentScans(getAttendanceCache().slice(0, 5))
-      playBeep(type)
-      setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
-      setTimeout(closePopup, 2000)
+      addToOfflineQueue(record)
     }
   }
 
@@ -270,13 +276,18 @@ export default function ScannerPage({ isOnline }) {
             <MapPin size={11} />
             GPS {gpsStatus === 'success' ? '✓' : gpsStatus === 'failed' ? '✗' : '…'}
           </span>
+          {(() => { const age = getCacheAge(); return age !== null ? (
+            <span className="scanner-pill pill-gps-ok" title="Sewadar data cache age">
+              ⚡ {age === 0 ? 'fresh' : `${age}m`}
+            </span>
+          ) : null })()}
         </div>
       </div>
 
       <div className="scanner-live-strip">
         <span className="pulse-dot green" />
         <span className="scanner-live-count">{todayCount} IN today</span>
-        {isAso && (
+        {(isAso || profile?.role === ROLES.CENTRE_USER) && (
           <button className="scanner-manual-btn" onClick={() => setManualModal(true)}>
             <PenLine size={13} /> Manual
           </button>
@@ -345,6 +356,20 @@ export default function ScannerPage({ isOnline }) {
                 <div className="error-badge">{popupState.badge}</div>
                 <div className="error-msg">This badge is not registered in the system</div>
                 <button className="btn-cancel" onClick={closePopup}>Try Again</button>
+              </div>
+            )}
+
+            {popupState.type === 'invalid_status' && (
+              <div className="popup-error">
+                <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Badge Ineligible</div>
+                <div className="error-name">{popupState.sewadar.sewadar_name}</div>
+                <div className="error-badge">{popupState.badge}</div>
+                <div style={{ margin: '8px auto', display: 'inline-block', background: 'rgba(198,40,40,0.1)', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 6, padding: '3px 12px', fontSize: 13, fontWeight: 700, color: '#dc2626' }}>
+                  Status: {popupState.sewadar.badge_status || 'Unknown'}
+                </div>
+                <div className="error-msg">Only Open, Permanent &amp; Elderly badges can be marked</div>
+                <button className="btn-cancel" onClick={closePopup}>Dismiss</button>
               </div>
             )}
 
@@ -441,10 +466,19 @@ function SewadarFoundCard({ sewadar, allowedTypes, scanCount, onMark, onClose })
         <span className={`gender-badge ${sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>{sewadar.gender}</span>
       </div>
       <div className="popup-details">
-        <div className="detail"><span>Father/Husband</span><span>{sewadar.father_husband_name || '—'}</span></div>
-        <div className="detail"><span>Age</span><span>{sewadar.age || '—'}</span></div>
         <div className="detail"><span>Centre</span><span>{sewadar.centre}</span></div>
         <div className="detail"><span>Dept</span><span>{sewadar.department || '—'}</span></div>
+        <div className="detail">
+          <span>Status</span>
+          <span style={{
+            background: (() => { const s = (sewadar.badge_status||'').toLowerCase(); return s==='permanent'?'rgba(33,115,70,0.12)':s==='open'?'rgba(33,100,200,0.12)':s==='elderly'?'rgba(201,168,76,0.15)':'rgba(198,40,40,0.1)' })(),
+            color: (() => { const s = (sewadar.badge_status||'').toLowerCase(); return s==='permanent'?'var(--green)':s==='open'?'var(--blue)':s==='elderly'?'var(--gold)':'var(--red)' })(),
+            border: '1px solid currentColor', borderRadius: 5, padding: '1px 8px',
+            fontSize: 12, fontWeight: 700, opacity: 0.9
+          }}>
+            {sewadar.badge_status || 'Unknown'}
+          </span>
+        </div>
       </div>
       {scanCount > 0 && (
         <div className="popup-scan-history">

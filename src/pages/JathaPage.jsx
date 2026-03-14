@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, countSatsangDays, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
-import { Search, Calendar, CheckCircle, ChevronDown, MapPin, AlertTriangle, X, RefreshCw, Plane, Download, Flag } from 'lucide-react'
+import { Search, Calendar, CheckCircle, ChevronDown, MapPin, AlertTriangle, X, RefreshCw, Plane, Download, Flag, Pencil, Trash2 } from 'lucide-react'
 
 function validateRange(from, to) {
   if (!from || !to) return null
@@ -308,8 +308,11 @@ function ViewJathaTab() {
   const [flagReason, setFlagReason] = useState('')
   const [flagSubmitting, setFlagSubmitting] = useState(false)
   const [flagSuccess, setFlagSuccess] = useState(false)
+  const [editModal, setEditModal] = useState(null)  // record being edited
+  const [editSaving, setEditSaving] = useState(false)
 
   const isAdmin = [ROLES.ASO, ROLES.CENTRE_USER].includes(profile?.role)
+  const isAso = profile?.role === ROLES.ASO
 
   useEffect(() => { fetchRecords() }, [typeFilter, monthFilter])
 
@@ -376,6 +379,38 @@ function ViewJathaTab() {
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
     a.download = `jatha_records${monthFilter ? '_' + monthFilter : ''}.csv`
     a.click()
+  }
+
+  async function saveEdit(updated) {
+    setEditSaving(true)
+    const { error } = await supabase.from('jatha_attendance').update({
+      sewadar_name: updated.sewadar_name,
+      centre: updated.centre,
+      department: updated.department,
+      jatha_type: updated.jatha_type,
+      jatha_centre: updated.jatha_centre,
+      jatha_dept: updated.jatha_dept,
+      date_from: updated.date_from,
+      date_to: updated.date_to,
+      satsang_days: updated.satsang_days,
+      remarks: updated.remarks,
+    }).eq('id', updated.id)
+    setEditSaving(false)
+    if (!error) { setEditModal(null); fetchRecords() }
+    else alert('Save failed: ' + error.message)
+  }
+
+  async function deleteRecord(record) {
+    if (!confirm(`Delete jatha record for ${record.sewadar_name} (${record.date_from} → ${record.date_to})? This cannot be undone.`)) return
+    const { error } = await supabase.from('jatha_attendance').delete().eq('id', record.id)
+    if (!error) {
+      await supabase.from('logs').insert({
+        user_badge: profile.badge_number, action: 'DELETE_JATHA',
+        details: `Deleted jatha id=${record.id} for ${record.badge_number}`,
+        timestamp: new Date().toISOString()
+      })
+      fetchRecords()
+    } else alert('Delete failed: ' + error.message)
   }
 
   async function submitFlag() {
@@ -509,17 +544,41 @@ function ViewJathaTab() {
                 </div>
               )}
 
-              {!r.flag && (
-                <div style={{ marginTop: '0.5rem', display: 'flex', justifyContent: 'flex-end' }}>
+              <div style={{ marginTop: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '0.4rem' }}>
+                  {isAso && (
+                    <button onClick={() => setEditModal({ ...r })}
+                      style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '0.25rem 0.65rem', fontSize: '0.75rem', color: 'var(--blue)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
+                      <Pencil size={11} /> Edit
+                    </button>
+                  )}
+                  {isAso && (
+                    <button onClick={() => deleteRecord(r)}
+                      style={{ background: 'none', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 6, padding: '0.25rem 0.65rem', fontSize: '0.75rem', color: 'var(--red)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
+                      <Trash2 size={11} /> Delete
+                    </button>
+                  )}
+                </div>
+                {!r.flag && (
                   <button onClick={() => { setFlagModal(r); setFlagReason(''); setFlagSuccess(false) }}
                     style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '0.25rem 0.65rem', fontSize: '0.75rem', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
                     <Flag size={11} /> Flag error
                   </button>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           ))}
         </div>
+      )}
+
+      {/* Edit Modal — ASO only */}
+      {editModal && (
+        <EditJathaModal
+          record={editModal}
+          saving={editSaving}
+          onSave={saveEdit}
+          onClose={() => setEditModal(null)}
+        />
       )}
 
       {/* Flag Modal */}
@@ -568,6 +627,151 @@ function ViewJathaTab() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+
+// ─────────────────────────────────────────────
+//  EDIT MODAL — ASO only, full field editing
+// ─────────────────────────────────────────────
+function EditJathaModal({ record, saving, onSave, onClose }) {
+  const [form, setForm] = useState({ ...record })
+  const [centreOptions, setCentreOptions] = useState([])
+  const [deptOptions, setDeptOptions] = useState([])
+
+  const satsangDays = (() => {
+    if (!form.date_from || !form.date_to) return 0
+    const f = new Date(form.date_from + 'T00:00:00')
+    const t = new Date(form.date_to + 'T00:00:00')
+    if (t < f) return 0
+    return Math.round((t - f) / 86400000) + 1
+  })()
+
+  useEffect(() => {
+    if (!form.jatha_type) return
+    supabase.from('jatha_centres').select('centre_name, department')
+      .eq('jatha_type', form.jatha_type).eq('is_active', true)
+      .order('centre_name').order('department')
+      .then(({ data }) => {
+        const centres = [...new Set((data || []).map(r => r.centre_name))]
+        setCentreOptions(centres)
+        const depts = (data || []).filter(r => r.centre_name === form.jatha_centre).map(r => r.department)
+        setDeptOptions(depts)
+      })
+  }, [form.jatha_type, form.jatha_centre])
+
+  function set(key, val) { setForm(prev => ({ ...prev, [key]: val })) }
+
+  function handleDateFrom(val) {
+    set('date_from', val)
+    if (form.date_to && form.date_to < val) set('date_to', '')
+  }
+
+  function handleSubmit() {
+    if (!form.date_from || !form.date_to) return alert('Both dates required')
+    if (form.date_to < form.date_from) return alert('End date must be after start date')
+    onSave({ ...form, satsang_days: satsangDays })
+  }
+
+  const labelStyle = { fontWeight: 700, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.3rem', display: 'block' }
+  const inputStyle = { width: '100%', padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.88rem', fontFamily: 'inherit', boxSizing: 'border-box' }
+  const rowStyle = { marginBottom: '0.85rem' }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: 480, maxHeight: '90vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Pencil size={17} color="var(--gold)" />
+            <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Edit Jatha Record</h3>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={18} /></button>
+        </div>
+
+        {/* Sewadar info — read only */}
+        <div style={{ background: 'var(--gold-bg)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 8, padding: '0.65rem 0.85rem', marginBottom: '1.25rem' }}>
+          <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--gold)' }}>{form.sewadar_name}</div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 2 }}>{form.badge_number} · {form.centre}</div>
+        </div>
+
+        {/* Jatha Type */}
+        <div style={rowStyle}>
+          <label style={labelStyle}>Jatha Type</label>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+            {[JATHA_TYPE.MAJOR_CENTRE, JATHA_TYPE.BEAS].map(t => (
+              <button key={t} onClick={() => { set('jatha_type', t); set('jatha_centre', ''); set('jatha_dept', '') }}
+                style={{ padding: '0.5rem', border: `2px solid ${form.jatha_type === t ? 'var(--gold)' : 'var(--border)'}`, borderRadius: 8, background: form.jatha_type === t ? 'var(--gold-bg)' : 'var(--bg)', color: form.jatha_type === t ? 'var(--gold)' : 'var(--text-secondary)', fontWeight: 700, fontSize: '0.82rem', cursor: 'pointer', fontFamily: 'inherit' }}>
+                {JATHA_TYPE_LABEL[t]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Jatha Centre */}
+        {centreOptions.length > 0 && form.jatha_type === JATHA_TYPE.MAJOR_CENTRE && (
+          <div style={rowStyle}>
+            <label style={labelStyle}>Major Centre</label>
+            <div style={{ position: 'relative' }}>
+              <select style={{ ...inputStyle, appearance: 'none', paddingRight: '2rem' }}
+                value={form.jatha_centre} onChange={e => { set('jatha_centre', e.target.value); set('jatha_dept', '') }}>
+                <option value="">Select centre…</option>
+                {centreOptions.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <ChevronDown size={14} style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-muted)' }} />
+            </div>
+          </div>
+        )}
+
+        {/* Department */}
+        {deptOptions.length > 0 && (
+          <div style={rowStyle}>
+            <label style={labelStyle}>Department</label>
+            <div style={{ position: 'relative' }}>
+              <select style={{ ...inputStyle, appearance: 'none', paddingRight: '2rem' }}
+                value={form.jatha_dept} onChange={e => set('jatha_dept', e.target.value)}>
+                <option value="">Select department…</option>
+                {deptOptions.map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+              <ChevronDown size={14} style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-muted)' }} />
+            </div>
+          </div>
+        )}
+
+        {/* Dates */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.85rem' }}>
+          <div>
+            <label style={labelStyle}>From</label>
+            <input type="date" style={inputStyle} value={form.date_from} onChange={e => handleDateFrom(e.target.value)} />
+          </div>
+          <div>
+            <label style={labelStyle}>To</label>
+            <input type="date" style={inputStyle} value={form.date_to} min={form.date_from || undefined} onChange={e => set('date_to', e.target.value)} />
+          </div>
+        </div>
+
+        {satsangDays > 0 && (
+          <div style={{ fontSize: '0.8rem', color: 'var(--green)', fontWeight: 600, marginBottom: '0.85rem' }}>
+            ✓ {satsangDays} {satsangDays === 1 ? 'day' : 'days'} total
+          </div>
+        )}
+
+        {/* Remarks */}
+        <div style={rowStyle}>
+          <label style={labelStyle}>Remarks</label>
+          <textarea style={{ ...inputStyle, resize: 'none' }} rows={2}
+            value={form.remarks || ''} onChange={e => set('remarks', e.target.value)}
+            placeholder="Optional notes…" />
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginTop: '0.25rem' }}>
+          <button onClick={onClose} className="btn btn-outline btn-full">Cancel</button>
+          <button onClick={handleSubmit} disabled={saving}
+            className="btn btn-gold btn-full" style={{ fontWeight: 700 }}>
+            {saving ? 'Saving…' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

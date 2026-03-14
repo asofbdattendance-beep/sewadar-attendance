@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
-    "@ericblade/quagga2": "^1.8.4",
+    "@undecaf/barcode-detector-polyfill": "^0.9.23",
     "html5-qrcode": "^2.3.8",
     "lucide-react": "^0.303.0",
     "react": "^18.2.0",
