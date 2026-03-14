@@ -17,15 +17,15 @@ export default function FlagsPage() {
   const [submitting, setSubmitting] = useState(false)
   const [childCentres, setChildCentres] = useState([])
 
-  const isAdmin = [ROLES.AREA_SECRETARY, ROLES.CENTRE_USER].includes(profile?.role)
-  const isAreaSecretary = profile?.role === ROLES.AREA_SECRETARY
+  const isAdmin = [ROLES.ASO, ROLES.CENTRE_USER].includes(profile?.role)
+  const isAso = profile?.role === ROLES.ASO
 
   useEffect(() => {
     loadChildCentres().then(fetchFlags)
   }, [statusFilter, profile])
 
   async function loadChildCentres() {
-    if (!profile?.centre || isAreaSecretary) return
+    if (!profile?.centre || isAso) return
     const { data } = await supabase
       .from('centres')
       .select('centre_name')
@@ -65,7 +65,7 @@ export default function FlagsPage() {
         scope.includes(f.raised_by_centre) || scope.includes(f.target_centre)
       )
     }
-    // area_secretary sees all
+    // ASO sees all
 
     setFlags(filtered)
     setLoading(false)
@@ -85,7 +85,7 @@ export default function FlagsPage() {
       created_at: new Date().toISOString()
     })
 
-    // If admin/area_secretary replies, move to in_progress if still open
+    // If ASO replies, move to in_progress if still open
     const flag = flags.find(f => f.id === flagId)
     if (isAdmin && flag?.status === FLAG_STATUS.OPEN) {
       await supabase.from('queries')
@@ -142,7 +142,7 @@ export default function FlagsPage() {
         <div>
           <h2 className="flags-page-title">Flags</h2>
           <p className="flags-page-sub">
-            {isAreaSecretary ? 'All centres' : profile?.role === ROLES.CENTRE_USER ? `${profile.centre} + sub-centres` : 'My flags'}
+            {isAso ? 'All centres' : profile?.role === ROLES.CENTRE_USER ? `${profile.centre} + sub-centres` : 'My flags'}
           </p>
         </div>
         <button className="btn btn-ghost" onClick={fetchFlags} style={{ padding: '0.5rem' }}>
@@ -178,7 +178,7 @@ export default function FlagsPage() {
             const isExpanded = expandedId === flag.id
             const replies = flag.query_replies || []
             const canReply =
-              isAreaSecretary ||
+              isAso ||
               (profile?.role === ROLES.CENTRE_USER) ||
               (profile?.role === ROLES.SC_SP_USER && flag.raised_by_badge === profile.badge_number)
             const canResolve = isAdmin && flag.status !== FLAG_STATUS.RESOLVED
@@ -286,7 +286,7 @@ export default function FlagsPage() {
                             <CheckCircle size={14} /> Mark Resolved
                           </button>
                         )}
-                        {flag.status === FLAG_STATUS.RESOLVED && isAreaSecretary && (
+                        {flag.status === FLAG_STATUS.RESOLVED && isAso && (
                           <button className="flag-reopen-btn" onClick={() => reopenFlag(flag.id)}>
                             Reopen
                           </button>

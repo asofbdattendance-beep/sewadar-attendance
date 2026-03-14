@@ -37,17 +37,13 @@ export function isExceptionDept(dept) {
   return EXCEPTION_DEPARTMENTS.some(d => d.toLowerCase() === lower)
 }
 
-// Count Sundays and Wednesdays (satsang days) in a date range, inclusive
+// Count total calendar days in a jatha range, inclusive (To - From + 1)
 export function countSatsangDays(fromDate, toDate) {
-  let count = 0
-  const cur = new Date(fromDate + 'T00:00:00')
-  const end = new Date(toDate + 'T00:00:00')
-  while (cur <= end) {
-    const day = cur.getDay() // 0=Sun, 3=Wed
-    if (day === 0 || day === 3) count++
-    cur.setDate(cur.getDate() + 1)
-  }
-  return count
+  if (!fromDate || !toDate) return 0
+  const from = new Date(fromDate + 'T00:00:00')
+  const to = new Date(toDate + 'T00:00:00')
+  if (to < from) return 0
+  return Math.round((to - from) / 86400000) + 1
 }
 
 // Validate jatha date range: max 10 days, to >= from
@@ -72,7 +68,7 @@ export const JATHA_TYPE_LABEL = {
 }
 
 export async function getCentreScope(centreName, role) {
-  if (role === ROLES.AREA_SECRETARY) return null
+  if (role === ROLES.ASO) return null
   const { data } = await supabase
     .from('centres')
     .select('centre_name, parent_centre')
@@ -82,7 +78,7 @@ export async function getCentreScope(centreName, role) {
 
 export async function getViewableCentres(profile) {
   if (!profile) return []
-  if (profile.role === ROLES.AREA_SECRETARY) return null
+  if (profile.role === ROLES.ASO) return null
   if (profile.role === ROLES.CENTRE_USER) return getCentreScope(profile.centre, ROLES.CENTRE_USER)
   return [profile.centre]
 }
@@ -98,7 +94,7 @@ export function getDistanceMetres(lat1, lon1, lat2, lon2) {
 }
 
 export const ROLES = {
-  AREA_SECRETARY: 'area_secretary',
+  ASO: 'aso',
   CENTRE_USER: 'centre_user',
   SC_SP_USER: 'sc_sp_user'
 }
