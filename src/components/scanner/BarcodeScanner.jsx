@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 're
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode'
 import { CameraOff, RefreshCw } from 'lucide-react'
 
-const BADGE_REGEX = /^FB\d{4}[GL]A\d{4,}$/
+const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{2}[0-9]{4}$/
 
 const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const scannerRef = useRef(null)
@@ -47,17 +47,17 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       await scanner.start(
         { facingMode: 'environment' },
         {
-          fps: 10,
-          qrbox: { width: 280, height: 80 },
+          fps: 15,
+          qrbox: { width: 250, height: 60 },
         },
         (decodedText) => {
-          if (!mountedRef.current || cooldownRef.current) return
+          if (!mountedRef.current) return
 
           const text = decodedText.trim().toUpperCase()
-          console.log('Detected:', text)
+          console.log('Raw detected:', text)
           
           if (!BADGE_REGEX.test(text)) {
-            console.log('Rejected - regex mismatch')
+            console.log('Rejected - does not match regex')
             return
           }
 
