@@ -1,61 +1,161 @@
 /**
- * BarcodeScanner — Native-first, zero-library barcode scanner
+ * BarcodeScanner — Dual-engine scanner
  *
- * Strategy:
- *  1. getUserMedia → raw camera stream into a <video> element
- *  2. BarcodeDetector API (hardware-accelerated, built into Chrome/Android)
- *     → detects CODE_39 and CODE_128 directly from the video feed
- *  3. requestAnimationFrame loop — runs at display refresh rate (60fps)
- *     → each frame: grab video frame → BarcodeDetector.detect() → check result
- *  4. No library, no canvas processing, no wrapper UI injected
+ * Engine 1 — BarcodeDetector API (Android Chrome, Samsung Internet)
+ *   - Hardware-accelerated, runs on GPU/ISP
+ *   - ~2-8ms per frame at 60fps via requestAnimationFrame
  *
- * Why this is fast:
- *  - BarcodeDetector runs on device GPU/hardware decoder
- *  - rAF loop is ~16ms per frame, detection adds <5ms on supported hardware
- *  - Zero JS barcode parsing — browser does it natively
- *  - No html5-qrcode overhead (that lib processes every frame in JS)
+ * Engine 2 — ZXing (iOS Safari + any browser without BarcodeDetector)
+ *   - Best JS fallback, used by many production apps
+ *   - Runs at ~15fps, still fast enough for badge scanning
+ *
+ * Auto-detects which engine to use on mount.
  */
 
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
 import { CameraOff, RefreshCw, Zap } from 'lucide-react'
 
-// Matches FB or BH + 4 digits + 1-2 letters + 4+ digits
-// e.g. FB5978GA0001, FB1234LA56789, BH4321GA0001
 const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{1,2}[0-9]{4,}$/
+
+// Clean raw barcode text — strip spaces, trim, uppercase
+function clean(raw) {
+  return raw.trim().toUpperCase().replace(/\s+/g, '')
+}
+
+// ── Engine detection ──
+function hasNativeBarcodeDetector() {
+  return 'BarcodeDetector' in window
+}
 
 const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const videoRef = useRef(null)
   const streamRef = useRef(null)
   const rafRef = useRef(null)
-  const detectorRef = useRef(null)
+  const detectorRef = useRef(null)      // native BarcodeDetector instance
+  const zxingReaderRef = useRef(null)   // ZXing reader instance
   const mountedRef = useRef(true)
   const lastScanRef = useRef({ badge: null, time: 0 })
-  const isDetectingRef = useRef(false) // prevent overlapping detect() calls
+  const isDetectingRef = useRef(false)
+  const engineRef = useRef(null)        // 'native' | 'zxing'
 
-  const [status, setStatus] = useState('starting') // starting | loading | ready | error | unsupported
+  const [status, setStatus] = useState('starting')
   const [errorMsg, setErrorMsg] = useState('')
   const [lastScanned, setLastScanned] = useState('')
+  const [engine, setEngine] = useState(null)
+  const fpsRef = useRef({ frames: 0, last: Date.now() })
   const [fps, setFps] = useState(0)
 
-  // FPS counter for debug — remove in prod if wanted
-  const fpsRef = useRef({ frames: 0, last: Date.now() })
-
   const stopScanner = () => {
-    // Stop rAF loop
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+    if (zxingReaderRef.current) {
+      try { zxingReaderRef.current.reset() } catch {}
+      zxingReaderRef.current = null
     }
-    // Stop camera stream
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop())
       streamRef.current = null
     }
-    // Clear video
-    if (videoRef.current) {
-      videoRef.current.srcObject = null
-    }
+    if (videoRef.current) videoRef.current.srcObject = null
     isDetectingRef.current = false
+  }
+
+  // Called on every successful decode from either engine
+  function handleDecoded(raw) {
+    const text = clean(raw)
+    if (!BADGE_REGEX.test(text)) return
+    const now = Date.now()
+    if (text === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) return
+    lastScanRef.current = { badge: text, time: now }
+    setLastScanned(text)
+    setTimeout(() => { if (mountedRef.current) setLastScanned('') }, 1500)
+    onScan(text)
+  }
+
+  // ── Get camera stream ──
+  async function getStream() {
+    return navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      },
+      audio: false
+    })
+  }
+
+  // ── ENGINE 1: Native BarcodeDetector (Android / Chrome) ──
+  async function startNative() {
+    detectorRef.current = new window.BarcodeDetector({
+      formats: ['code_39', 'code_128', 'codabar']
+    })
+    engineRef.current = 'native'
+    setEngine('native')
+
+    const detect = async () => {
+      if (!mountedRef.current) return
+      fpsRef.current.frames++
+      const now = Date.now()
+      if (now - fpsRef.current.last >= 1000) {
+        setFps(fpsRef.current.frames)
+        fpsRef.current = { frames: 0, last: now }
+      }
+      if (!isDetectingRef.current && videoRef.current?.readyState === 4) {
+        isDetectingRef.current = true
+        try {
+          const barcodes = await detectorRef.current.detect(videoRef.current)
+          for (const b of barcodes) handleDecoded(b.rawValue)
+        } catch {}
+        isDetectingRef.current = false
+      }
+      rafRef.current = requestAnimationFrame(detect)
+    }
+    rafRef.current = requestAnimationFrame(detect)
+  }
+
+  // ── ENGINE 2: ZXing (iOS Safari + fallback) ──
+  async function startZXing() {
+    engineRef.current = 'zxing'
+    setEngine('zxing')
+
+    // Dynamically import ZXing — tries npm package first, falls back to CDN
+    // This means Android users never download ZXing at all (tree-shaken)
+    let ZXing
+    try {
+      ZXing = await import('@zxing/browser')
+    } catch {
+      // Not installed — load from CDN (works on iOS without npm install)
+      ZXing = await import('https://esm.sh/@zxing/browser@0.1.5')
+    }
+    const { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } = ZXing
+
+    const hints = new Map()
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.CODE_39,
+      BarcodeFormat.CODE_128,
+    ])
+    hints.set(DecodeHintType.TRY_HARDER, true)
+
+    const reader = new BrowserMultiFormatReader(hints, {
+      delayBetweenScanAttempts: 50,  // ms between attempts — keep low for speed
+      delayBetweenScanSuccess: 1500, // ms cooldown after a successful scan
+    })
+    zxingReaderRef.current = reader
+
+    // ZXing decodes directly from the video stream
+    // We pass the already-running video element
+    reader.decodeFromVideoElement(videoRef.current, (result, err) => {
+      if (!mountedRef.current) return
+      if (result) {
+        fpsRef.current.frames++
+        const now = Date.now()
+        if (now - fpsRef.current.last >= 1000) {
+          setFps(fpsRef.current.frames)
+          fpsRef.current = { frames: 0, last: now }
+        }
+        handleDecoded(result.getText())
+      }
+      // err is a not-found error on most frames — expected, ignore
+    })
   }
 
   const startScanner = async () => {
@@ -66,110 +166,52 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     setErrorMsg('')
     setLastScanned('')
     lastScanRef.current = { badge: null, time: 0 }
+    fpsRef.current = { frames: 0, last: Date.now() }
 
-    // ── 1. Check BarcodeDetector support ──
-    if (!('BarcodeDetector' in window)) {
-      // Fallback: try polyfill via shape-detection API or show unsupported
-      setStatus('unsupported')
-      setErrorMsg('Your browser does not support native barcode detection. Try Chrome on Android.')
-      return
-    }
-
-    // ── 2. Create detector (reuse across frames) ──
+    // ── Get camera ──
     try {
-      detectorRef.current = new window.BarcodeDetector({
-        formats: ['code_39', 'code_128', 'codabar']
-      })
-    } catch {
-      setStatus('error')
-      setErrorMsg('Failed to create barcode detector')
-      return
-    }
-
-    // ── 3. Get camera stream — highest resolution, rear camera ──
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          // Reduce auto-focus hunting — lock focus to macro/close range for badges
-          focusMode: { ideal: 'continuous' },
-        },
-        audio: false
-      })
+      const stream = await getStream()
       if (!mountedRef.current) { stream.getTracks().forEach(t => t.stop()); return }
       streamRef.current = stream
-
-      // Apply torch if available (helps in low light)
-      const track = stream.getVideoTracks()[0]
-      if (track?.getCapabilities?.()?.torch) {
-        // Don't force torch — just leave it off by default
-      }
-
       videoRef.current.srcObject = stream
       await videoRef.current.play()
     } catch (err) {
       if (!mountedRef.current) return
       setStatus('error')
-      setErrorMsg(err.name === 'NotAllowedError' ? 'Camera permission denied' : 'Camera not available')
+      setErrorMsg(err.name === 'NotAllowedError'
+        ? 'Camera permission denied. Please allow camera access and retry.'
+        : 'Camera not available on this device.')
       return
     }
 
     if (!mountedRef.current) return
     setStatus('ready')
 
-    // ── 4. Detection loop via requestAnimationFrame ──
-    const detect = async () => {
-      if (!mountedRef.current) return
-
-      // Track FPS
-      fpsRef.current.frames++
-      const now = Date.now()
-      if (now - fpsRef.current.last >= 1000) {
-        setFps(fpsRef.current.frames)
-        fpsRef.current = { frames: 0, last: now }
+    // ── Pick engine ──
+    try {
+      if (hasNativeBarcodeDetector()) {
+        await startNative()
+      } else {
+        await startZXing()
       }
-
-      // Skip if previous detect() hasn't returned yet (avoid queue buildup)
-      if (!isDetectingRef.current && videoRef.current?.readyState === 4) {
-        isDetectingRef.current = true
-        try {
-          const barcodes = await detectorRef.current.detect(videoRef.current)
-          if (barcodes.length > 0) {
-            for (const barcode of barcodes) {
-              // Strip spaces (Code 39 sometimes inserts spaces between groups)
-              const text = barcode.rawValue.trim().toUpperCase().replace(/\s+/g, '')
-              if (!BADGE_REGEX.test(text)) continue
-
-              const t = Date.now()
-              if (text === lastScanRef.current.badge && t - lastScanRef.current.time < 2000) continue
-
-              // Valid badge — fire immediately
-              lastScanRef.current = { badge: text, time: t }
-              setLastScanned(text)
-              setTimeout(() => { if (mountedRef.current) setLastScanned('') }, 1500)
-              onScan(text)
-              break
-            }
-          }
-        } catch { /* frame error — ignore, keep looping */ }
-        isDetectingRef.current = false
+    } catch (err) {
+      console.error('Scanner engine error:', err)
+      // If native failed, try ZXing
+      if (engineRef.current === 'native') {
+        try { await startZXing() } catch {}
+      } else {
+        if (mountedRef.current) {
+          setStatus('error')
+          setErrorMsg('Barcode scanner could not start. Try Chrome browser.')
+        }
       }
-
-      rafRef.current = requestAnimationFrame(detect)
     }
-
-    rafRef.current = requestAnimationFrame(detect)
   }
 
   useEffect(() => {
     mountedRef.current = true
     startScanner()
-    return () => {
-      mountedRef.current = false
-      stopScanner()
-    }
+    return () => { mountedRef.current = false; stopScanner() }
   }, [])
 
   useImperativeHandle(ref, () => ({
@@ -178,17 +220,13 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     restart: () => { stopScanner(); setTimeout(() => { if (mountedRef.current) startScanner() }, 100) }
   }), [])
 
-  if (status === 'error' || status === 'unsupported') {
+  if (status === 'error') {
     return (
       <div className="scanner-wrapper">
         <div className="scanner-error-simple">
           <CameraOff size={32} />
-          <p style={{ textAlign: 'center', padding: '0 1rem' }}>{errorMsg || 'Camera not available'}</p>
-          {status === 'error' && (
-            <button onClick={startScanner}>
-              <RefreshCw size={14} /> Retry
-            </button>
-          )}
+          <p style={{ textAlign: 'center', padding: '0 1rem', fontSize: '0.85rem' }}>{errorMsg}</p>
+          <button onClick={startScanner}><RefreshCw size={14} /> Retry</button>
         </div>
       </div>
     )
@@ -196,7 +234,6 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   return (
     <div className="scanner-wrapper">
-      {/* Raw video — no library UI injected */}
       <video
         ref={videoRef}
         className="scanner-video"
@@ -214,7 +251,6 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
       {status === 'ready' && (
         <>
-          {/* Scan frame overlay */}
           <div className="scan-frame">
             <div className="scan-corner tl" />
             <div className="scan-corner tr" />
@@ -223,16 +259,12 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             <div className="scan-line" />
           </div>
 
-          {/* FPS indicator — shows detection is running */}
           <div className="scanner-fps-badge">
             <Zap size={10} />
-            {fps}fps
+            {fps}fps · {engine === 'native' ? 'Native' : 'ZXing'}
           </div>
 
-          {lastScanned && (
-            <div className="scan-result">{lastScanned}</div>
-          )}
-
+          {lastScanned && <div className="scan-result">{lastScanned}</div>}
           <div className="scan-tip">Position barcode within the frame</div>
         </>
       )}
