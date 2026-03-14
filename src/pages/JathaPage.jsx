@@ -2,11 +2,21 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { ROLES, countSatsangDays, validateJathaRange, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
-import { Search, Calendar, Flag, CheckCircle, ChevronDown, MapPin, AlertTriangle, X, RefreshCw, Plane } from 'lucide-react'
+import { ROLES, countSatsangDays, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
+import { Search, Calendar, CheckCircle, ChevronDown, MapPin, AlertTriangle, X, RefreshCw, Plane, Download, Flag } from 'lucide-react'
+
+function validateRange(from, to) {
+  if (!from || !to) return null
+  const f = new Date(from + 'T00:00:00')
+  const t = new Date(to + 'T00:00:00')
+  if (t < f) return 'End date must be on or after start date'
+  const diff = Math.round((t - f) / 86400000)
+  if (diff > 10) return `Range is ${diff} days — maximum allowed is 10 days`
+  return null
+}
 
 // ─────────────────────────────────────────────
-//  TAB 1 — MARK JATHA ATTENDANCE (original form)
+//  TAB 1 — MARK JATHA ATTENDANCE
 // ─────────────────────────────────────────────
 function MarkJathaTab() {
   const { profile } = useAuth()
@@ -23,8 +33,6 @@ function MarkJathaTab() {
   const [jathaCentre, setJathaCentre] = useState('')
   const [jathaDept, setJathaDept] = useState('')
   const [remarks, setRemarks] = useState('')
-  const [flagEntry, setFlagEntry] = useState(false)
-  const [flagReason, setFlagReason] = useState('')
 
   const [dateError, setDateError] = useState('')
   const [satsangDays, setSatsangDays] = useState(0)
@@ -43,11 +51,16 @@ function MarkJathaTab() {
   }, [jathaType])
 
   useEffect(() => {
-    const err = validateJathaRange(dateFrom, dateTo)
+    const err = validateRange(dateFrom, dateTo)
     setDateError(err || '')
     if (!err && dateFrom && dateTo) setSatsangDays(countSatsangDays(dateFrom, dateTo))
     else setSatsangDays(0)
   }, [dateFrom, dateTo])
+
+  function handleDateFromChange(val) {
+    setDateFrom(val)
+    if (dateTo && dateTo < val) setDateTo('')
+  }
 
   async function searchBadge() {
     const term = badgeInput.trim()
@@ -65,21 +78,33 @@ function MarkJathaTab() {
 
   async function submitJatha() {
     if (!selected) { setError('Select a sewadar first'); return }
-    const err = validateJathaRange(dateFrom, dateTo)
+    const err = validateRange(dateFrom, dateTo)
     if (err) { setError(err); return }
+    if (!dateFrom || !dateTo) { setError('Both dates are required'); return }
     if (!jathaType) { setError('Select Jatha type'); return }
     if (!jathaCentre) { setError('Select a Jatha centre'); return }
     if (!jathaDept) { setError('Select a department'); return }
-    if (flagEntry && !flagReason.trim()) { setError('Please describe the flag reason'); return }
 
     setSubmitting(true); setError('')
+
+    // Duplicate check: same sewadar + overlapping dates
+    const { data: existing } = await supabase.from('jatha_attendance')
+      .select('id, date_from, date_to')
+      .eq('badge_number', selected.badge_number)
+      .gte('date_to', dateFrom)
+      .lte('date_from', dateTo)
+    if (existing && existing.length > 0) {
+      setError(`Duplicate: overlapping jatha record already exists (${existing[0].date_from} – ${existing[0].date_to})`)
+      setSubmitting(false); return
+    }
+
     const { error: dbErr } = await supabase.from('jatha_attendance').insert({
       badge_number: selected.badge_number, sewadar_name: selected.sewadar_name,
       centre: selected.centre, department: selected.department || null,
       jatha_type: jathaType, jatha_centre: jathaCentre, jatha_dept: jathaDept,
       date_from: dateFrom, date_to: dateTo, satsang_days: satsangDays,
-      remarks: remarks.trim() || null, flag: flagEntry,
-      flag_reason: flagEntry ? flagReason.trim() : null,
+      remarks: remarks.trim() || null,
+      flag: false, flag_reason: null,
       submitted_by: profile.badge_number, submitted_name: profile.name, submitted_centre: profile.centre,
     })
     await supabase.from('logs').insert({
@@ -91,12 +116,14 @@ function MarkJathaTab() {
     if (dbErr) { setError(dbErr.message); return }
     setSuccess(true)
     setDateFrom(''); setDateTo(''); setJathaType(''); setJathaCentre('')
-    setJathaDept(''); setRemarks(''); setFlagEntry(false); setFlagReason(''); setSatsangDays(0)
+    setJathaDept(''); setRemarks(''); setSatsangDays(0)
   }
+
+  const canSubmit = selected && dateFrom && dateTo && !dateError && jathaType && jathaCentre && jathaDept
 
   return (
     <div>
-      {/* Step 1: Find Sewadar */}
+      {/* Step 1 */}
       <div className="card mb-3" style={{ padding: '1rem' }}>
         <div style={{ fontWeight: 700, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
           1 · Find Sewadar
@@ -146,7 +173,7 @@ function MarkJathaTab() {
         )}
       </div>
 
-      {/* Step 2: Dates */}
+      {/* Step 2 */}
       <div className="card mb-3" style={{ padding: '1rem' }}>
         <div style={{ fontWeight: 700, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
           2 · Jatha Dates
@@ -154,11 +181,14 @@ function MarkJathaTab() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.6rem' }}>
           <div>
             <label className="label">From</label>
-            <input type="date" className="input" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+            <input type="date" className="input" value={dateFrom}
+              onChange={e => handleDateFromChange(e.target.value)} />
           </div>
           <div>
             <label className="label">To</label>
-            <input type="date" className="input" value={dateTo} onChange={e => setDateTo(e.target.value)} />
+            <input type="date" className="input" value={dateTo}
+              min={dateFrom || undefined}
+              onChange={e => setDateTo(e.target.value)} />
           </div>
         </div>
         {dateError && (
@@ -173,9 +203,14 @@ function MarkJathaTab() {
             <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: 2 }}>(Sundays &amp; Wednesdays)</span>
           </div>
         )}
+        {dateFrom && dateTo && !dateError && satsangDays === 0 && (
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
+            No satsang days in this range.
+          </div>
+        )}
       </div>
 
-      {/* Step 3: Destination */}
+      {/* Step 3 */}
       <div className="card mb-3" style={{ padding: '1rem' }}>
         <div style={{ fontWeight: 700, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
           3 · Jatha Destination
@@ -225,27 +260,17 @@ function MarkJathaTab() {
         )}
       </div>
 
-      {/* Step 4: Remarks & Flag */}
+      {/* Step 4: Remarks only — no flag on creation */}
       <div className="card mb-3" style={{ padding: '1rem' }}>
         <div style={{ fontWeight: 700, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
-          4 · Remarks &amp; Flag
+          4 · Remarks
         </div>
         <label className="label">Remarks <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--text-muted)' }}>(optional)</span></label>
-        <textarea className="input" rows={2} placeholder="Any notes…" value={remarks} onChange={e => setRemarks(e.target.value)} style={{ resize: 'none', marginBottom: '0.85rem' }} />
-
-        <button onClick={() => setFlagEntry(f => !f)}
-          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', background: flagEntry ? 'rgba(198,40,40,0.08)' : 'var(--bg)', border: `1.5px solid ${flagEntry ? 'rgba(198,40,40,0.35)' : 'var(--border)'}`, borderRadius: 8, padding: '0.6rem 0.85rem', cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.12s' }}>
-          <Flag size={15} color={flagEntry ? 'var(--red)' : 'var(--text-muted)'} />
-          <span style={{ fontWeight: 600, fontSize: '0.85rem', color: flagEntry ? 'var(--red)' : 'var(--text-secondary)' }}>Flag this entry</span>
-          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-muted)' }}>{flagEntry ? 'ON' : 'OFF'}</span>
-        </button>
-
-        {flagEntry && (
-          <div style={{ marginTop: '0.75rem' }}>
-            <label className="label">Flag reason <span style={{ color: 'var(--red)' }}>*</span></label>
-            <textarea className="input" rows={2} placeholder="Describe the issue…" value={flagReason} onChange={e => setFlagReason(e.target.value)} style={{ resize: 'none', borderColor: 'rgba(198,40,40,0.35)' }} />
-          </div>
-        )}
+        <textarea className="input" rows={2} placeholder="Any notes about this jatha…"
+          value={remarks} onChange={e => setRemarks(e.target.value)} style={{ resize: 'none' }} />
+        <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '0.5rem', lineHeight: 1.5 }}>
+          Found a mistake after submitting? Use the "Flag error" button in the View Records tab.
+        </p>
       </div>
 
       {error && (
@@ -261,7 +286,7 @@ function MarkJathaTab() {
       )}
 
       <button className="btn btn-gold btn-full" onClick={submitJatha}
-        disabled={submitting || !selected || !!dateError || !jathaType || !jathaCentre || !jathaDept}
+        disabled={submitting || !canSubmit}
         style={{ padding: '0.85rem', fontSize: '0.95rem', fontWeight: 700 }}>
         {submitting ? 'Saving…' : 'Submit Jatha Attendance'}
       </button>
@@ -279,6 +304,11 @@ function ViewJathaTab() {
   const [searchTerm, setSearchTerm] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
   const [monthFilter, setMonthFilter] = useState('')
+
+  const [flagModal, setFlagModal] = useState(null)
+  const [flagReason, setFlagReason] = useState('')
+  const [flagSubmitting, setFlagSubmitting] = useState(false)
+  const [flagSuccess, setFlagSuccess] = useState(false)
 
   const isAdmin = [ROLES.ASO, ROLES.CENTRE_USER].includes(profile?.role)
 
@@ -310,13 +340,64 @@ function ViewJathaTab() {
   }
 
   const filtered = searchTerm
-    ? records.filter(r => r.sewadar_name?.toLowerCase().includes(searchTerm.toLowerCase()) || r.badge_number?.toUpperCase().includes(searchTerm.toUpperCase()))
+    ? records.filter(r =>
+        r.sewadar_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        r.badge_number?.toUpperCase().includes(searchTerm.toUpperCase()))
     : records
 
   const totalSatsangDays = filtered.reduce((acc, r) => acc + (r.satsang_days || 0), 0)
+  const flaggedCount = filtered.filter(r => r.flag).length
 
   function fmtDate(d) {
     return new Date(d + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })
+  }
+
+  function exportCSV() {
+    const header = ['Badge', 'Name', 'Centre', 'Department', 'Jatha Type', 'Destination', 'Dept at Jatha', 'From', 'To', 'Satsang Days', 'Remarks', 'Flagged', 'Flag Reason', 'Submitted By', 'Submitted Centre', 'Submitted On']
+    const rows = filtered.map(r => [
+      r.badge_number,
+      `"${r.sewadar_name}"`,
+      r.centre,
+      r.department || '',
+      JATHA_TYPE_LABEL[r.jatha_type] || r.jatha_type,
+      r.jatha_centre,
+      r.jatha_dept,
+      r.date_from,
+      r.date_to,
+      r.satsang_days,
+      `"${r.remarks || ''}"`,
+      r.flag ? 'Yes' : 'No',
+      `"${r.flag_reason || ''}"`,
+      r.submitted_name || r.submitted_by,
+      r.submitted_centre,
+      r.created_at ? new Date(r.created_at).toLocaleDateString('en-IN') : ''
+    ])
+    const csv = [header, ...rows].map(r => r.join(',')).join('\n')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.download = `jatha_records${monthFilter ? '_' + monthFilter : ''}.csv`
+    a.click()
+  }
+
+  async function submitFlag() {
+    if (!flagModal || !flagReason.trim()) return
+    setFlagSubmitting(true)
+    await supabase.from('jatha_attendance').update({ flag: true, flag_reason: flagReason.trim() }).eq('id', flagModal.id)
+    await supabase.from('logs').insert({
+      user_badge: profile.badge_number, action: 'FLAG_JATHA',
+      details: `Flagged jatha id=${flagModal.id} (${flagModal.badge_number}): ${flagReason.trim()}`,
+      timestamp: new Date().toISOString()
+    })
+    setFlagSubmitting(false)
+    setFlagSuccess(true)
+    setTimeout(() => { setFlagModal(null); setFlagReason(''); setFlagSuccess(false); fetchRecords() }, 1200)
+  }
+
+  async function removeFlag(record) {
+    if (!isAdmin) return
+    if (!confirm('Remove flag from this jatha record?')) return
+    await supabase.from('jatha_attendance').update({ flag: false, flag_reason: null }).eq('id', record.id)
+    fetchRecords()
   }
 
   return (
@@ -326,14 +407,19 @@ function ViewJathaTab() {
         <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem' }}>
           <span style={{ color: 'var(--text-muted)' }}>Showing </span>
           <strong>{filtered.length}</strong>
-          <span style={{ color: 'var(--text-muted)' }}> jatha records</span>
+          <span style={{ color: 'var(--text-muted)' }}> records</span>
         </div>
         <div style={{ background: 'var(--gold-bg)', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem', color: 'var(--gold)' }}>
-          <strong>{totalSatsangDays}</strong> satsang days total
+          <strong>{totalSatsangDays}</strong> satsang days
         </div>
+        {flaggedCount > 0 && (
+          <div style={{ background: 'rgba(198,40,40,0.08)', border: '1px solid rgba(198,40,40,0.25)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem', color: 'var(--red)' }}>
+            <strong>{flaggedCount}</strong> flagged
+          </div>
+        )}
       </div>
 
-      {/* Filters */}
+      {/* Filters + Export */}
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
         <div className="search-box" style={{ flex: 1, minWidth: 160 }}>
           <Search size={14} />
@@ -348,8 +434,18 @@ function ViewJathaTab() {
         </select>
         <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
           style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.65rem', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem' }} />
-        {monthFilter && <button onClick={() => setMonthFilter('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}><X size={14} /></button>}
-        <button className="btn btn-ghost" onClick={fetchRecords} style={{ padding: '0.4rem 0.6rem' }}><RefreshCw size={15} /></button>
+        {monthFilter && (
+          <button onClick={() => setMonthFilter('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+            <X size={14} />
+          </button>
+        )}
+        <button className="btn btn-ghost" onClick={fetchRecords} style={{ padding: '0.4rem 0.6rem' }}>
+          <RefreshCw size={15} />
+        </button>
+        <button className="btn btn-ghost" onClick={exportCSV} disabled={filtered.length === 0}
+          style={{ padding: '0.4rem 0.75rem', fontSize: '0.82rem' }}>
+          <Download size={14} /> Export
+        </button>
       </div>
 
       {loading ? (
@@ -393,18 +489,84 @@ function ViewJathaTab() {
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>by {r.submitted_name || r.submitted_by}</div>
                 </div>
               </div>
+
               {r.remarks && (
                 <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '0.35rem 0.6rem', marginTop: '0.5rem' }}>
                   {r.remarks}
                 </div>
               )}
+
               {r.flag && r.flag_reason && (
-                <div style={{ fontSize: '0.78rem', color: 'var(--red)', background: 'rgba(198,40,40,0.05)', border: '1px solid rgba(198,40,40,0.2)', borderRadius: 6, padding: '0.35rem 0.6rem', marginTop: '0.4rem', display: 'flex', gap: '0.35rem', alignItems: 'flex-start' }}>
-                  <Flag size={11} style={{ marginTop: 2, flexShrink: 0 }} /> {r.flag_reason}
+                <div style={{ fontSize: '0.78rem', color: 'var(--red)', background: 'rgba(198,40,40,0.05)', border: '1px solid rgba(198,40,40,0.2)', borderRadius: 6, padding: '0.35rem 0.6rem', marginTop: '0.4rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+                  <span style={{ display: 'flex', gap: '0.35rem', alignItems: 'flex-start' }}>
+                    <Flag size={11} style={{ marginTop: 2, flexShrink: 0 }} /> {r.flag_reason}
+                  </span>
+                  {isAdmin && (
+                    <button onClick={() => removeFlag(r)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.72rem', flexShrink: 0, fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+                      Remove flag
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {!r.flag && (
+                <div style={{ marginTop: '0.5rem', display: 'flex', justifyContent: 'flex-end' }}>
+                  <button onClick={() => { setFlagModal(r); setFlagReason(''); setFlagSuccess(false) }}
+                    style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '0.25rem 0.65rem', fontSize: '0.75rem', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
+                    <Flag size={11} /> Flag error
+                  </button>
                 </div>
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Flag Modal */}
+      {flagModal && (
+        <div className="overlay" onClick={() => { setFlagModal(null); setFlagReason('') }}>
+          <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            {flagSuccess ? (
+              <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
+                <div style={{ width: 52, height: 52, background: 'rgba(198,40,40,0.1)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+                  <Flag size={22} color="var(--red)" />
+                </div>
+                <p style={{ fontWeight: 600, color: 'var(--red)' }}>Record flagged</p>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Flag size={17} color="var(--red)" />
+                    <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Flag This Entry</h3>
+                  </div>
+                  <button onClick={() => setFlagModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={18} /></button>
+                </div>
+
+                <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.65rem 0.85rem', marginBottom: '1rem' }}>
+                  <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{flagModal.sewadar_name}</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                    {flagModal.badge_number} · {fmtDate(flagModal.date_from)} → {fmtDate(flagModal.date_to)} · {flagModal.jatha_centre}
+                  </div>
+                </div>
+
+                <label className="label">What's wrong? <span style={{ color: 'var(--red)' }}>*</span></label>
+                <textarea className="input" rows={3} placeholder="Describe the error or issue with this record…"
+                  value={flagReason} onChange={e => setFlagReason(e.target.value)}
+                  style={{ resize: 'none', marginBottom: '1rem', borderColor: 'rgba(198,40,40,0.35)' }}
+                  autoFocus />
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                  <button className="btn btn-outline btn-full" onClick={() => setFlagModal(null)}>Cancel</button>
+                  <button onClick={submitFlag} disabled={flagSubmitting || !flagReason.trim()}
+                    style={{ padding: '0.6rem', border: 'none', borderRadius: 8, background: '#dc2626', color: 'white', fontWeight: 700, fontSize: '0.88rem', cursor: 'pointer', fontFamily: 'inherit', opacity: (!flagReason.trim() || flagSubmitting) ? 0.5 : 1 }}>
+                    {flagSubmitting ? 'Flagging…' : 'Submit Flag'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -417,22 +579,25 @@ function ViewJathaTab() {
 export default function JathaPage() {
   const [tab, setTab] = useState('mark')
 
+  const tabStyle = (active) => ({
+    flex: 1, padding: '0.55rem', borderRadius: 8, border: 'none',
+    background: active ? 'var(--bg)' : 'transparent',
+    color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+    fontWeight: active ? 700 : 400, fontSize: '0.88rem',
+    cursor: 'pointer', fontFamily: 'inherit',
+    boxShadow: active ? '0 1px 3px rgba(0,0,0,0.15)' : 'none',
+    transition: 'all 0.12s'
+  })
+
   return (
     <div className="page pb-nav" style={{ maxWidth: 600 }}>
       <div className="mt-2 mb-3">
         <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>Jatha Attendance</h2>
       </div>
 
-      {/* Tab bar */}
       <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '1.25rem', background: 'var(--bg-elevated)', borderRadius: 10, padding: '0.25rem', border: '1px solid var(--border)' }}>
-        <button onClick={() => setTab('mark')}
-          style={{ flex: 1, padding: '0.55rem', borderRadius: 8, border: 'none', background: tab === 'mark' ? 'var(--bg)' : 'transparent', color: tab === 'mark' ? 'var(--text-primary)' : 'var(--text-muted)', fontWeight: tab === 'mark' ? 700 : 400, fontSize: '0.88rem', cursor: 'pointer', fontFamily: 'inherit', boxShadow: tab === 'mark' ? '0 1px 3px rgba(0,0,0,0.15)' : 'none', transition: 'all 0.12s' }}>
-          Mark Jatha
-        </button>
-        <button onClick={() => setTab('view')}
-          style={{ flex: 1, padding: '0.55rem', borderRadius: 8, border: 'none', background: tab === 'view' ? 'var(--bg)' : 'transparent', color: tab === 'view' ? 'var(--text-primary)' : 'var(--text-muted)', fontWeight: tab === 'view' ? 700 : 400, fontSize: '0.88rem', cursor: 'pointer', fontFamily: 'inherit', boxShadow: tab === 'view' ? '0 1px 3px rgba(0,0,0,0.15)' : 'none', transition: 'all 0.12s' }}>
-          View Records
-        </button>
+        <button onClick={() => setTab('mark')} style={tabStyle(tab === 'mark')}>Mark Jatha</button>
+        <button onClick={() => setTab('view')} style={tabStyle(tab === 'view')}>View Records</button>
       </div>
 
       {tab === 'mark' && <MarkJathaTab />}
