@@ -728,8 +728,9 @@ export default function SuperAdminPage() {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem', marginBottom:'1rem' }}>
               <div><label className="label">Role</label>
                 <select className="input" value={newUser.role} onChange={e => setNewUser({...newUser, role:e.target.value})}>
-                  <option value="sc_sp_user">SC_SP USER</option>
+                  <option value="area_secretary">AREA SECRETARY</option>
                   <option value="centre_user">CENTRE USER</option>
+                  <option value="sc_sp_user">SC_SP USER</option>
                 </select>
               </div>
               <div><label className="label">Centre</label>
@@ -739,6 +740,9 @@ export default function SuperAdminPage() {
                 </select>
               </div>
             </div>
+            {newUser.role === ROLES.AREA_SECRETARY && (
+              <div className="super-admin-note mb-2">Area Secretary has access to ALL centres and full system control.</div>
+            )}
             {newUser.role === ROLES.CENTRE_USER && (
               <div className="super-admin-note mb-2">Centre User governs <strong>{newUser.centre}</strong> and all its sub-centres.</div>
             )}
