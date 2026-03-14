@@ -186,6 +186,13 @@ export default function ScannerPage({ isOnline }) {
       }
     }
 
+    // Block badges that are not eligible for attendance
+    const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
+    const badgeStatus = (found.badge_status || '').toLowerCase().trim()
+    if (!ALLOWED_STATUSES.includes(badgeStatus)) {
+      setPopupState({ type: 'invalid_status', sewadar: found, badge: b }); setProcessing(false); return
+    }
+
     if (!isAso && !isCentreUserRole && !isSameCentre && !isException) {
       setPopupState({ type: 'auth_fail', sewadar: found, badge: b }); setProcessing(false); return
     }
@@ -348,6 +355,20 @@ export default function ScannerPage({ isOnline }) {
               </div>
             )}
 
+            {popupState.type === 'invalid_status' && (
+              <div className="popup-error">
+                <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Badge Ineligible</div>
+                <div className="error-name">{popupState.sewadar.sewadar_name}</div>
+                <div className="error-badge">{popupState.badge}</div>
+                <div style={{ margin: '8px auto', display: 'inline-block', background: 'rgba(198,40,40,0.1)', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 6, padding: '3px 10px', fontSize: 13, fontWeight: 700, color: '#dc2626' }}>
+                  Status: {popupState.sewadar.badge_status || 'Unknown'}
+                </div>
+                <div className="error-msg">Only Open, Permanent &amp; Elderly badges can be marked</div>
+                <button className="btn-cancel" onClick={closePopup}>Dismiss</button>
+              </div>
+            )}
+
             {popupState.type === 'auth_fail' && (
               <div className="popup-error">
                 <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
@@ -441,10 +462,35 @@ function SewadarFoundCard({ sewadar, allowedTypes, scanCount, onMark, onClose })
         <span className={`gender-badge ${sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>{sewadar.gender}</span>
       </div>
       <div className="popup-details">
-        <div className="detail"><span>Father/Husband</span><span>{sewadar.father_husband_name || '—'}</span></div>
-        <div className="detail"><span>Age</span><span>{sewadar.age || '—'}</span></div>
         <div className="detail"><span>Centre</span><span>{sewadar.centre}</span></div>
         <div className="detail"><span>Dept</span><span>{sewadar.department || '—'}</span></div>
+        <div className="detail">
+          <span>Status</span>
+          <span style={{
+            background: (() => {
+              const s = (sewadar.badge_status || '').toLowerCase()
+              if (s === 'permanent') return 'rgba(33,115,70,0.12)'
+              if (s === 'open') return 'rgba(33,100,200,0.12)'
+              if (s === 'elderly') return 'rgba(201,168,76,0.15)'
+              return 'rgba(198,40,40,0.1)'
+            })(),
+            color: (() => {
+              const s = (sewadar.badge_status || '').toLowerCase()
+              if (s === 'permanent') return 'var(--green)'
+              if (s === 'open') return 'var(--blue)'
+              if (s === 'elderly') return 'var(--gold)'
+              return 'var(--red)'
+            })(),
+            border: '1px solid currentColor',
+            borderRadius: 5,
+            padding: '1px 8px',
+            fontSize: 12,
+            fontWeight: 700,
+            opacity: 0.85
+          }}>
+            {sewadar.badge_status || 'Unknown'}
+          </span>
+        </div>
       </div>
       {scanCount > 0 && (
         <div className="popup-scan-history">
