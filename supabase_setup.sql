@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,
   badge_number TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('area_secretary', 'centre_user', 'sc_sp_user')),
+  role TEXT NOT NULL CHECK (role IN ('aso', 'centre_user', 'sc_sp_user')),
   centre TEXT NOT NULL,
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT NOW()
@@ -121,16 +121,16 @@ RETURNS TEXT AS $$
   SELECT centre FROM users WHERE auth_id = auth.uid();
 $$ LANGUAGE SQL SECURITY DEFINER;
 
--- SEWADARS: All logged-in users can read. Only area_secretary can write.
+-- SEWADARS: All logged-in users can read. Only aso can write.
 CREATE POLICY "sewadars_read" ON sewadars FOR SELECT TO authenticated USING (true);
 CREATE POLICY "sewadars_write" ON sewadars FOR ALL TO authenticated
-  USING (get_user_role() = 'area_secretary')
-  WITH CHECK (get_user_role() = 'area_secretary');
+  USING (get_user_role() = 'aso')
+  WITH CHECK (get_user_role() = 'aso');
 
--- ATTENDANCE: Users can read own centre (or all if area_secretary/centre_user)
+-- ATTENDANCE: Users can read own centre (or all if aso/centre_user)
 CREATE POLICY "attendance_read_own_centre" ON attendance FOR SELECT TO authenticated
   USING (
-    get_user_role() IN ('area_secretary', 'centre_user')
+    get_user_role() IN ('aso', 'centre_user')
     OR centre = get_user_centre()
   );
 
@@ -138,36 +138,36 @@ CREATE POLICY "attendance_read_own_centre" ON attendance FOR SELECT TO authentic
 -- (exception departments handled in app logic)
 CREATE POLICY "attendance_insert" ON attendance FOR INSERT TO authenticated
   WITH CHECK (
-    get_user_role() IN ('area_secretary', 'centre_user')
+    get_user_role() IN ('aso', 'centre_user')
     OR scanner_centre = get_user_centre()
   );
 
--- USERS: Users can read all users, only area_secretary can write
+-- USERS: Users can read all users, only aso can write
 CREATE POLICY "users_read" ON users FOR SELECT TO authenticated USING (true);
 CREATE POLICY "users_write" ON users FOR ALL TO authenticated
-  USING (get_user_role() = 'area_secretary')
-  WITH CHECK (get_user_role() = 'area_secretary');
+  USING (get_user_role() = 'aso')
+  WITH CHECK (get_user_role() = 'aso');
 -- Allow users to read their own profile
 CREATE POLICY "users_read_own" ON users FOR SELECT TO authenticated
   USING (auth_id = auth.uid());
 
--- CENTRES: All can read, only area_secretary can write
+-- CENTRES: All can read, only aso can write
 CREATE POLICY "centres_read" ON centres FOR SELECT TO authenticated USING (true);
 CREATE POLICY "centres_write" ON centres FOR ALL TO authenticated
-  USING (get_user_role() = 'area_secretary')
-  WITH CHECK (get_user_role() = 'area_secretary');
+  USING (get_user_role() = 'aso')
+  WITH CHECK (get_user_role() = 'aso');
 
 -- QUERIES: Area Secretary and Centre User can read/write
 CREATE POLICY "queries_read" ON queries FOR SELECT TO authenticated
-  USING (get_user_role() IN ('area_secretary', 'centre_user'));
+  USING (get_user_role() IN ('aso', 'centre_user'));
 CREATE POLICY "queries_write" ON queries FOR INSERT TO authenticated
-  WITH CHECK (get_user_role() IN ('area_secretary', 'centre_user'));
+  WITH CHECK (get_user_role() IN ('aso', 'centre_user'));
 CREATE POLICY "queries_update" ON queries FOR UPDATE TO authenticated
-  USING (get_user_role() IN ('area_secretary', 'centre_user'));
+  USING (get_user_role() IN ('aso', 'centre_user'));
 
--- LOGS: Only area_secretary can read
+-- LOGS: Only aso can read
 CREATE POLICY "logs_read" ON logs FOR SELECT TO authenticated
-  USING (get_user_role() = 'area_secretary');
+  USING (get_user_role() = 'aso');
 CREATE POLICY "logs_insert" ON logs FOR INSERT TO authenticated
   WITH CHECK (true);
 
