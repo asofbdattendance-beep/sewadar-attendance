@@ -117,16 +117,10 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     engineRef.current = 'zxing'
     setEngine('zxing')
 
-    // Dynamically import ZXing — tries npm package first, falls back to CDN
-    // This means Android users never download ZXing at all (tree-shaken)
-    let ZXing
-    try {
-      ZXing = await import('@zxing/browser')
-    } catch {
-      // Not installed — load from CDN (works on iOS without npm install)
-      ZXing = await import('https://esm.sh/@zxing/browser@0.1.5')
-    }
-    const { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } = ZXing
+    // Load ZXing from CDN — only downloaded on iOS/non-native devices
+    // Android/Chrome users never hit this path so no bundle cost for them
+    const { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } =
+      await import('https://esm.sh/@zxing/browser@0.1.5')
 
     const hints = new Map()
     hints.set(DecodeHintType.POSSIBLE_FORMATS, [
