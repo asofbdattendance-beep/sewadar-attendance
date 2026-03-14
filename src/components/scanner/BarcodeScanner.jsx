@@ -34,9 +34,9 @@ async function hasLinearBarcodeSupport() {
 // Load polyfill from CDN — only called on iOS/unsupported browsers
 // Uses ZBar WASM which supports Code39, Code128, and all linear formats
 async function loadPolyfill() {
-  const { BarcodeDetectorPolyfill } =
-    await import('https://cdn.jsdelivr.net/npm/@undecaf/barcode-detector-polyfill@0.9.21/dist/es/index.js')
-  // Install as global so existing code works unchanged
+  // vite-ignore: loaded only on iOS/non-native — Android never hits this path
+  // eslint-disable-next-line
+  const { BarcodeDetectorPolyfill } = await import(/* @vite-ignore */ '@undecaf/barcode-detector-polyfill')
   window.BarcodeDetector = BarcodeDetectorPolyfill
 }
 
