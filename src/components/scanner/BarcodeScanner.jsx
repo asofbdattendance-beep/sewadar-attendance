@@ -40,16 +40,10 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       })
 
       await scannerRef.current.start(
-        {
-          facingMode: 'environment',
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 15 }
-        },
+        { facingMode: 'environment' },
         {
           fps: 10,
           qrbox: { width: 250, height: 100 },
-          aspectRatio: 1.333
         },
         (decodedText) => {
           if (!mountedRef.current || cooldownRef.current) return
