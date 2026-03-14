@@ -56,7 +56,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
         (decodedText) => {
           if (!mountedRef.current) return
 
-          const text = decodedText.trim().toUpperCase()
+          const text = decodedText.trim().toUpperCase().replace(/\s+/g, '')
 
           // DEV: log every raw decode so you can see what the scanner actually reads
           console.log('[Scanner] raw:', JSON.stringify(text), '| regex:', BADGE_REGEX.test(text))
