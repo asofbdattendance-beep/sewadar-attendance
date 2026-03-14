@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 're
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode'
 import { CameraOff, RefreshCw } from 'lucide-react'
 
-const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{2}[0-9]{4}$/
+// Matches FB or BH + 4 digits + 1-2 letters + 4+ digits
+// e.g. FB1234GA5678, FB1234GA56789, BH4321LA12345
+const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{1,2}[0-9]{4,}$/
 
 const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const scannerRef = useRef(null)
@@ -39,21 +41,28 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       })
       scannerRef.current = scanner
 
+      // Get viewport width for responsive qrbox
+      const viewportW = Math.min(window.innerWidth, 480)
+      const boxW = Math.floor(viewportW * 0.82)
+      const boxH = Math.floor(boxW * 0.28)
+
       await scanner.start(
         { facingMode: 'environment' },
         {
-          fps: 15,
-          // qrbox matches our visual scan-frame: wide, short strip for barcodes
-          qrbox: { width: 260, height: 70 },
-          // Disable the library's own shading/overlay so ours shows cleanly
-          disableFlip: false,
-          aspectRatio: 1.7778, // 16:9
+          fps: 12,
+          qrbox: { width: boxW, height: boxH },
+          aspectRatio: 1.7778,
         },
         (decodedText) => {
-          if (!mountedRef.current || cooldownRef.current) return
+          if (!mountedRef.current) return
 
           const text = decodedText.trim().toUpperCase()
+
+          // DEV: log every raw decode so you can see what the scanner actually reads
+          console.log('[Scanner] raw:', JSON.stringify(text), '| regex:', BADGE_REGEX.test(text))
+
           if (!BADGE_REGEX.test(text)) return
+          if (cooldownRef.current) return
 
           const now = Date.now()
           if (text === lastScanRef.current.badge && now - lastScanRef.current.time < 3000) return
@@ -119,7 +128,6 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   return (
     <div className="scanner-wrapper">
-      {/* html5-qrcode mounts the video stream here */}
       <div id="scanner-viewport" className="scanner-view" />
 
       {status === 'loading' && (
