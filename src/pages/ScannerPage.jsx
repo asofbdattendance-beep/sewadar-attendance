@@ -129,37 +129,35 @@ export default function ScannerPage({ isOnline }) {
 
   const handleScan = useCallback(async (badge) => {
     const now = Date.now()
-    if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 1500) return
+    if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) return
     lastScanRef.current = { badge, time: now }
     setProcessing(true)
-
-    // ── CACHE-FIRST: zero DB calls on the read path ──
-    // Sewadar lookup from localStorage (instant)
-    let found = lookupBadgeOffline(badge)
-
-    // If not in cache yet (e.g. new sewadar added after last cache refresh), fall back to DB
-    if (!found && isOnline) {
-      const { data } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
-      found = data
-    }
-
+    let found = null
+    try {
+      if (isOnline) {
+        const { data } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
+        found = data
+      } else {
+        found = lookupBadgeOffline(badge)
+      }
+    } catch {}
     if (!found) {
       setPopupState({ type: 'not_found', badge }); setProcessing(false); return
     }
-
-    // Today's attendance from localStorage cache (instant)
-    const todayStr = new Date().toISOString().split('T')[0]
-    const todayEntries = getAttendanceCache()
-      .filter(r => r.badge_number === badge && r.scan_time && r.scan_time.startsWith(todayStr))
-      .sort((a, b) => new Date(a.scan_time) - new Date(b.scan_time))
-
-    await processSewadar(found, badge, todayEntries)
+    await processSewadar(found, badge)
   }, [isOnline, profile, userLocation, centreConfig, childCentres])
 
-  async function processSewadar(found, badge, todayEntries = []) {
+  async function processSewadar(found, badge) {
     const now = Date.now()
     setProcessing(true)
     const b = badge || found.badge_number
+    let todayEntries = []
+    if (isOnline) {
+      const today = new Date(); today.setHours(0, 0, 0, 0)
+      const { data } = await supabase.from('attendance').select('*').eq('badge_number', b)
+        .gte('scan_time', today.toISOString()).order('scan_time', { ascending: true })
+      todayEntries = data || []
+    }
 
     const lastEntry = todayEntries.length > 0 ? todayEntries[todayEntries.length - 1] : null
     if (lastEntry?.scan_time) {
@@ -188,6 +186,13 @@ export default function ScannerPage({ isOnline }) {
       }
     }
 
+    // Block badges that are not eligible for attendance
+    const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
+    const badgeStatus = (found.badge_status || '').toLowerCase().trim()
+    if (!ALLOWED_STATUSES.includes(badgeStatus)) {
+      setPopupState({ type: 'invalid_status', sewadar: found, badge: b }); setProcessing(false); return
+    }
+
     if (!isAso && !isCentreUserRole && !isSameCentre && !isException) {
       setPopupState({ type: 'auth_fail', sewadar: found, badge: b }); setProcessing(false); return
     }
@@ -199,15 +204,14 @@ export default function ScannerPage({ isOnline }) {
     setProcessing(false)
   }
 
-  // Core insert — accepts sewadar object directly so it works both from popup and auto-punch
-  async function markAttendanceDirect(sewadar, type, badge, overrideNote = null) {
-    if (!profile) return
+  const markAttendance = async (type, overrideNote = null) => {
+    if (!popupState?.sewadar || !profile) return
     const scanTime = new Date().toISOString()
     const record = {
-      badge_number: sewadar.badge_number,
-      sewadar_name: sewadar.sewadar_name,
-      centre: sewadar.centre,
-      department: sewadar.department,
+      badge_number: popupState.sewadar.badge_number,
+      sewadar_name: popupState.sewadar.sewadar_name,
+      centre: popupState.sewadar.centre,
+      department: popupState.sewadar.department,
       type, scan_time: scanTime,
       scanner_badge: profile.badge_number || 'UNKNOWN',
       scanner_name: profile.name || 'Unknown',
@@ -216,32 +220,28 @@ export default function ScannerPage({ isOnline }) {
       longitude: userLocation?.lng || null,
       device_id: navigator.userAgent.slice(0, 50),
     }
-    // ── Show success + update local cache IMMEDIATELY — don't wait for DB ──
-    addToAttendanceCache({ ...record, id: Date.now() })
-    setRecentScans(getAttendanceCache().slice(0, 5))
-    playBeep(type)
-    setPopupState({ type: 'success', sewadar, attendanceType: type, time: scanTime })
-    setTimeout(closePopup, 1200)
-
-    // DB insert + log fire-and-forget in background
+    let success = false
     if (isOnline) {
-      supabase.from('attendance').insert(record).then(({ error }) => {
-        if (error) console.error('Attendance insert failed:', error.message)
-      })
-      supabase.from('logs').insert({
-        user_badge: profile.badge_number,
-        action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
-        details: `${type} for ${sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
-        timestamp: scanTime
-      })
+      const { error } = await supabase.from('attendance').insert(record)
+      if (!error) {
+        await supabase.from('logs').insert({
+          user_badge: profile.badge_number,
+          action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
+          details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
+          timestamp: scanTime
+        })
+        success = true
+      }
     } else {
-      addToOfflineQueue(record)
+      addToOfflineQueue(record); success = true
     }
-  }
-
-  const markAttendance = async (type, overrideNote = null) => {
-    if (!popupState?.sewadar || !profile) return
-    await markAttendanceDirect(popupState.sewadar, type, popupState.badge, overrideNote)
+    if (success) {
+      addToAttendanceCache({ ...record, id: Date.now() })
+      setRecentScans(getAttendanceCache().slice(0, 5))
+      playBeep(type)
+      setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
+      setTimeout(closePopup, 2000)
+    }
   }
 
   const closePopup = () => {
@@ -355,6 +355,20 @@ export default function ScannerPage({ isOnline }) {
               </div>
             )}
 
+            {popupState.type === 'invalid_status' && (
+              <div className="popup-error">
+                <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Badge Ineligible</div>
+                <div className="error-name">{popupState.sewadar.sewadar_name}</div>
+                <div className="error-badge">{popupState.badge}</div>
+                <div style={{ margin: '8px auto', display: 'inline-block', background: 'rgba(198,40,40,0.1)', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 6, padding: '3px 10px', fontSize: 13, fontWeight: 700, color: '#dc2626' }}>
+                  Status: {popupState.sewadar.badge_status || 'Unknown'}
+                </div>
+                <div className="error-msg">Only Open, Permanent &amp; Elderly badges can be marked</div>
+                <button className="btn-cancel" onClick={closePopup}>Dismiss</button>
+              </div>
+            )}
+
             {popupState.type === 'auth_fail' && (
               <div className="popup-error">
                 <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
@@ -448,10 +462,35 @@ function SewadarFoundCard({ sewadar, allowedTypes, scanCount, onMark, onClose })
         <span className={`gender-badge ${sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>{sewadar.gender}</span>
       </div>
       <div className="popup-details">
-        <div className="detail"><span>Father/Husband</span><span>{sewadar.father_husband_name || '—'}</span></div>
-        <div className="detail"><span>Age</span><span>{sewadar.age || '—'}</span></div>
         <div className="detail"><span>Centre</span><span>{sewadar.centre}</span></div>
         <div className="detail"><span>Dept</span><span>{sewadar.department || '—'}</span></div>
+        <div className="detail">
+          <span>Status</span>
+          <span style={{
+            background: (() => {
+              const s = (sewadar.badge_status || '').toLowerCase()
+              if (s === 'permanent') return 'rgba(33,115,70,0.12)'
+              if (s === 'open') return 'rgba(33,100,200,0.12)'
+              if (s === 'elderly') return 'rgba(201,168,76,0.15)'
+              return 'rgba(198,40,40,0.1)'
+            })(),
+            color: (() => {
+              const s = (sewadar.badge_status || '').toLowerCase()
+              if (s === 'permanent') return 'var(--green)'
+              if (s === 'open') return 'var(--blue)'
+              if (s === 'elderly') return 'var(--gold)'
+              return 'var(--red)'
+            })(),
+            border: '1px solid currentColor',
+            borderRadius: 5,
+            padding: '1px 8px',
+            fontSize: 12,
+            fontWeight: 700,
+            opacity: 0.85
+          }}>
+            {sewadar.badge_status || 'Unknown'}
+          </span>
+        </div>
       </div>
       {scanCount > 0 && (
         <div className="popup-scan-history">
