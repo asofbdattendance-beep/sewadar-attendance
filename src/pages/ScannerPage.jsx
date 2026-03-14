@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import { lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue } from '../lib/offline'
+import { lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getAttendanceCache } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, RefreshCw, Activity, PenLine } from 'lucide-react'
@@ -16,6 +16,7 @@ export default function ScannerPage({ isOnline }) {
   const [todayCount, setTodayCount] = useState(0)
   const [pendingSync, setPendingSync] = useState(0)
   const [syncing, setSyncing] = useState(false)
+  const [recentScans, setRecentScans] = useState([])
   const [manualModal, setManualModal] = useState(false)
   const [manualSearch, setManualSearch] = useState('')
   const [manualResults, setManualResults] = useState([])
@@ -74,6 +75,8 @@ export default function ScannerPage({ isOnline }) {
   useEffect(() => {
     setPendingSync(getOfflineQueueCount())
     const id = setInterval(() => setPendingSync(getOfflineQueueCount()), 5000)
+    // Load initial recent scans from cache
+    setRecentScans(getAttendanceCache().slice(0, 5))
     return () => clearInterval(id)
   }, [])
 
@@ -226,6 +229,8 @@ export default function ScannerPage({ isOnline }) {
       addToOfflineQueue(record); success = true
     }
     if (success) {
+      addToAttendanceCache({ ...record, id: Date.now() })
+      setRecentScans(getAttendanceCache().slice(0, 5))
       playBeep(type)
       setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
       setTimeout(closePopup, 2000)
@@ -279,6 +284,24 @@ export default function ScannerPage({ isOnline }) {
       </div>
 
       <BarcodeScanner ref={scannerRef} onScan={handleScan} />
+
+      {/* Last 5 scans mini feed */}
+      {recentScans.length > 0 && (
+        <div style={{ margin: '0.85rem 0 0', padding: '0 0.1rem' }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: '0.45rem' }}>Recent Scans</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+            {recentScans.map((r, i) => (
+              <div key={r.id || i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.7rem' }}>
+                <span style={{ width: 32, height: 20, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 800, background: r.type === 'IN' ? 'rgba(76,175,125,0.15)' : 'rgba(224,92,92,0.15)', color: r.type === 'IN' ? 'var(--green)' : 'var(--red)', flexShrink: 0 }}>{r.type}</span>
+                <span style={{ fontWeight: 600, fontSize: '0.82rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sewadar_name}</span>
+                <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>
+                  {new Date(r.scan_time || r.queued_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {processing && (
         <div className="scanner-processing">

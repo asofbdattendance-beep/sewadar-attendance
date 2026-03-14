@@ -5,20 +5,19 @@ import { syncOfflineQueue, getOfflineQueueCount, populateOfflineCache, populateA
 import { supabase, ROLES } from './lib/supabase'
 import LoginPage from './pages/LoginPage'
 import ScannerPage from './pages/ScannerPage'
-import DashboardPage from './pages/DashboardPage'
 import RecordsPage from './pages/RecordsPage'
 import AdminPage from './pages/AdminPage'
 import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
 import FlagsPage from './pages/FlagsPage'
 import JathaPage from './pages/JathaPage'
-import ReportsPage from './pages/ReportsPage'
-import { Scan, BarChart2, FileText, Settings, User, Shield, WifiOff, Flag, Plane, BookOpen } from 'lucide-react'
+import { Scan, FileText, User, Shield, WifiOff, Flag, Plane } from 'lucide-react'
 
 function AppLayout() {
   const { profile, loading } = useAuth()
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingSync, setPendingSync] = useState(0)
+  const [openFlagCount, setOpenFlagCount] = useState(0)
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -37,9 +36,18 @@ function AppLayout() {
       populateOfflineCache(supabase)
       populateAttendanceCache(supabase)
     }
+    // Fetch open flags count
+    async function fetchFlagCount() {
+      if (!profile) return
+      const { count } = await supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open')
+      setOpenFlagCount(count || 0)
+    }
+    fetchFlagCount()
+    const flagInterval = setInterval(fetchFlagCount, 60000)
     return () => {
       window.removeEventListener('online', online)
       window.removeEventListener('offline', offline)
+      clearInterval(flagInterval)
     }
   }, [])
 
@@ -72,12 +80,9 @@ function AppLayout() {
 
   const navItems = [
     { path: '/scan', label: 'Scan', icon: Scan },
-    { path: '/dashboard', label: 'Reports', icon: BarChart2 },
     { path: '/records', label: 'Records', icon: FileText },
     { path: '/jatha', label: 'Jatha', icon: Plane },
-    { path: '/flags', label: 'Flags', icon: Flag },
-    ...(!isScSpUser ? [{ path: '/admin', label: 'History', icon: BookOpen }] : []),
-    ...(!isScSpUser ? [{ path: '/reports', label: 'Excel', icon: Shield }] : []),
+    { path: '/flags', label: 'Flags', icon: Flag, badge: openFlagCount },
     ...(isAso ? [{ path: '/super-admin', label: 'Control', icon: Shield }] : []),
     { path: '/profile', label: 'Profile', icon: User },
   ]
@@ -110,12 +115,10 @@ function AppLayout() {
       {/* Routes */}
       <Routes>
         <Route path="/scan" element={<ScannerPage isOnline={isOnline} />} />
-        <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/records" element={<RecordsPage />} />
         <Route path="/jatha" element={<JathaPage />} />
         <Route path="/flags" element={<FlagsPage />} />
         <Route path="/admin" element={<AdminPage />} />
-        <Route path="/reports" element={<ReportsPage />} />
         <Route path="/super-admin" element={<SuperAdminPage />} />
         <Route path="/profile" element={<ProfilePage isOnline={isOnline} />} />
         <Route path="*" element={<Navigate to="/scan" replace />} />
@@ -123,13 +126,25 @@ function AppLayout() {
 
       {/* Bottom Nav */}
       <nav className="bottom-nav">
-        {navItems.map(({ path, label, icon: Icon }) => (
+        {navItems.map(({ path, label, icon: Icon, badge }) => (
           <button
             key={path}
             className={`bottom-nav-item ${location.pathname === path ? 'active' : ''}`}
             onClick={() => navigate(path)}
           >
-            <Icon size={19} />
+            <span style={{ position: 'relative', display: 'inline-flex' }}>
+              <Icon size={19} />
+              {badge > 0 && (
+                <span style={{
+                  position: 'absolute', top: -4, right: -6,
+                  background: 'var(--red)', color: 'white',
+                  borderRadius: '50%', width: 14, height: 14,
+                  fontSize: '0.6rem', fontWeight: 800,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  lineHeight: 1
+                }}>{badge > 9 ? '9+' : badge}</span>
+              )}
+            </span>
             {label}
           </button>
         ))}
