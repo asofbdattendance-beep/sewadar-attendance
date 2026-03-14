@@ -62,7 +62,7 @@ export default function DashboardPage() {
       .gte('date_from', firstDay)
       .lte('date_from', lastDay)
 
-    if (!isSuperAdmin && isAdmin) {
+    if (!isAreaSecretary && isCentreUser) {
       const { data: childData } = await supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       const centreNames = childData?.map(c => c.centre_name) || [profile.centre]
@@ -91,7 +91,7 @@ export default function DashboardPage() {
 
     if (!isAdminOrAbove && profile?.centre) {
       query = query.eq('centre', profile.centre)
-    } else if (isAdmin && !centreFilter) {
+    } else if (isCentreUser && !centreFilter) {
       const { data: childData } = await supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       const centreNames = childData?.map(c => c.centre_name) || [profile.centre]

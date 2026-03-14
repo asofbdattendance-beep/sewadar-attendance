@@ -286,7 +286,7 @@ export default function FlagsPage() {
                             <CheckCircle size={14} /> Mark Resolved
                           </button>
                         )}
-                        {flag.status === FLAG_STATUS.RESOLVED && isSuperAdmin && (
+                        {flag.status === FLAG_STATUS.RESOLVED && isAreaSecretary && (
                           <button className="flag-reopen-btn" onClick={() => reopenFlag(flag.id)}>
                             Reopen
                           </button>

@@ -297,7 +297,7 @@ export default function ReportsPage() {
           <div onClick={ensureCentres}>
             <label className="label" style={{ marginBottom:'0.3rem' }}>Centre</label>
             <select className="input" value={centreFilter} onChange={e => setCentreFilter(e.target.value)} style={{ minWidth:160 }}>
-              <option value="">{isSuperAdmin ? 'All Centres' : 'My Centres'}</option>
+              <option value="">{isAreaSecretary ? 'All Centres' : 'My Centres'}</option>
               {centres.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>

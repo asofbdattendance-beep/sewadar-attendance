@@ -232,7 +232,7 @@ export default function RecordsPage() {
                 <th>IN</th>
                 <th>OUT</th>
                 <th>Status</th>
-                <th style={{ width: isSuperAdmin ? 80 : 36 }}></th>
+                <th style={{ width: isAreaSecretary ? 80 : 36 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -259,13 +259,13 @@ export default function RecordsPage() {
                         onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}>
                         <Flag size={13}/>
                       </button>
-                      {isSuperAdmin && r.in_id && (
+                      {isAreaSecretary && r.in_id && (
                         <button className="records-delete-btn" title="Delete IN record"
                           onClick={() => deleteRecord(r.in_id, r.badge_number, 'IN')}>
                           <Trash2 size={12}/><span style={{ fontSize:'0.65rem', marginLeft:1 }}>IN</span>
                         </button>
                       )}
-                      {isSuperAdmin && r.out_id && (
+                      {isAreaSecretary && r.out_id && (
                         <button className="records-delete-btn" title="Delete OUT record"
                           onClick={() => deleteRecord(r.out_id, r.badge_number, 'OUT')}>
                           <Trash2 size={12}/><span style={{ fontSize:'0.65rem', marginLeft:1 }}>OUT</span>
