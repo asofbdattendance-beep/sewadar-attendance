@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { syncOfflineQueue, getOfflineQueueCount, setCachedSewadars, getCachedSewadars } from '../lib/offline'
 import { supabase } from '../lib/supabase'
-import { LogOut, RefreshCw, Wifi, WifiOff, User, Database, Shield } from 'lucide-react'
+import { LogOut, RefreshCw, Wifi, WifiOff, User, Database, Shield, Volume2, VolumeX } from 'lucide-react'
 
 export default function ProfilePage({ isOnline }) {
   const { profile, signOut } = useAuth()
   const [pendingCount, setPendingCount] = useState(0)
   const [syncing, setSyncing] = useState(false)
+  const [soundEnabled, setSoundEnabled] = useState(localStorage.getItem('sa_sound') !== 'false')
   const [cacheInfo, setCacheInfo] = useState(null)
   const [syncMsg, setSyncMsg] = useState('')
 
@@ -24,6 +25,12 @@ export default function ProfilePage({ isOnline }) {
     setSyncMsg(`Synced ${result.synced} records. ${result.failed > 0 ? result.failed + ' failed.' : ''}`)
     setPendingCount(getOfflineQueueCount())
     setSyncing(false)
+  }
+
+  function toggleSound() {
+    const next = !soundEnabled
+    setSoundEnabled(next)
+    localStorage.setItem('sa_sound', next ? 'true' : 'false')
   }
 
   async function refreshCache() {
@@ -130,7 +137,20 @@ export default function ProfilePage({ isOnline }) {
       )}
 
       {/* Sign out */}
-      <button className="btn btn-outline btn-full" onClick={signOut} style={{ marginTop: '1rem', borderColor: 'rgba(224,92,92,0.3)', color: 'var(--red)' }}>
+      {/* FIX #7: Sound toggle */}
+      <div className="card mb-2" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="flex items-center gap-1">
+          {soundEnabled ? <Volume2 size={16} color="var(--text-muted)" /> : <VolumeX size={16} color="var(--text-muted)" />}
+          <span style={{ fontWeight: 500 }}>Scan Sound &amp; Vibration</span>
+        </div>
+        <button onClick={toggleSound}
+          style={{ background: soundEnabled ? 'var(--excel-green)' : 'var(--border)', border: 'none', borderRadius: 999, width: 44, height: 24, cursor: 'pointer', position: 'relative', transition: 'background 0.2s' }}>
+          <span style={{ position: 'absolute', top: 2, left: soundEnabled ? 22 : 2, width: 20, height: 20, background: 'white', borderRadius: '50%', transition: 'left 0.2s', display: 'block' }} />
+        </button>
+      </div>
+
+      {/* FIX #11: Confirm before sign out */}
+      <button className="btn btn-outline btn-full" onClick={() => { if (confirm('Sign out of Sewadar Attendance?')) signOut() }} style={{ marginTop: '1rem', borderColor: 'rgba(224,92,92,0.3)', color: 'var(--red)' }}>
         <LogOut size={16} /> Sign Out
       </button>
 

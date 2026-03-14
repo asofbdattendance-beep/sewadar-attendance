@@ -42,11 +42,17 @@ function AppLayout() {
       setOpenFlagCount(count || 0)
     }
     fetchFlagCount()
-    const flagInterval = setInterval(fetchFlagCount, 60000)
+    // FIX #10: Only poll when tab is visible — no background DB calls
+    let flagInterval = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchFlagCount()
+    }, 60000)
+    const onVisible = () => { if (document.visibilityState === 'visible') fetchFlagCount() }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       window.removeEventListener('online', online)
       window.removeEventListener('offline', offline)
       clearInterval(flagInterval)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [])
 
