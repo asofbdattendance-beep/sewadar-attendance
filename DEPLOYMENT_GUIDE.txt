@@ -55,7 +55,7 @@ VALUES (
   'YOUR_EMAIL_HERE',
   'Your Full Name',
   'FB5978GA0001',
-  'super_admin',
+  'area_secretary',
   'SECTOR-15-A',
   true
 );

@@ -22,9 +22,9 @@ export default function ReportsPage() {
   const [centres, setCentres] = useState([])
   const [centresLoaded, setCentresLoaded] = useState(false)
 
-  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
-  const isAdmin      = profile?.role === ROLES.ADMIN
-  const isAdminOrAbove = isSuperAdmin || isAdmin
+  const isAreaSecretary = profile?.role === ROLES.AREA_SECRETARY
+  const isCentreUser   = profile?.role === ROLES.CENTRE_USER
+  const isAdminOrAbove = isAreaSecretary || isCentreUser
 
   if (!isAdminOrAbove) return (
     <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
@@ -33,7 +33,7 @@ export default function ReportsPage() {
   async function ensureCentres() {
     if (centresLoaded) return
     let q = supabase.from('centres').select('centre_name').order('centre_name')
-    if (isAdmin) q = q.or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
+    if (isCentreUser) q = q.or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
     const { data } = await q
     setCentres(data?.map(c => c.centre_name) || [])
     setCentresLoaded(true)
@@ -52,9 +52,9 @@ export default function ReportsPage() {
   }
 
   async function getCentreNames() {
-    if (isSuperAdmin && !centreFilter) return null  // no filter = all
+    if (isAreaSecretary && !centreFilter) return null  // no filter = all
     if (centreFilter) return [centreFilter]
-    if (isAdmin) {
+    if (isCentreUser) {
       const { data } = await supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       return data?.map(c => c.centre_name) || [profile.centre]

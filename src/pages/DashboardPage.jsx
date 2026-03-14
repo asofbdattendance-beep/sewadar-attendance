@@ -21,9 +21,9 @@ export default function DashboardPage() {
   const [centreFilter, setCentreFilter] = useState('')
   const [viewableCentres, setViewableCentres] = useState([])
 
-  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
-  const isAdmin = profile?.role === ROLES.ADMIN
-  const isAdminOrAbove = isSuperAdmin || isAdmin
+  const isAreaSecretary = profile?.role === ROLES.AREA_SECRETARY
+  const isCentreUser = profile?.role === ROLES.CENTRE_USER
+  const isAdminOrAbove = isAreaSecretary || isCentreUser
 
   useEffect(() => {
     if (isAdminOrAbove) fetchViewableCentres()
@@ -41,10 +41,10 @@ export default function DashboardPage() {
   }, [profile, dateFrom, dateTo, centreFilter])
 
   async function fetchViewableCentres() {
-    if (isSuperAdmin) {
+    if (isAreaSecretary) {
       const { data } = await supabase.from('centres').select('centre_name').order('centre_name')
       setViewableCentres(data?.map(c => c.centre_name) || [])
-    } else if (isAdmin) {
+    } else if (isCentreUser) {
       const { data } = await supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       setViewableCentres(data?.map(c => c.centre_name) || [])

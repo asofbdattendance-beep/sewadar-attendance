@@ -29,7 +29,7 @@ export default function ProfilePage({ isOnline }) {
   async function refreshCache() {
     setSyncing(true)
     let query = supabase.from('sewadars').select('*')
-    if (profile.role === 'centre_user') {
+    if (profile.role === 'sc_sp_user') {
       query = query.eq('centre', profile.centre)
     }
     const { data } = await query
@@ -41,8 +41,8 @@ export default function ProfilePage({ isOnline }) {
     setSyncing(false)
   }
 
-  const roleColor = { super_admin: 'var(--gold)', admin: 'var(--blue)', centre_user: 'var(--green)' }
-  const roleName = { super_admin: 'Super Admin', admin: 'Admin', centre_user: 'Centre User' }
+  const roleColor = { area_secretary: 'var(--gold)', centre_user: 'var(--blue)', sc_sp_user: 'var(--green)' }
+  const roleName = { area_secretary: 'AREA SECRETARY', centre_user: 'CENTRE USER', sc_sp_user: 'SC_SP USER' }
 
   return (
     <div className="page pb-nav">

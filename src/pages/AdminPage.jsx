@@ -22,7 +22,7 @@ export default function AdminPage() {
   const [jathaHistory, setJathaHistory]   = useState([])      // jatha_attendance rows
   const [loadingData, setLoadingData]     = useState(false)
 
-  const isAdminOrAbove = [ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(profile?.role)
+  const isAdminOrAbove = [ROLES.AREA_SECRETARY, ROLES.CENTRE_USER].includes(profile?.role)
   if (!isAdminOrAbove) {
     return <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
   }

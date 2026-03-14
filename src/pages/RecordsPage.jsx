@@ -17,9 +17,10 @@ export default function RecordsPage() {
   const [flagNote, setFlagNote] = useState('')
   const [flagSubmitting, setFlagSubmitting] = useState(false)
   const [flagSuccess, setFlagSuccess] = useState(false)
+  const [deleteMsg, setDeleteMsg] = useState('')
 
-  const isAdmin = [ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(profile?.role)
-  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
+  const isAdmin = [ROLES.AREA_SECRETARY, ROLES.CENTRE_USER].includes(profile?.role)
+  const isAreaSecretary = profile?.role === ROLES.AREA_SECRETARY
 
   useEffect(() => {
     fetchRecords()
@@ -27,10 +28,10 @@ export default function RecordsPage() {
   }, [dateFilter, centreFilter])
 
   async function fetchCentres() {
-    if (profile?.role === ROLES.SUPER_ADMIN) {
+    if (profile?.role === ROLES.AREA_SECRETARY) {
       const { data } = await supabase.from('centres').select('centre_name').order('centre_name')
       setCentres(data?.map(c => c.centre_name) || [])
-    } else if (profile?.role === ROLES.ADMIN) {
+    } else if (profile?.role === ROLES.CENTRE_USER) {
       const { data } = await supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`).order('centre_name')
       setCentres(data?.map(c => c.centre_name) || [])
@@ -46,9 +47,9 @@ export default function RecordsPage() {
       query = query.gte('scan_time', start.toISOString()).lte('scan_time', end.toISOString())
     }
 
-    if (profile?.role === ROLES.CENTRE_USER && profile?.centre) {
+    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
       query = query.eq('centre', profile.centre)
-    } else if (profile?.role === ROLES.ADMIN && !centreFilter) {
+    } else if (profile?.role === ROLES.CENTRE_USER && !centreFilter) {
       const { data: childData } = await supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       const centreNames = childData?.map(c => c.centre_name) || [profile.centre]
@@ -59,7 +60,7 @@ export default function RecordsPage() {
 
     const { data } = await query.limit(500)
 
-    // Group by badge + date — track IDs for each scan type
+    // Group by badge + date
     const grouped = {}
     data?.forEach(r => {
       const date = new Date(r.scan_time).toISOString().split('T')[0]
@@ -109,19 +110,33 @@ export default function RecordsPage() {
     a.download = `attendance_${dateFilter || 'all'}.csv`; a.click()
   }
 
-  // Super admin: delete an individual scan record
   async function deleteRecord(id, badge, type) {
     if (!id) return
-    if (!confirm(`Delete ${type} record for ${badge}? This cannot be undone.`)) return
-    const { error } = await supabase.from('attendance').delete().eq('id', id)
-    if (!error) {
-      await supabase.from('logs').insert({
-        user_badge: profile.badge_number, action: 'DELETE_ATTENDANCE',
-        details: `Deleted ${type} id=${id} badge=${badge} from RecordsPage`,
-        timestamp: new Date().toISOString()
-      })
-      fetchRecords()
+    if (!confirm(`Delete ${type} record for ${badge}?\n\nThis cannot be undone.`)) return
+
+    setDeleteMsg('')
+    const { error, count } = await supabase
+      .from('attendance')
+      .delete({ count: 'exact' })
+      .eq('id', id)
+
+    if (error) {
+      const msg = `✗ Delete failed: ${error.message}`
+      setDeleteMsg(msg)
+      console.error('deleteRecord error:', error)
+      return
     }
+    if (count === 0) {
+      setDeleteMsg('✗ Delete was blocked by a Supabase RLS policy. In the Supabase dashboard go to Authentication → Policies → attendance table and add a DELETE policy for area_secretary role.')
+      return
+    }
+
+    await supabase.from('logs').insert({
+      user_badge: profile.badge_number, action: 'DELETE_ATTENDANCE',
+      details: `Deleted ${type} id=${id} badge=${badge} from RecordsPage`,
+      timestamp: new Date().toISOString()
+    })
+    fetchRecords()
   }
 
   async function submitFlag() {
@@ -161,6 +176,20 @@ export default function RecordsPage() {
         </div>
         <button className="btn-export" onClick={exportToCSV}><Download size={15}/> Export</button>
       </div>
+
+      {/* Delete error banner */}
+      {deleteMsg && (
+        <div style={{
+          background: deleteMsg.startsWith('✗') ? 'rgba(198,40,40,0.08)' : 'rgba(76,175,125,0.08)',
+          border: `1px solid ${deleteMsg.startsWith('✗') ? 'rgba(198,40,40,0.3)' : 'rgba(76,175,125,0.3)'}`,
+          borderRadius: 'var(--radius)', padding: '0.75rem 1rem', marginBottom: '1rem',
+          color: deleteMsg.startsWith('✗') ? 'var(--red)' : 'var(--green)',
+          fontSize: '0.84rem', display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'0.5rem'
+        }}>
+          <span>{deleteMsg}</span>
+          <button onClick={() => setDeleteMsg('')} style={{ background:'none', border:'none', cursor:'pointer', color:'inherit', flexShrink:0 }}><X size={14}/></button>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="records-filters">
@@ -203,7 +232,7 @@ export default function RecordsPage() {
                 <th>IN</th>
                 <th>OUT</th>
                 <th>Status</th>
-                <th style={{ width: isSuperAdmin ? 72 : 36 }}></th>
+                <th style={{ width: isSuperAdmin ? 80 : 36 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -226,12 +255,10 @@ export default function RecordsPage() {
                   </td>
                   <td>
                     <div style={{ display:'flex', gap:2, alignItems:'center' }}>
-                      {/* Flag button — all roles */}
                       <button className="records-flag-btn" title="Raise flag"
                         onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}>
                         <Flag size={13}/>
                       </button>
-                      {/* Delete buttons — super_admin only */}
                       {isSuperAdmin && r.in_id && (
                         <button className="records-delete-btn" title="Delete IN record"
                           onClick={() => deleteRecord(r.in_id, r.badge_number, 'IN')}>
@@ -279,7 +306,6 @@ export default function RecordsPage() {
                   </div>
                   <button onClick={() => setFlagModal(null)} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)' }}><X size={18}/></button>
                 </div>
-
                 <div className="flag-modal-record">
                   <div className="flag-modal-record-name">{flagModal.sewadar_name}</div>
                   <div className="flag-modal-record-meta">
@@ -290,7 +316,6 @@ export default function RecordsPage() {
                     {flagModal.out_time && <><span>·</span><span className="flag-modal-out">OUT {formatTime(flagModal.out_time)}</span></>}
                   </div>
                 </div>
-
                 <div style={{ marginBottom:'1rem' }}>
                   <label className="label">Reason</label>
                   <div style={{ position:'relative' }}>
@@ -300,13 +325,11 @@ export default function RecordsPage() {
                     <ChevronDown size={16} style={{ position:'absolute', right:'0.85rem', top:'50%', transform:'translateY(-50%)', pointerEvents:'none', color:'var(--text-muted)' }}/>
                   </div>
                 </div>
-
                 <div style={{ marginBottom:'1.25rem' }}>
                   <label className="label">Additional note <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, color:'var(--text-muted)' }}>(optional)</span></label>
                   <textarea className="input" rows={3} placeholder="Add any extra details…" value={flagNote}
                     onChange={e => setFlagNote(e.target.value)} style={{ resize:'none' }}/>
                 </div>
-
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem' }}>
                   <button className="btn btn-outline btn-full" onClick={() => setFlagModal(null)}>Cancel</button>
                   <button className="btn btn-full flag-submit-btn" onClick={submitFlag} disabled={flagSubmitting}>

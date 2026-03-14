@@ -17,15 +17,15 @@ export default function FlagsPage() {
   const [submitting, setSubmitting] = useState(false)
   const [childCentres, setChildCentres] = useState([])
 
-  const isAdmin = [ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(profile?.role)
-  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
+  const isAdmin = [ROLES.AREA_SECRETARY, ROLES.CENTRE_USER].includes(profile?.role)
+  const isAreaSecretary = profile?.role === ROLES.AREA_SECRETARY
 
   useEffect(() => {
     loadChildCentres().then(fetchFlags)
   }, [statusFilter, profile])
 
   async function loadChildCentres() {
-    if (!profile?.centre || isSuperAdmin) return
+    if (!profile?.centre || isAreaSecretary) return
     const { data } = await supabase
       .from('centres')
       .select('centre_name')
@@ -54,18 +54,18 @@ export default function FlagsPage() {
 
     let filtered = data || []
 
-    // Scope: centre_user sees only their own flags
-    if (profile?.role === ROLES.CENTRE_USER) {
+    // Scope: sc_sp_user sees only their own flags
+    if (profile?.role === ROLES.SC_SP_USER) {
       filtered = filtered.filter(f => f.raised_by_centre === profile.centre)
     }
-    // Admin sees parent + children
-    else if (profile?.role === ROLES.ADMIN) {
+    // Centre User sees parent + children
+    else if (profile?.role === ROLES.CENTRE_USER) {
       const scope = childCentres.length > 0 ? childCentres : [profile.centre]
       filtered = filtered.filter(f =>
         scope.includes(f.raised_by_centre) || scope.includes(f.target_centre)
       )
     }
-    // super_admin sees all
+    // area_secretary sees all
 
     setFlags(filtered)
     setLoading(false)
@@ -85,7 +85,7 @@ export default function FlagsPage() {
       created_at: new Date().toISOString()
     })
 
-    // If admin/super_admin replies, move to in_progress if still open
+    // If admin/area_secretary replies, move to in_progress if still open
     const flag = flags.find(f => f.id === flagId)
     if (isAdmin && flag?.status === FLAG_STATUS.OPEN) {
       await supabase.from('queries')
@@ -142,7 +142,7 @@ export default function FlagsPage() {
         <div>
           <h2 className="flags-page-title">Flags</h2>
           <p className="flags-page-sub">
-            {isSuperAdmin ? 'All centres' : profile?.role === ROLES.ADMIN ? `${profile.centre} + sub-centres` : 'My flags'}
+            {isAreaSecretary ? 'All centres' : profile?.role === ROLES.CENTRE_USER ? `${profile.centre} + sub-centres` : 'My flags'}
           </p>
         </div>
         <button className="btn btn-ghost" onClick={fetchFlags} style={{ padding: '0.5rem' }}>
@@ -178,9 +178,9 @@ export default function FlagsPage() {
             const isExpanded = expandedId === flag.id
             const replies = flag.query_replies || []
             const canReply =
-              isSuperAdmin ||
-              (profile?.role === ROLES.ADMIN) ||
-              (profile?.role === ROLES.CENTRE_USER && flag.raised_by_badge === profile.badge_number)
+              isAreaSecretary ||
+              (profile?.role === ROLES.CENTRE_USER) ||
+              (profile?.role === ROLES.SC_SP_USER && flag.raised_by_badge === profile.badge_number)
             const canResolve = isAdmin && flag.status !== FLAG_STATUS.RESOLVED
 
             return (

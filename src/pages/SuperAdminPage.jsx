@@ -1,6 +1,9 @@
 // src/pages/SuperAdminPage.jsx
-// SUPER_ADMIN ONLY — full management: users, sewadars, centres, jatha_centres, attendance correction, reports
-// Sessions removed. Jatha Centres tab added.
+// AREA_SECRETARY ONLY
+// KEY FIXES:
+//   1. createUser() now calls the Edge Function "create-user" (service-role auth, browser-safe)
+//   2. deleteAttRecord / deleteUser now check both error AND count===0 for silent RLS blocks
+//   3. All errors are surfaced clearly in the message banner
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
@@ -20,7 +23,7 @@ const PARENT_CENTRES = [
   'SECTOR-15-A','PRITHLA','SURAJ KUND','TIGAON'
 ]
 
-function log(profile, action, details) {
+function logAction(profile, action, details) {
   return supabase.from('logs').insert({
     user_badge: profile.badge_number, action, details,
     timestamp: new Date().toISOString()
@@ -37,7 +40,7 @@ export default function SuperAdminPage() {
   const [loading, setLoading] = useState(false)
   const [showAddUser, setShowAddUser] = useState(false)
   const [showPw, setShowPw] = useState(false)
-  const [newUser, setNewUser] = useState({ email:'', password:'', name:'', badge_number:'', role:'centre_user', centre: PARENT_CENTRES[0] })
+  const [newUser, setNewUser] = useState({ email:'', password:'', name:'', badge_number:'', role:'sc_sp_user', centre: PARENT_CENTRES[0] })
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [reportData, setReportData] = useState({ users:[], centres:[], logs:[] })
@@ -60,8 +63,7 @@ export default function SuperAdminPage() {
   const [editingAtt, setEditingAtt] = useState(null)
   const [editAttTime, setEditAttTime] = useState('')
   const [editAttType, setEditAttType] = useState('')
-
-  // Jatha Centres tab
+  // Jatha Centres
   const [jathaCentres, setJathaCentres] = useState([])
   const [jathaCentresLoading, setJathaCentresLoading] = useState(false)
   const [showAddJatha, setShowAddJatha] = useState(false)
@@ -84,40 +86,81 @@ export default function SuperAdminPage() {
   useEffect(() => { if (tab === 'jatha_centres') fetchJathaCentres() }, [jathaTypeFilter])
 
   // ── Guard ──
-  if (profile?.role !== ROLES.SUPER_ADMIN) return (
+  if (profile?.role !== ROLES.AREA_SECRETARY) return (
     <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
   )
+
+  function showMsg(msg) {
+    setMessage(msg)
+    // Auto-clear success messages after 4s
+    if (msg.startsWith('✓')) setTimeout(() => setMessage(m => m === msg ? '' : m), 4000)
+  }
 
   // ── Users ──
   async function fetchUsers() {
     setLoading(true)
-    const { data } = await supabase.from('users').select('*').order('name')
+    const { data, error } = await supabase.from('users').select('*').order('name')
+    if (error) showMsg('✗ Failed to load users: ' + error.message)
     setUsers(data || []); setLoading(false)
   }
+
   async function toggleUserActive(u) {
-    await supabase.from('users').update({ is_active: !u.is_active }).eq('id', u.id)
-    await log(profile, 'TOGGLE_USER', `is_active=${!u.is_active} for ${u.badge_number}`)
+    const { error } = await supabase.from('users').update({ is_active: !u.is_active }).eq('id', u.id)
+    if (error) { showMsg('✗ ' + error.message); return }
+    await logAction(profile, 'TOGGLE_USER', `is_active=${!u.is_active} for ${u.badge_number}`)
     fetchUsers()
   }
+
   async function deleteUser(u) {
-    if (!confirm(`Delete user ${u.name}? Cannot be undone.`)) return
-    await supabase.from('users').delete().eq('id', u.id)
-    await log(profile, 'DELETE_USER', `Deleted ${u.badge_number} ${u.name}`)
+    if (!confirm(`Delete user ${u.name}?\n\nThis removes their login access. Attendance records are preserved.`)) return
+    const { error, count } = await supabase.from('users').delete({ count: 'exact' }).eq('id', u.id)
+    if (error) { showMsg('✗ Delete failed: ' + error.message); return }
+    if (count === 0) { showMsg('✗ Delete blocked — check Supabase RLS policy for the users table (area_secretary must have DELETE permission)'); return }
+    await logAction(profile, 'DELETE_USER', `Deleted ${u.badge_number} ${u.name}`)
+    showMsg('✓ User deleted')
     fetchUsers()
   }
+
+  // ── CREATE USER via Edge Function (service-role, browser-safe) ──
   async function createUser() {
+    const { email, password, name, badge_number, role, centre } = newUser
+    if (!email || !password || !name || !badge_number) {
+      showMsg('✗ All fields are required'); return
+    }
+    if (password.length < 8) { showMsg('✗ Password must be at least 8 characters'); return }
+
     setSaving(true); setMessage('')
     try {
-      const { data: auth, error: ae } = await supabase.auth.admin.createUser({ email: newUser.email, password: newUser.password, email_confirm: true })
-      if (ae) throw ae
-      const { error: pe } = await supabase.from('users').insert({ auth_id: auth.user.id, email: newUser.email, name: newUser.name, badge_number: newUser.badge_number.toUpperCase(), role: newUser.role, centre: newUser.centre, is_active: true, created_at: new Date().toISOString() })
-      if (pe) throw pe
-      await log(profile, 'CREATE_USER', `Created ${newUser.role} ${newUser.badge_number}`)
-      setMessage('✓ User created!'); setShowAddUser(false)
-      setNewUser({ email:'', password:'', name:'', badge_number:'', role:'centre_user', centre: PARENT_CENTRES[0] })
+      // Get the current session token to pass to the Edge Function
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('No active session — please sign in again')
+
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-user`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+          },
+          body: JSON.stringify({ email, password, name, badge_number, role, centre }),
+        }
+      )
+
+      const json = await res.json()
+      if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`)
+
+      await logAction(profile, 'CREATE_USER', `Created ${role} ${badge_number.toUpperCase()} via edge function`)
+      showMsg('✓ User created successfully!')
+      setShowAddUser(false)
+      setNewUser({ email:'', password:'', name:'', badge_number:'', role:'sc_sp_user', centre: PARENT_CENTRES[0] })
       fetchUsers()
-    } catch (err) { setMessage('✗ ' + err.message) }
-    finally { setSaving(false) }
+    } catch (err) {
+      showMsg('✗ ' + (err.message || 'Failed to create user'))
+    } finally {
+      setSaving(false)
+    }
   }
 
   // ── Centres ──
@@ -127,11 +170,12 @@ export default function SuperAdminPage() {
     setCentres(data || []); setLoading(false)
   }
   async function updateCentreGeo(centreId, field, value, centreName) {
-    await supabase.from('centres').update({ [field]: value }).eq('id', centreId)
+    const { error } = await supabase.from('centres').update({ [field]: value }).eq('id', centreId)
+    if (error) { showMsg('✗ ' + error.message); return }
     if (field === 'geo_enabled' && centreName) {
       const { data: ch } = await supabase.from('centres').select('id').eq('parent_centre', centreName)
       if (ch?.length) await supabase.from('centres').update({ geo_enabled: value }).in('id', ch.map(c => c.id))
-      await log(profile, 'GEO_TOGGLE_CASCADE', `geo_enabled=${value} for ${centreName} + ${ch?.length||0} sub-centres`)
+      await logAction(profile, 'GEO_TOGGLE_CASCADE', `geo_enabled=${value} for ${centreName} + ${ch?.length||0} sub-centres`)
     }
     fetchCentres()
   }
@@ -143,11 +187,19 @@ export default function SuperAdminPage() {
     let lq = supabase.from('logs').select('*').order('timestamp', { ascending: false }).limit(500)
     if (from) lq = lq.gte('timestamp', new Date(from + 'T00:00:00').toISOString())
     if (to) lq = lq.lte('timestamp', new Date(to + 'T23:59:59.999').toISOString())
-    const [ur, cr, lr] = await Promise.all([supabase.from('users').select('*').order('name'), supabase.from('centres').select('*').order('centre_name'), lq])
+    const [ur, cr, lr] = await Promise.all([
+      supabase.from('users').select('*').order('name'),
+      supabase.from('centres').select('*').order('centre_name'),
+      lq
+    ])
     setReportData({ users: ur.data||[], centres: cr.data||[], logs: lr.data||[] })
     setReportLoading(false)
   }
-  function dlCSV(csv, fn) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = fn; a.click() }
+  function dlCSV(csv, fn) {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.download = fn; a.click()
+  }
   const exportUsers = () => dlCSV(['Name,Email,Badge,Role,Centre,Active,Created', ...reportData.users.map(u => [`"${u.name}"`, u.email, u.badge_number, u.role, u.centre, u.is_active?'Yes':'No', new Date(u.created_at).toLocaleDateString('en-IN')].join(','))].join('\n'), 'users_export.csv')
   const exportCentres = () => dlCSV(['Centre,Parent,Geo,Radius,Lat,Lng', ...reportData.centres.map(c => [c.centre_name, c.parent_centre||'', c.geo_enabled?'Y':'N', c.geo_radius||'', c.latitude||'', c.longitude||''].join(','))].join('\n'), 'centres_export.csv')
   const exportLogs = () => dlCSV(['Time,Badge,Action,Details', ...reportData.logs.map(l => [new Date(l.timestamp).toLocaleString('en-IN'), l.user_badge, l.action, `"${l.details||''}"`].join(','))].join('\n'), 'logs_export.csv')
@@ -165,24 +217,30 @@ export default function SuperAdminPage() {
     Object.entries(sewadarForm).forEach(([k,v]) => { clean[k] = v === '' ? null : v })
     if (clean.age !== undefined) clean.age = parseInt(clean.age) || null
     const { error } = await supabase.from('sewadars').update(clean).eq('id', editingSewadar)
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'EDIT_SEWADAR', `Updated id=${editingSewadar} fields: ${Object.keys(clean).join(',')}`)
-    setMessage('✓ Sewadar updated!'); setEditingSewadar(null); setSewadarForm({}); fetchSewadars()
+    if (error) { showMsg('✗ ' + error.message); return }
+    await logAction(profile, 'EDIT_SEWADAR', `Updated id=${editingSewadar} fields: ${Object.keys(clean).join(',')}`)
+    showMsg('✓ Sewadar updated!'); setEditingSewadar(null); setSewadarForm({}); fetchSewadars()
   }
   async function deleteSewadar(s) {
-    if (!confirm(`Delete ${s.sewadar_name} (${s.badge_number})?\n\nAttendance history is preserved but they can no longer be scanned.`)) return
-    const { error } = await supabase.from('sewadars').delete().eq('id', s.id)
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'DELETE_SEWADAR', `Deleted sewadar ${s.badge_number} ${s.sewadar_name}`)
-    setMessage('✓ Deleted'); fetchSewadars()
+    if (!confirm(`Delete ${s.sewadar_name} (${s.badge_number})?\n\nAttendance history is preserved.`)) return
+    const { error, count } = await supabase.from('sewadars').delete({ count: 'exact' }).eq('id', s.id)
+    if (error) { showMsg('✗ Delete failed: ' + error.message); return }
+    if (count === 0) { showMsg('✗ Delete blocked by RLS — ensure area_secretary has DELETE on sewadars table'); return }
+    await logAction(profile, 'DELETE_SEWADAR', `Deleted sewadar ${s.badge_number} ${s.sewadar_name}`)
+    showMsg('✓ Sewadar deleted'); fetchSewadars()
   }
   async function createSewadar() {
-    if (!newSewadar.sewadar_name || !newSewadar.badge_number) { setMessage('✗ Name and badge required'); return }
+    if (!newSewadar.sewadar_name || !newSewadar.badge_number) { showMsg('✗ Name and badge required'); return }
     setSaving(true)
-    const { error } = await supabase.from('sewadars').insert({ ...newSewadar, badge_number: newSewadar.badge_number.toUpperCase(), age: parseInt(newSewadar.age)||null })
-    if (error) { setMessage('✗ ' + error.message); setSaving(false); return }
-    await log(profile, 'CREATE_SEWADAR', `Created ${newSewadar.badge_number.toUpperCase()} ${newSewadar.sewadar_name}`)
-    setMessage('✓ Sewadar created!'); setShowAddSewadar(false)
+    const { error } = await supabase.from('sewadars').insert({
+      ...newSewadar,
+      badge_number: newSewadar.badge_number.toUpperCase(),
+      age: parseInt(newSewadar.age)||null
+    })
+    if (error) { showMsg('✗ ' + error.message); setSaving(false); return }
+    await logAction(profile, 'CREATE_SEWADAR', `Created ${newSewadar.badge_number.toUpperCase()} ${newSewadar.sewadar_name}`)
+    showMsg('✓ Sewadar created!')
+    setShowAddSewadar(false)
     setNewSewadar({ sewadar_name:'', badge_number:'', centre: PARENT_CENTRES[0], department:'', gender:'Male', age:'', father_husband_name:'' })
     fetchSewadars(); setSaving(false)
   }
@@ -195,24 +253,43 @@ export default function SuperAdminPage() {
       .lte('scan_time', new Date(attDate + 'T23:59:59.999').toISOString())
       .order('scan_time', { ascending: false }).limit(300)
     if (attSearch.length >= 2) q = q.or(`sewadar_name.ilike.%${attSearch}%,badge_number.ilike.%${attSearch.toUpperCase()}%`)
-    const { data } = await q; setAttRecords(data || []); setAttLoading(false)
+    const { data, error } = await q
+    if (error) showMsg('✗ Failed to load: ' + error.message)
+    setAttRecords(data || []); setAttLoading(false)
   }
+
   async function deleteAttRecord(r) {
-    if (!confirm(`Delete ${r.type} record for ${r.badge_number}? Cannot be undone.`)) return
-    const { error } = await supabase.from('attendance').delete().eq('id', r.id)
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'DELETE_ATTENDANCE', `Deleted ${r.type} id=${r.id} badge=${r.badge_number}`)
-    setMessage('✓ Record deleted'); fetchAttendance()
+    if (!confirm(`Delete ${r.type} record for ${r.badge_number} at ${new Date(r.scan_time).toLocaleTimeString('en-IN')}?\n\nThis cannot be undone.`)) return
+
+    const { error, count } = await supabase
+      .from('attendance')
+      .delete({ count: 'exact' })
+      .eq('id', r.id)
+
+    if (error) {
+      showMsg(`✗ Delete failed: ${error.message}`)
+      console.error('deleteAttRecord error:', error)
+      return
+    }
+    if (count === 0) {
+      showMsg('✗ Delete was blocked. Check Supabase RLS: the "attendance" table needs a DELETE policy allowing area_secretary role. See fix instructions below.')
+      return
+    }
+
+    await logAction(profile, 'DELETE_ATTENDANCE', `Deleted ${r.type} id=${r.id} badge=${r.badge_number}`)
+    showMsg('✓ Record deleted')
+    fetchAttendance()
   }
+
   async function saveAttEdit() {
     const updates = {}
     if (editAttTime) updates.scan_time = new Date(attDate + 'T' + editAttTime).toISOString()
     if (editAttType && editAttType !== editingAtt.type) updates.type = editAttType
     if (!Object.keys(updates).length) { setEditingAtt(null); return }
     const { error } = await supabase.from('attendance').update(updates).eq('id', editingAtt.id)
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'EDIT_ATTENDANCE', `Edited id=${editingAtt.id} badge=${editingAtt.badge_number}: ${JSON.stringify(updates)}`)
-    setMessage('✓ Record updated'); setEditingAtt(null); fetchAttendance()
+    if (error) { showMsg('✗ Update failed: ' + error.message); return }
+    await logAction(profile, 'EDIT_ATTENDANCE', `Edited id=${editingAtt.id} badge=${editingAtt.badge_number}: ${JSON.stringify(updates)}`)
+    showMsg('✓ Record updated'); setEditingAtt(null); fetchAttendance()
   }
 
   // ── Jatha Centres ──
@@ -223,45 +300,56 @@ export default function SuperAdminPage() {
     const { data } = await q; setJathaCentres(data || []); setJathaCentresLoading(false)
   }
   async function createJathaCentre() {
-    if (!newJatha.centre_name.trim() || !newJatha.department.trim()) { setMessage('✗ Centre name and department are required'); return }
+    if (!newJatha.centre_name.trim() || !newJatha.department.trim()) { showMsg('✗ Centre name and department are required'); return }
     setSaving(true)
     const { error } = await supabase.from('jatha_centres').insert({
-      jatha_type: newJatha.jatha_type,
-      centre_name: newJatha.centre_name.trim(),
-      department: newJatha.department.trim(),
-      is_active: true,
-      created_at: new Date().toISOString()
+      jatha_type: newJatha.jatha_type, centre_name: newJatha.centre_name.trim(),
+      department: newJatha.department.trim(), is_active: true, created_at: new Date().toISOString()
     })
-    if (error) { setMessage('✗ ' + error.message); setSaving(false); return }
-    await log(profile, 'CREATE_JATHA_CENTRE', `Added ${newJatha.centre_name} (${newJatha.jatha_type})`)
-    setMessage('✓ Jatha centre added!'); setShowAddJatha(false)
+    if (error) { showMsg('✗ ' + error.message); setSaving(false); return }
+    await logAction(profile, 'CREATE_JATHA_CENTRE', `Added ${newJatha.centre_name} (${newJatha.jatha_type})`)
+    showMsg('✓ Jatha centre added!'); setShowAddJatha(false)
     setNewJatha({ jatha_type: JATHA_TYPE.MAJOR_CENTRE, centre_name:'', department:'', is_active: true })
     fetchJathaCentres(); setSaving(false)
   }
   async function saveJathaCentre(jc) {
     const { error } = await supabase.from('jatha_centres').update(editJathaForm).eq('id', jc.id)
-    if (error) { setMessage('✗ ' + error.message); return }
-    await log(profile, 'EDIT_JATHA_CENTRE', `Updated jatha_centre id=${jc.id}`)
-    setMessage('✓ Updated!'); setEditingJatha(null); setEditJathaForm({}); fetchJathaCentres()
+    if (error) { showMsg('✗ ' + error.message); return }
+    await logAction(profile, 'EDIT_JATHA_CENTRE', `Updated jatha_centre id=${jc.id}`)
+    showMsg('✓ Updated!'); setEditingJatha(null); setEditJathaForm({}); fetchJathaCentres()
   }
   async function toggleJathaCentreActive(jc) {
     await supabase.from('jatha_centres').update({ is_active: !jc.is_active }).eq('id', jc.id)
-    await log(profile, 'TOGGLE_JATHA_CENTRE', `is_active=${!jc.is_active} for ${jc.centre_name}`)
     fetchJathaCentres()
   }
   async function deleteJathaCentre(jc) {
     if (!confirm(`Delete "${jc.centre_name} — ${jc.department}"? Existing jatha records are unaffected.`)) return
-    await supabase.from('jatha_centres').delete().eq('id', jc.id)
-    await log(profile, 'DELETE_JATHA_CENTRE', `Deleted jatha_centre id=${jc.id} ${jc.centre_name}`)
-    setMessage('✓ Deleted'); fetchJathaCentres()
+    const { error, count } = await supabase.from('jatha_centres').delete({ count: 'exact' }).eq('id', jc.id)
+    if (error) { showMsg('✗ ' + error.message); return }
+    if (count === 0) { showMsg('✗ Delete blocked by RLS'); return }
+    await logAction(profile, 'DELETE_JATHA_CENTRE', `Deleted ${jc.centre_name}`)
+    showMsg('✓ Deleted'); fetchJathaCentres()
   }
 
   // ── Render helpers ──
-  const centreTree = PARENT_CENTRES.map(p => ({ parent: p, children: centres.filter(c => c.parent_centre === p), config: centres.find(c => c.centre_name === p) }))
-  const roleColor = { super_admin: 'var(--gold)', admin: 'var(--blue)', centre_user: 'var(--green)' }
-  const roleName = { super_admin: 'Super Admin', admin: 'Admin', centre_user: 'Centre User' }
+  const centreTree = PARENT_CENTRES.map(p => ({
+    parent: p,
+    children: centres.filter(c => c.parent_centre === p),
+    config: centres.find(c => c.centre_name === p)
+  }))
+  const roleColor = { area_secretary: 'var(--gold)', centre_user: 'var(--blue)', sc_sp_user: 'var(--green)' }
+  const roleName  = { area_secretary: 'AREA SECRETARY', centre_user: 'CENTRE USER', sc_sp_user: 'SC_SP USER' }
+
   const TAB_BTN = (key, label, Icon) => (
-    <button key={key} onClick={() => setTab(key)} style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'0.55rem 0.9rem', borderRadius:'var(--radius)', fontFamily:'Inter,sans-serif', fontSize:'0.82rem', fontWeight:600, cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', background: tab===key ? 'var(--excel-green)' : 'white', color: tab===key ? 'white' : 'var(--text-muted)', border: tab===key ? 'none' : '1.5px solid var(--border)' }}>
+    <button key={key} onClick={() => setTab(key)}
+      style={{
+        display:'inline-flex', alignItems:'center', gap:5, padding:'0.55rem 0.9rem',
+        borderRadius:'var(--radius)', fontFamily:'Inter,sans-serif', fontSize:'0.82rem',
+        fontWeight:600, cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s',
+        background: tab===key ? 'var(--excel-green)' : 'white',
+        color: tab===key ? 'white' : 'var(--text-muted)',
+        border: tab===key ? 'none' : '1.5px solid var(--border)'
+      }}>
       <Icon size={13} /> {label}
     </button>
   )
@@ -270,32 +358,47 @@ export default function SuperAdminPage() {
     <div className="page-wide pb-nav" style={{ maxWidth: 960 }}>
       <div className="mt-2 mb-3">
         <h2 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', fontSize:'1.2rem' }}>Control Panel</h2>
-        <p className="text-muted text-xs mt-1">Super Admin · Write access only</p>
+        <p className="text-muted text-xs mt-1">Area Secretary · Write access only</p>
       </div>
 
       {message && (
-        <div className={`super-admin-msg ${message.startsWith('✓') ? 'msg-success' : 'msg-error'}`} onClick={() => setMessage('')} style={{ cursor:'pointer' }}>
-          {message} <span style={{ float:'right', opacity:0.5 }}>✕ dismiss</span>
+        <div className={`super-admin-msg ${message.startsWith('✓') ? 'msg-success' : 'msg-error'}`}
+          onClick={() => setMessage('')} style={{ cursor:'pointer', marginBottom:'1rem' }}>
+          {message}
+          {message.includes('RLS') && (
+            <div style={{ marginTop:'0.5rem', fontSize:'0.78rem', opacity:0.9, lineHeight:1.5 }}>
+              <strong>To fix in Supabase dashboard:</strong> Go to Authentication → Policies → find the table → add a policy:<br />
+              <code style={{ background:'rgba(0,0,0,0.15)', padding:'2px 6px', borderRadius:3 }}>
+                CREATE POLICY "area_secretary_delete" ON public.attendance FOR DELETE TO authenticated USING (EXISTS (SELECT 1 FROM public.users WHERE auth_id = auth.uid() AND role = 'area_secretary'));
+              </code>
+            </div>
+          )}
+          <span style={{ float:'right', opacity:0.5, marginLeft:'1rem' }}>✕ dismiss</span>
         </div>
       )}
 
       {/* Tab bar */}
       <div style={{ overflowX:'auto', marginBottom:'1.25rem', paddingBottom:4 }}>
         <div style={{ display:'flex', gap:4, minWidth:'max-content' }}>
-          {TAB_BTN('users', 'Users', Users)}
-          {TAB_BTN('sewadars', 'Sewadars', Shield)}
-          {TAB_BTN('centres', 'Centres', Building2)}
+          {TAB_BTN('users',         'Users',       Users)}
+          {TAB_BTN('sewadars',      'Sewadars',    Shield)}
+          {TAB_BTN('centres',       'Centres',     Building2)}
           {TAB_BTN('jatha_centres', 'Jatha Centres', Plane)}
-          {TAB_BTN('attendance', 'Correct Att', Pencil)}
-          {TAB_BTN('reports', 'Reports', FileSpreadsheet)}
+          {TAB_BTN('attendance',    'Correct Att', Pencil)}
+          {TAB_BTN('reports',       'Reports',     FileSpreadsheet)}
         </div>
       </div>
 
-      {/* USERS */}
+      {/* ── USERS ── */}
       {tab === 'users' && (
         <div>
-          <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:'1rem' }}>
-            <button className="btn btn-gold" onClick={() => setShowAddUser(true)}><UserPlus size={15} /> Add User</button>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1rem' }}>
+            <p className="text-muted text-xs">
+              New users are created via a secure server-side Edge Function.
+            </p>
+            <button className="btn btn-gold" onClick={() => setShowAddUser(true)}>
+              <UserPlus size={15} /> Add User
+            </button>
           </div>
           {loading ? <div className="spinner" style={{ margin:'2rem auto' }} /> : (
             <div className="table-wrap"><table>
@@ -308,8 +411,16 @@ export default function SuperAdminPage() {
                     <td><span className="badge" style={{ background:`${roleColor[u.role]}18`, color:roleColor[u.role], border:`1px solid ${roleColor[u.role]}30` }}>{roleName[u.role]}</span></td>
                     <td style={{ fontSize:'0.82rem' }}>{u.centre}</td>
                     <td><span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`}>{u.is_active ? 'Active' : 'Inactive'}</span></td>
-                    <td><button className="btn btn-ghost" style={{ padding:'0.25rem' }} onClick={() => toggleUserActive(u)}>{u.is_active ? <ToggleRight size={22} color="var(--green)" /> : <ToggleLeft size={22} color="var(--text-muted)" />}</button></td>
-                    <td>{u.role !== ROLES.SUPER_ADMIN && <button className="btn btn-ghost" style={{ padding:'0.25rem', color:'var(--red)' }} onClick={() => deleteUser(u)}><Trash2 size={15} /></button>}</td>
+                    <td><button className="btn btn-ghost" style={{ padding:'0.25rem' }} onClick={() => toggleUserActive(u)}>
+                      {u.is_active ? <ToggleRight size={22} color="var(--green)" /> : <ToggleLeft size={22} color="var(--text-muted)" />}
+                    </button></td>
+                    <td>
+                      {u.role !== ROLES.AREA_SECRETARY && (
+                        <button className="btn btn-ghost" style={{ padding:'0.25rem', color:'var(--red)' }} onClick={() => deleteUser(u)}>
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
                 {!users.length && !loading && <tr><td colSpan={7} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>No users.</td></tr>}
@@ -319,7 +430,7 @@ export default function SuperAdminPage() {
         </div>
       )}
 
-      {/* SEWADARS */}
+      {/* ── SEWADARS ── */}
       {tab === 'sewadars' && (
         <div>
           <div style={{ display:'flex', gap:'0.75rem', marginBottom:'0.75rem', flexWrap:'wrap', alignItems:'center' }}>
@@ -333,7 +444,7 @@ export default function SuperAdminPage() {
             </select>
             <button className="btn btn-gold" onClick={() => setShowAddSewadar(true)}><PlusCircle size={15} /> Add</button>
           </div>
-          <p className="text-muted text-xs mb-2">{sewadars.length > 0 ? `${sewadars.length} results` : 'Type ≥2 chars or choose centre'}</p>
+          <p className="text-muted text-xs mb-2">{sewadars.length > 0 ? `${sewadars.length} results` : 'Type ≥2 chars or choose a centre to search'}</p>
           {sewadarLoading ? <div className="spinner" style={{ margin:'2rem auto' }} /> : (
             <div className="table-wrap"><table>
               <thead><tr><th>Name</th><th>Badge</th><th>Centre</th><th>Dept</th><th>Gender</th><th>Age</th><th></th></tr></thead>
@@ -348,7 +459,10 @@ export default function SuperAdminPage() {
                         <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem' }} value={sewadarForm.department ?? (s.department??'')} onChange={e => setSewadarForm(f => ({...f, department: e.target.value}))} /></td>
                         <td><select className="input" style={{ padding:'0.3rem', fontSize:'0.82rem' }} value={sewadarForm.gender ?? s.gender} onChange={e => setSewadarForm(f => ({...f, gender: e.target.value}))}><option>Male</option><option>Female</option></select></td>
                         <td><input className="input" type="number" style={{ padding:'0.3rem', fontSize:'0.82rem', width:60 }} value={sewadarForm.age ?? (s.age??'')} onChange={e => setSewadarForm(f => ({...f, age: e.target.value}))} /></td>
-                        <td style={{ display:'flex', gap:4 }}><button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveSewadar}><Check size={15} /></button><button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => { setEditingSewadar(null); setSewadarForm({}) }}><X size={15} /></button></td>
+                        <td style={{ display:'flex', gap:4 }}>
+                          <button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveSewadar}><Check size={15} /></button>
+                          <button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => { setEditingSewadar(null); setSewadarForm({}) }}><X size={15} /></button>
+                        </td>
                       </>
                     ) : (
                       <>
@@ -359,8 +473,8 @@ export default function SuperAdminPage() {
                         <td style={{ fontSize:'0.82rem' }}>{s.gender||'—'}</td>
                         <td style={{ fontSize:'0.82rem' }}>{s.age||'—'}</td>
                         <td style={{ display:'flex', gap:4 }}>
-                          <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--blue)' }} title="Edit" onClick={() => { setEditingSewadar(s.id); setSewadarForm({}) }}><Pencil size={14} /></button>
-                          <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--red)' }} title="Delete" onClick={() => deleteSewadar(s)}><Trash2 size={14} /></button>
+                          <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--blue)' }} onClick={() => { setEditingSewadar(s.id); setSewadarForm({}) }}><Pencil size={14} /></button>
+                          <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--red)' }} onClick={() => deleteSewadar(s)}><Trash2 size={14} /></button>
                         </td>
                       </>
                     )}
@@ -373,7 +487,7 @@ export default function SuperAdminPage() {
         </div>
       )}
 
-      {/* CENTRES */}
+      {/* ── CENTRES ── */}
       {tab === 'centres' && (
         <div>
           <p className="text-muted text-sm mb-3">Toggling geo on a parent cascades to all sub-centres.</p>
@@ -382,14 +496,18 @@ export default function SuperAdminPage() {
               {centreTree.map(({ parent, children, config }) => (
                 <div key={parent} className="centre-parent-block">
                   <div className="centre-parent-row">
-                    <button className="centre-expand-btn" onClick={() => setExpandedParent(expandedParent === parent ? null : parent)}>{expandedParent===parent ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}</button>
+                    <button className="centre-expand-btn" onClick={() => setExpandedParent(expandedParent === parent ? null : parent)}>
+                      {expandedParent===parent ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}
+                    </button>
                     <Building2 size={15} color="var(--gold)" />
                     <span className="centre-parent-name">{parent}</span>
                     {children.length > 0 && <span className="centre-child-count">{children.length} sub-centres</span>}
                     <div className="centre-parent-geo">
                       {config && (<>
                         <span className="centre-geo-label">Geo</span>
-                        <button className="btn btn-ghost" style={{ padding:'0.15rem' }} onClick={() => updateCentreGeo(config.id, 'geo_enabled', !config.geo_enabled, parent)}>{config.geo_enabled ? <ToggleRight size={22} color="var(--green)"/> : <ToggleLeft size={22} color="var(--text-muted)"/>}</button>
+                        <button className="btn btn-ghost" style={{ padding:'0.15rem' }} onClick={() => updateCentreGeo(config.id, 'geo_enabled', !config.geo_enabled, parent)}>
+                          {config.geo_enabled ? <ToggleRight size={22} color="var(--green)"/> : <ToggleLeft size={22} color="var(--text-muted)"/>}
+                        </button>
                         {config.geo_enabled && <span className="badge badge-green" style={{ fontSize:'0.7rem' }}>ON</span>}
                       </>)}
                     </div>
@@ -405,12 +523,16 @@ export default function SuperAdminPage() {
                     <div key={child.id}>
                       <div className="centre-child-row">
                         <span className="centre-child-indent">└</span>
-                        <button className="centre-expand-btn" style={{ marginLeft:2 }} onClick={() => setExpandedChild(expandedChild===child.id ? null : child.id)}>{expandedChild===child.id ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}</button>
+                        <button className="centre-expand-btn" style={{ marginLeft:2 }} onClick={() => setExpandedChild(expandedChild===child.id ? null : child.id)}>
+                          {expandedChild===child.id ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}
+                        </button>
                         <span className="centre-child-name">{child.centre_name}</span>
                         {(child.latitude||child.longitude) && <span className="centre-coords-pill">{child.latitude?.toFixed(4)}, {child.longitude?.toFixed(4)}</span>}
                         <div className="centre-parent-geo">
                           <span className="centre-geo-label">Geo</span>
-                          <button className="btn btn-ghost" style={{ padding:'0.15rem' }} onClick={() => updateCentreGeo(child.id,'geo_enabled',!child.geo_enabled,null)}>{child.geo_enabled ? <ToggleRight size={20} color="var(--green)"/> : <ToggleLeft size={20} color="var(--text-muted)"/>}</button>
+                          <button className="btn btn-ghost" style={{ padding:'0.15rem' }} onClick={() => updateCentreGeo(child.id,'geo_enabled',!child.geo_enabled,null)}>
+                            {child.geo_enabled ? <ToggleRight size={20} color="var(--green)"/> : <ToggleLeft size={20} color="var(--text-muted)"/>}
+                          </button>
                         </div>
                       </div>
                       {expandedChild===child.id && (
@@ -429,7 +551,7 @@ export default function SuperAdminPage() {
         </div>
       )}
 
-      {/* JATHA CENTRES */}
+      {/* ── JATHA CENTRES ── */}
       {tab === 'jatha_centres' && (
         <div>
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.75rem', gap:'0.75rem', flexWrap:'wrap' }}>
@@ -437,16 +559,16 @@ export default function SuperAdminPage() {
               {['', JATHA_TYPE.MAJOR_CENTRE, JATHA_TYPE.BEAS].map(t => (
                 <button key={t} onClick={() => setJathaTypeFilter(t)}
                   style={{ padding:'0.35rem 0.85rem', borderRadius:'var(--radius)', fontSize:'0.8rem', fontWeight:600, cursor:'pointer', fontFamily:'Inter,sans-serif',
-                    background: jathaTypeFilter === t ? 'var(--excel-green)' : 'var(--bg)',
-                    color: jathaTypeFilter === t ? 'white' : 'var(--text-muted)',
-                    border: jathaTypeFilter === t ? 'none' : '1.5px solid var(--border)' }}>
+                    background: jathaTypeFilter===t ? 'var(--excel-green)' : 'var(--bg)',
+                    color: jathaTypeFilter===t ? 'white' : 'var(--text-muted)',
+                    border: jathaTypeFilter===t ? 'none' : '1.5px solid var(--border)' }}>
                   {t === '' ? 'All' : JATHA_TYPE_LABEL[t]}
                 </button>
               ))}
             </div>
             <button className="btn btn-gold" onClick={() => setShowAddJatha(true)}><PlusCircle size={15} /> Add Entry</button>
           </div>
-          <p className="text-muted text-sm mb-2">These centre + department combinations appear in the Jatha attendance form.</p>
+          <p className="text-muted text-sm mb-2">These centre + department combos appear in the Jatha attendance form.</p>
           {jathaCentresLoading ? <div className="spinner" style={{ margin:'2rem auto' }} /> : (
             <div className="table-wrap"><table>
               <thead><tr><th>Type</th><th>Centre Name</th><th>Department</th><th>Active</th><th></th></tr></thead>
@@ -473,14 +595,12 @@ export default function SuperAdminPage() {
                       </>
                     ) : (
                       <>
-                        <td><span className="badge" style={{ background:'var(--gold-bg)', color:'var(--gold)', border:'1px solid rgba(201,168,76,0.25)', fontSize:'0.78rem' }}>{JATHA_TYPE_LABEL[jc.jatha_type] || jc.jatha_type}</span></td>
+                        <td><span className="badge" style={{ background:'var(--gold-bg)', color:'var(--gold)', border:'1px solid rgba(201,168,76,0.25)', fontSize:'0.78rem' }}>{JATHA_TYPE_LABEL[jc.jatha_type]||jc.jatha_type}</span></td>
                         <td style={{ fontWeight:500 }}>{jc.centre_name}</td>
                         <td style={{ fontSize:'0.82rem', color:'var(--text-secondary)' }}>{jc.department}</td>
-                        <td>
-                          <button className="btn btn-ghost" style={{ padding:'0.2rem' }} onClick={() => toggleJathaCentreActive(jc)}>
-                            {jc.is_active ? <ToggleRight size={22} color="var(--green)"/> : <ToggleLeft size={22} color="var(--text-muted)"/>}
-                          </button>
-                        </td>
+                        <td><button className="btn btn-ghost" style={{ padding:'0.2rem' }} onClick={() => toggleJathaCentreActive(jc)}>
+                          {jc.is_active ? <ToggleRight size={22} color="var(--green)"/> : <ToggleLeft size={22} color="var(--text-muted)"/>}
+                        </button></td>
                         <td style={{ display:'flex', gap:4 }}>
                           <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--blue)' }} onClick={() => { setEditingJatha(jc.id); setEditJathaForm({}) }}><Pencil size={14}/></button>
                           <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--red)' }} onClick={() => deleteJathaCentre(jc)}><Trash2 size={14}/></button>
@@ -490,7 +610,7 @@ export default function SuperAdminPage() {
                   </tr>
                 ))}
                 {!jathaCentres.length && !jathaCentresLoading && (
-                  <tr><td colSpan={5} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>No jatha centres configured. Add your first entry.</td></tr>
+                  <tr><td colSpan={5} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>No jatha centres configured. Add the first entry.</td></tr>
                 )}
               </tbody>
             </table></div>
@@ -498,11 +618,11 @@ export default function SuperAdminPage() {
         </div>
       )}
 
-      {/* ATTENDANCE CORRECTION */}
+      {/* ── ATTENDANCE CORRECTION ── */}
       {tab === 'attendance' && (
         <div>
           <div className="super-admin-note" style={{ marginBottom:'1rem' }}>
-            Super Admin only. Edit scan time, change IN↔OUT type, or delete records. All changes are permanently logged.
+            Super Admin only. Edit scan time, change IN↔OUT, or delete records. All changes are permanently logged.
           </div>
           <div style={{ display:'flex', gap:'0.75rem', marginBottom:'1rem', flexWrap:'wrap', alignItems:'center' }}>
             <div style={{ display:'flex', alignItems:'center', gap:'0.5rem', background:'white', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'0.4rem 0.75rem' }}>
@@ -539,9 +659,21 @@ export default function SuperAdminPage() {
                     <td>
                       <div style={{ display:'flex', gap:4, alignItems:'center' }}>
                         {editingAtt?.id===r.id ? (
-                          <><button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveAttEdit}><Check size={14}/></button><button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => setEditingAtt(null)}><X size={14}/></button></>
+                          <>
+                            <button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveAttEdit}><Check size={14}/></button>
+                            <button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => setEditingAtt(null)}><X size={14}/></button>
+                          </>
                         ) : (
-                          <><button className="btn btn-ghost" style={{ color:'var(--blue)', padding:'0.2rem' }} title="Edit" onClick={() => { setEditingAtt(r); setEditAttTime(new Date(r.scan_time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})); setEditAttType(r.type) }}><Pencil size={13}/></button><button className="btn btn-ghost" style={{ color:'var(--red)', padding:'0.2rem' }} title="Delete" onClick={() => deleteAttRecord(r)}><Trash2 size={13}/></button></>
+                          <>
+                            <button className="btn btn-ghost" style={{ color:'var(--blue)', padding:'0.2rem' }} title="Edit"
+                              onClick={() => { setEditingAtt(r); setEditAttTime(new Date(r.scan_time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})); setEditAttType(r.type) }}>
+                              <Pencil size={13}/>
+                            </button>
+                            <button className="btn btn-ghost" style={{ color:'var(--red)', padding:'0.2rem' }} title="Delete"
+                              onClick={() => deleteAttRecord(r)}>
+                              <Trash2 size={13}/>
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
@@ -554,7 +686,7 @@ export default function SuperAdminPage() {
         </div>
       )}
 
-      {/* REPORTS */}
+      {/* ── REPORTS ── */}
       {tab === 'reports' && (
         <div>
           <div className="reports-header">
@@ -575,11 +707,12 @@ export default function SuperAdminPage() {
         </div>
       )}
 
-      {/* ADD USER MODAL */}
+      {/* ── ADD USER MODAL ── */}
       {showAddUser && (
         <div className="overlay" onClick={() => setShowAddUser(false)}>
           <div className="overlay-sheet" style={{ maxHeight:'90vh', overflowY:'auto' }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', marginBottom:'1.5rem' }}>Add New User</h3>
+            <h3 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', marginBottom:'0.5rem' }}>Add New User</h3>
+            <p className="text-muted text-xs mb-3">Runs via a secure server-side function with the service role key.</p>
             <div className="mb-2"><label className="label">Full Name</label><input className="input" placeholder="Ravi Kumar" value={newUser.name} onChange={e => setNewUser({...newUser, name:e.target.value})}/></div>
             <div className="mb-2"><label className="label">Badge Number</label><input className="input" placeholder="FB5978GA0001" style={{ textTransform:'uppercase' }} value={newUser.badge_number} onChange={e => setNewUser({...newUser, badge_number:e.target.value})}/></div>
             <div className="mb-2"><label className="label">Email</label><input className="input" type="email" value={newUser.email} onChange={e => setNewUser({...newUser, email:e.target.value})}/></div>
@@ -587,23 +720,39 @@ export default function SuperAdminPage() {
               <label className="label">Password</label>
               <div style={{ position:'relative' }}>
                 <input className="input" type={showPw?'text':'password'} placeholder="Min 8 characters" value={newUser.password} onChange={e => setNewUser({...newUser, password:e.target.value})} style={{ paddingRight:'2.5rem' }}/>
-                <button type="button" onClick={() => setShowPw(v => !v)} style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', display:'flex' }}>{showPw ? <EyeOff size={16}/> : <Eye size={16}/>}</button>
+                <button type="button" onClick={() => setShowPw(v => !v)} style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', display:'flex' }}>
+                  {showPw ? <EyeOff size={16}/> : <Eye size={16}/>}
+                </button>
               </div>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem', marginBottom:'1rem' }}>
-              <div><label className="label">Role</label><select className="input" value={newUser.role} onChange={e => setNewUser({...newUser, role:e.target.value})}><option value="centre_user">Centre User</option><option value="admin">Admin</option></select></div>
-              <div><label className="label">Centre</label><select className="input" value={newUser.centre} onChange={e => setNewUser({...newUser, centre:e.target.value})}>{PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}{centres.filter(c => c.parent_centre).map(c => <option key={c.centre_name} value={c.centre_name}>{c.centre_name}</option>)}</select></div>
+              <div><label className="label">Role</label>
+                <select className="input" value={newUser.role} onChange={e => setNewUser({...newUser, role:e.target.value})}>
+                  <option value="sc_sp_user">SC_SP USER</option>
+                  <option value="centre_user">CENTRE USER</option>
+                </select>
+              </div>
+              <div><label className="label">Centre</label>
+                <select className="input" value={newUser.centre} onChange={e => setNewUser({...newUser, centre:e.target.value})}>
+                  {PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}
+                  {centres.filter(c => c.parent_centre).map(c => <option key={c.centre_name} value={c.centre_name}>{c.centre_name}</option>)}
+                </select>
+              </div>
             </div>
-            {newUser.role===ROLES.ADMIN && <div className="super-admin-note mb-2">Admin governs <strong>{newUser.centre}</strong> and all its sub-centres.</div>}
+            {newUser.role === ROLES.CENTRE_USER && (
+              <div className="super-admin-note mb-2">Centre User governs <strong>{newUser.centre}</strong> and all its sub-centres.</div>
+            )}
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.75rem', marginTop:'1.5rem' }}>
               <button className="btn btn-outline btn-full" onClick={() => setShowAddUser(false)}>Cancel</button>
-              <button className="btn btn-gold btn-full" onClick={createUser} disabled={saving}>{saving?'Creating…':'Create User'}</button>
+              <button className="btn btn-gold btn-full" onClick={createUser} disabled={saving}>
+                {saving ? 'Creating…' : 'Create User'}
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ADD SEWADAR MODAL */}
+      {/* ── ADD SEWADAR MODAL ── */}
       {showAddSewadar && (
         <div className="overlay" onClick={() => setShowAddSewadar(false)}>
           <div className="overlay-sheet" style={{ maxHeight:'90vh', overflowY:'auto' }} onClick={e => e.stopPropagation()}>
@@ -627,7 +776,7 @@ export default function SuperAdminPage() {
         </div>
       )}
 
-      {/* ADD JATHA CENTRE MODAL */}
+      {/* ── ADD JATHA CENTRE MODAL ── */}
       {showAddJatha && (
         <div className="overlay" onClick={() => setShowAddJatha(false)}>
           <div className="overlay-sheet" onClick={e => e.stopPropagation()}>

@@ -66,9 +66,9 @@ function AppLayout() {
     </div>
   )
 
+  const isScSpUser = profile.role === ROLES.SC_SP_USER
   const isCentreUser = profile.role === ROLES.CENTRE_USER
-  const isAdmin = profile.role === ROLES.ADMIN
-  const isSuperAdmin = profile.role === ROLES.SUPER_ADMIN
+  const isAreaSecretary = profile.role === ROLES.AREA_SECRETARY
 
   const navItems = [
     { path: '/scan', label: 'Scan', icon: Scan },
@@ -76,13 +76,13 @@ function AppLayout() {
     { path: '/records', label: 'Records', icon: FileText },
     { path: '/jatha', label: 'Jatha', icon: Plane },
     { path: '/flags', label: 'Flags', icon: Flag },
-    ...(!isCentreUser ? [{ path: '/admin', label: 'History', icon: BookOpen }] : []),
-    ...(!isCentreUser ? [{ path: '/reports', label: 'Excel', icon: Shield }] : []),
-    ...(isSuperAdmin ? [{ path: '/super-admin', label: 'Control', icon: Shield }] : []),
+    ...(!isScSpUser ? [{ path: '/admin', label: 'History', icon: BookOpen }] : []),
+    ...(!isScSpUser ? [{ path: '/reports', label: 'Excel', icon: Shield }] : []),
+    ...(isAreaSecretary ? [{ path: '/super-admin', label: 'Control', icon: Shield }] : []),
     { path: '/profile', label: 'Profile', icon: User },
   ]
 
-  const rolePill = isSuperAdmin ? 'SUPER ADMIN' : isAdmin ? 'ADMIN' : 'CENTRE USER'
+  const rolePill = isAreaSecretary ? 'AREA SECRETARY' : isCentreUser ? 'CENTRE USER' : 'SC_SP USER'
 
   return (
     <div>

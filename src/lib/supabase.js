@@ -72,7 +72,7 @@ export const JATHA_TYPE_LABEL = {
 }
 
 export async function getCentreScope(centreName, role) {
-  if (role === ROLES.SUPER_ADMIN) return null
+  if (role === ROLES.AREA_SECRETARY) return null
   const { data } = await supabase
     .from('centres')
     .select('centre_name, parent_centre')
@@ -82,8 +82,8 @@ export async function getCentreScope(centreName, role) {
 
 export async function getViewableCentres(profile) {
   if (!profile) return []
-  if (profile.role === ROLES.SUPER_ADMIN) return null
-  if (profile.role === ROLES.ADMIN) return getCentreScope(profile.centre, ROLES.ADMIN)
+  if (profile.role === ROLES.AREA_SECRETARY) return null
+  if (profile.role === ROLES.CENTRE_USER) return getCentreScope(profile.centre, ROLES.CENTRE_USER)
   return [profile.centre]
 }
 
@@ -98,9 +98,9 @@ export function getDistanceMetres(lat1, lon1, lat2, lon2) {
 }
 
 export const ROLES = {
-  SUPER_ADMIN: 'super_admin',
-  ADMIN: 'admin',
-  CENTRE_USER: 'centre_user'
+  AREA_SECRETARY: 'area_secretary',
+  CENTRE_USER: 'centre_user',
+  SC_SP_USER: 'sc_sp_user'
 }
 
 export const FLAG_TYPES = [
