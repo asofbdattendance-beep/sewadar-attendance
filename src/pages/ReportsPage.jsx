@@ -22,9 +22,9 @@ export default function ReportsPage() {
   const [centres, setCentres] = useState([])
   const [centresLoaded, setCentresLoaded] = useState(false)
 
-  const isAreaSecretary = profile?.role === ROLES.AREA_SECRETARY
+  const isAso = profile?.role === ROLES.ASO
   const isCentreUser   = profile?.role === ROLES.CENTRE_USER
-  const isAdminOrAbove = isAreaSecretary || isCentreUser
+  const isAdminOrAbove = isAso || isCentreUser
 
   if (!isAdminOrAbove) return (
     <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
@@ -52,7 +52,7 @@ export default function ReportsPage() {
   }
 
   async function getCentreNames() {
-    if (isAreaSecretary && !centreFilter) return null  // no filter = all
+    if (isAso && !centreFilter) return null  // no filter = all
     if (centreFilter) return [centreFilter]
     if (isCentreUser) {
       const { data } = await supabase.from('centres').select('centre_name')
@@ -297,7 +297,7 @@ export default function ReportsPage() {
           <div onClick={ensureCentres}>
             <label className="label" style={{ marginBottom:'0.3rem' }}>Centre</label>
             <select className="input" value={centreFilter} onChange={e => setCentreFilter(e.target.value)} style={{ minWidth:160 }}>
-              <option value="">{isAreaSecretary ? 'All Centres' : 'My Centres'}</option>
+              <option value="">{isAso ? 'All Centres' : 'My Centres'}</option>
               {centres.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>

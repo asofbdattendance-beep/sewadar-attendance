@@ -68,7 +68,7 @@ function AppLayout() {
 
   const isScSpUser = profile.role === ROLES.SC_SP_USER
   const isCentreUser = profile.role === ROLES.CENTRE_USER
-  const isAreaSecretary = profile.role === ROLES.AREA_SECRETARY
+  const isAso = profile.role === ROLES.ASO
 
   const navItems = [
     { path: '/scan', label: 'Scan', icon: Scan },
@@ -78,11 +78,11 @@ function AppLayout() {
     { path: '/flags', label: 'Flags', icon: Flag },
     ...(!isScSpUser ? [{ path: '/admin', label: 'History', icon: BookOpen }] : []),
     ...(!isScSpUser ? [{ path: '/reports', label: 'Excel', icon: Shield }] : []),
-    ...(isAreaSecretary ? [{ path: '/super-admin', label: 'Control', icon: Shield }] : []),
+    ...(isAso ? [{ path: '/super-admin', label: 'Control', icon: Shield }] : []),
     { path: '/profile', label: 'Profile', icon: User },
   ]
 
-  const rolePill = isAreaSecretary ? 'AREA SECRETARY' : isCentreUser ? 'CENTRE USER' : 'SC_SP USER'
+  const rolePill = isAso ? 'ASO' : isCentreUser ? 'CENTRE USER' : 'SC_SP USER'
 
   return (
     <div>

@@ -21,9 +21,9 @@ export default function DashboardPage() {
   const [centreFilter, setCentreFilter] = useState('')
   const [viewableCentres, setViewableCentres] = useState([])
 
-  const isAreaSecretary = profile?.role === ROLES.AREA_SECRETARY
+  const isAso = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE_USER
-  const isAdminOrAbove = isAreaSecretary || isCentreUser
+  const isAdminOrAbove = isAso || isCentreUser
 
   useEffect(() => {
     if (isAdminOrAbove) fetchViewableCentres()
@@ -41,7 +41,7 @@ export default function DashboardPage() {
   }, [profile, dateFrom, dateTo, centreFilter])
 
   async function fetchViewableCentres() {
-    if (isAreaSecretary) {
+    if (isAso) {
       const { data } = await supabase.from('centres').select('centre_name').order('centre_name')
       setViewableCentres(data?.map(c => c.centre_name) || [])
     } else if (isCentreUser) {
@@ -62,7 +62,7 @@ export default function DashboardPage() {
       .gte('date_from', firstDay)
       .lte('date_from', lastDay)
 
-    if (!isAreaSecretary && isCentreUser) {
+    if (!isAso && isCentreUser) {
       const { data: childData } = await supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       const centreNames = childData?.map(c => c.centre_name) || [profile.centre]

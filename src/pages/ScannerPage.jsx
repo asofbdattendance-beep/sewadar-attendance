@@ -167,7 +167,7 @@ export default function ScannerPage({ isOnline }) {
 
     const allowedTypes = computeAllowedTypes(todayEntries)
     const scanCount = todayEntries.length
-    const isAreaSecretary = profile?.role === ROLES.AREA_SECRETARY
+    const isAso = profile?.role === ROLES.ASO
     const isCentreUserRole = profile?.role === ROLES.CENTRE_USER
     const isSameCentre = found.centre === profile?.centre
     const isChildCentre = isCentreUserRole && childCentres.includes(found.centre)
@@ -183,10 +183,10 @@ export default function ScannerPage({ isOnline }) {
       }
     }
 
-    if (!isAreaSecretary && !isCentreUserRole && !isSameCentre && !isException) {
+    if (!isAso && !isCentreUserRole && !isSameCentre && !isException) {
       setPopupState({ type: 'auth_fail', sewadar: found, badge: b }); setProcessing(false); return
     }
-    if (!isAreaSecretary && !isCentreUserRole && !isSameCentre && isException) {
+    if (!isAso && !isCentreUserRole && !isSameCentre && isException) {
       setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount }); setProcessing(false); return
     }
 
@@ -238,7 +238,7 @@ export default function ScannerPage({ isOnline }) {
     if (scannerRef.current) scannerRef.current.resume()
   }
 
-  const isAreaSecretary = profile?.role === ROLES.AREA_SECRETARY
+  const isAso = profile?.role === ROLES.ASO
 
   return (
     <div className="page pb-nav">
@@ -271,7 +271,7 @@ export default function ScannerPage({ isOnline }) {
       <div className="scanner-live-strip">
         <span className="pulse-dot green" />
         <span className="scanner-live-count">{todayCount} IN today</span>
-        {isAreaSecretary && (
+        {isAso && (
           <button className="scanner-manual-btn" onClick={() => setManualModal(true)}>
             <PenLine size={13} /> Manual
           </button>
@@ -312,7 +312,7 @@ export default function ScannerPage({ isOnline }) {
             )}
 
             {popupState.type === 'recent' && (
-              <RecentPopup popupState={popupState} onOverride={(t) => markAttendance(t, 'duplicate_override')} onClose={closePopup} isAreaSecretary={isAreaSecretary} />
+              <RecentPopup popupState={popupState} onOverride={(t) => markAttendance(t, 'duplicate_override')} onClose={closePopup} isAso={isAso} />
             )}
 
             {popupState.type === 'not_found' && (
@@ -442,7 +442,7 @@ function SewadarFoundCard({ sewadar, allowedTypes, scanCount, onMark, onClose })
   )
 }
 
-function RecentPopup({ popupState, onOverride, onClose, isAreaSecretary }) {
+function RecentPopup({ popupState, onOverride, onClose, isAso }) {
   const last = popupState.todayEntries?.length > 0 ? popupState.todayEntries[popupState.todayEntries.length - 1] : null
   const overrideTypes = last ? (last.type === 'IN' ? ['OUT'] : ['IN']) : ['IN', 'OUT']
   return (
@@ -455,9 +455,9 @@ function RecentPopup({ popupState, onOverride, onClose, isAreaSecretary }) {
         <span>{new Date(popupState.lastEntry.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>
       </div>
       <div className="recent-msg">Scanned within 2 minutes</div>
-      {isAreaSecretary && (
+      {isAso && (
         <div style={{ marginTop: '0.75rem', borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
-          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem', textAlign: 'center' }}>Area Secretary Override</p>
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem', textAlign: 'center' }}>ASO Override</p>
           <div className="popup-actions" style={{ marginTop: 0 }}>
             {overrideTypes.includes('IN') && <button className="btn-in" style={{ fontSize: '0.85rem' }} onClick={() => onOverride('IN')}>Force IN</button>}
             {overrideTypes.includes('OUT') && <button className="btn-out" style={{ fontSize: '0.85rem' }} onClick={() => onOverride('OUT')}>Force OUT</button>}

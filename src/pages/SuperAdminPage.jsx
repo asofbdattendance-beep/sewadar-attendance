@@ -1,5 +1,5 @@
 // src/pages/SuperAdminPage.jsx
-// AREA_SECRETARY ONLY
+// ASO ONLY
 // KEY FIXES:
 //   1. createUser() now calls the Edge Function "create-user" (service-role auth, browser-safe)
 //   2. deleteAttRecord / deleteUser now check both error AND count===0 for silent RLS blocks
@@ -86,7 +86,7 @@ export default function SuperAdminPage() {
   useEffect(() => { if (tab === 'jatha_centres') fetchJathaCentres() }, [jathaTypeFilter])
 
   // ── Guard ──
-  if (profile?.role !== ROLES.AREA_SECRETARY) return (
+  if (profile?.role !== ROLES.ASO) return (
     <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
   )
 
@@ -337,8 +337,8 @@ export default function SuperAdminPage() {
     children: centres.filter(c => c.parent_centre === p),
     config: centres.find(c => c.centre_name === p)
   }))
-  const roleColor = { area_secretary: 'var(--gold)', centre_user: 'var(--blue)', sc_sp_user: 'var(--green)' }
-  const roleName  = { area_secretary: 'AREA SECRETARY', centre_user: 'CENTRE USER', sc_sp_user: 'SC_SP USER' }
+  const roleColor = { aso: 'var(--gold)', centre_user: 'var(--blue)', sc_sp_user: 'var(--green)' }
+  const roleName  = { aso: 'ASO', centre_user: 'CENTRE USER', sc_sp_user: 'SC_SP USER' }
 
   const TAB_BTN = (key, label, Icon) => (
     <button key={key} onClick={() => setTab(key)}
@@ -415,7 +415,7 @@ export default function SuperAdminPage() {
                       {u.is_active ? <ToggleRight size={22} color="var(--green)" /> : <ToggleLeft size={22} color="var(--text-muted)" />}
                     </button></td>
                     <td>
-                      {u.role !== ROLES.AREA_SECRETARY && (
+                      {u.role !== ROLES.ASO && (
                         <button className="btn btn-ghost" style={{ padding:'0.25rem', color:'var(--red)' }} onClick={() => deleteUser(u)}>
                           <Trash2 size={15} />
                         </button>
@@ -728,7 +728,7 @@ export default function SuperAdminPage() {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem', marginBottom:'1rem' }}>
               <div><label className="label">Role</label>
                 <select className="input" value={newUser.role} onChange={e => setNewUser({...newUser, role:e.target.value})}>
-                  <option value="area_secretary">AREA SECRETARY</option>
+                  <option value="aso">ASO</option>
                   <option value="centre_user">CENTRE USER</option>
                   <option value="sc_sp_user">SC_SP USER</option>
                 </select>
@@ -740,8 +740,8 @@ export default function SuperAdminPage() {
                 </select>
               </div>
             </div>
-            {newUser.role === ROLES.AREA_SECRETARY && (
-              <div className="super-admin-note mb-2">Area Secretary has access to ALL centres and full system control.</div>
+            {newUser.role === ROLES.ASO && (
+              <div className="super-admin-note mb-2">ASO has access to ALL centres and full system control.</div>
             )}
             {newUser.role === ROLES.CENTRE_USER && (
               <div className="super-admin-note mb-2">Centre User governs <strong>{newUser.centre}</strong> and all its sub-centres.</div>

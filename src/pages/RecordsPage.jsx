@@ -19,8 +19,8 @@ export default function RecordsPage() {
   const [flagSuccess, setFlagSuccess] = useState(false)
   const [deleteMsg, setDeleteMsg] = useState('')
 
-  const isAdmin = [ROLES.AREA_SECRETARY, ROLES.CENTRE_USER].includes(profile?.role)
-  const isAreaSecretary = profile?.role === ROLES.AREA_SECRETARY
+  const isAdmin = [ROLES.ASO, ROLES.CENTRE_USER].includes(profile?.role)
+  const isAso = profile?.role === ROLES.ASO
 
   useEffect(() => {
     fetchRecords()
@@ -28,7 +28,7 @@ export default function RecordsPage() {
   }, [dateFilter, centreFilter])
 
   async function fetchCentres() {
-    if (profile?.role === ROLES.AREA_SECRETARY) {
+    if (profile?.role === ROLES.ASO) {
       const { data } = await supabase.from('centres').select('centre_name').order('centre_name')
       setCentres(data?.map(c => c.centre_name) || [])
     } else if (profile?.role === ROLES.CENTRE_USER) {
@@ -232,7 +232,7 @@ export default function RecordsPage() {
                 <th>IN</th>
                 <th>OUT</th>
                 <th>Status</th>
-                <th style={{ width: isAreaSecretary ? 80 : 36 }}></th>
+                <th style={{ width: isAso ? 80 : 36 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -259,13 +259,13 @@ export default function RecordsPage() {
                         onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}>
                         <Flag size={13}/>
                       </button>
-                      {isAreaSecretary && r.in_id && (
+                      {isAso && r.in_id && (
                         <button className="records-delete-btn" title="Delete IN record"
                           onClick={() => deleteRecord(r.in_id, r.badge_number, 'IN')}>
                           <Trash2 size={12}/><span style={{ fontSize:'0.65rem', marginLeft:1 }}>IN</span>
                         </button>
                       )}
-                      {isAreaSecretary && r.out_id && (
+                      {isAso && r.out_id && (
                         <button className="records-delete-btn" title="Delete OUT record"
                           onClick={() => deleteRecord(r.out_id, r.badge_number, 'OUT')}>
                           <Trash2 size={12}/><span style={{ fontSize:'0.65rem', marginLeft:1 }}>OUT</span>

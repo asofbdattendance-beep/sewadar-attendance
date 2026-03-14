@@ -45,16 +45,16 @@ serve(async (req) => {
       )
     }
 
-    // Check if caller is area_secretary
+    // Check if caller is ASO
     const { data: callerProfile, error: roleError } = await callerClient
       .from("users")
       .select("role")
       .eq("auth_id", user.id)
       .maybeSingle()
 
-    if (roleError || callerProfile?.role !== "area_secretary") {
+    if (roleError || callerProfile?.role !== "aso") {
       return new Response(
-        JSON.stringify({ error: "Forbidden: area_secretary only" }),
+        JSON.stringify({ error: "Forbidden: ASO only" }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       )
     }
