@@ -99,7 +99,7 @@ export default function ScannerPage({ isOnline }) {
       else if (g === 'FEMALE' || g === 'F') female++
     })
     setLiveStats({ total: inside.length, male, female })
-  }  }
+  }
 
   useEffect(() => {
     setPendingSync(getOfflineQueueCount())
@@ -563,6 +563,7 @@ export default function ScannerPage({ isOnline }) {
       )}
     </div>
   )
+}
 
 function SewadarFoundCard({ sewadar, allowedTypes, scanCount, onMark, onClose }) {
   return (
