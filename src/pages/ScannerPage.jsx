@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import { lookupBadgeOffline, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getCacheAge, getCachedSewadars } from '../lib/offline'
+import { lookupBadgeOffline, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getCacheAge } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, RefreshCw, Activity, PenLine } from 'lucide-react'
@@ -22,10 +22,12 @@ export default function ScannerPage({ isOnline }) {
   const [manualSearch, setManualSearch] = useState('')
   const [manualResults, setManualResults] = useState([])
   const [manualSearching, setManualSearching] = useState(false)
+  const [manualLog, setManualLog] = useState([]) // log of manual entries this session
   const soundEnabled = localStorage.getItem('sa_sound') !== 'false'
 
   const scannerRef = useRef(null)
   const lastScanRef = useRef({ badge: null, time: 0 })
+  const manualEntryRef = useRef(false)
   const watchIdRef = useRef(null)
   const audioCtxRef = useRef(null)
 
@@ -65,39 +67,39 @@ export default function ScannerPage({ isOnline }) {
   }, [profile?.centre, profile?.role])
 
   async function fetchTodayCount() {
-    // Guard: profile must be loaded before we can scope the query correctly
     if (!profile?.centre && profile?.role !== ROLES.ASO) return
-    const today = new Date(); today.setHours(0, 0, 0, 0) // local midnight → correct for IST
+    const today = new Date(); today.setHours(0, 0, 0, 0)
     let q = supabase.from('attendance')
-      .select('badge_number, type, scan_time, centre, sewadar_name')
+      .select('badge_number, type, scan_time, centre')
       .gte('scan_time', today.toISOString())
-    // Scope to centre for non-ASO users
-    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
-      q = q.eq('centre', profile.centre)
-    } else if (profile?.role === ROLES.CENTRE_USER && profile?.centre) {
-      q = q.eq('centre', profile.centre)
-    }
+    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) q = q.eq('centre', profile.centre)
+    else if (profile?.role === ROLES.CENTRE_USER && profile?.centre) q = q.eq('centre', profile.centre)
     const { data, error } = await q
     if (error || !data) return
-    const ins = data.filter(r => r.type === 'IN')
-    setTodayCount(ins.length)
-    // Who is currently inside = badge whose latest scan today is IN
+    setTodayCount(data.filter(r => r.type === 'IN').length)
     const latest = {}
     data.forEach(r => {
       if (!latest[r.badge_number] || new Date(r.scan_time) > new Date(latest[r.badge_number].scan_time))
         latest[r.badge_number] = r
     })
     const inside = Object.values(latest).filter(r => r.type === 'IN')
-    const sewadars = getCachedSewadars() || []
+    if (inside.length === 0) { setLiveStats({ total: 0, male: 0, female: 0 }); return }
+    // Fetch gender from sewadars directly — separate query, no FK join needed
+    const badgeList = inside.map(r => r.badge_number)
+    const { data: sewadarData } = await supabase
+      .from('sewadars')
+      .select('badge_number, gender')
+      .in('badge_number', badgeList)
+    const genderMap = {}
+    ;(sewadarData || []).forEach(s => { genderMap[s.badge_number] = (s.gender || '').toUpperCase().trim() })
     let male = 0, female = 0
     inside.forEach(r => {
-      const s = sewadars.find(sw => sw.badge_number === r.badge_number)
-      const g = (s?.gender || '').toUpperCase()
+      const g = genderMap[r.badge_number] || ''
       if (g === 'MALE' || g === 'M') male++
       else if (g === 'FEMALE' || g === 'F') female++
     })
     setLiveStats({ total: inside.length, male, female })
-  }
+  }  }
 
   useEffect(() => {
     setPendingSync(getOfflineQueueCount())
@@ -159,6 +161,7 @@ export default function ScannerPage({ isOnline }) {
 
   async function selectManualSewadar(sewadar) {
     setManualModal(false); setManualSearch(''); setManualResults([])
+    manualEntryRef.current = true  // flag this as manual entry
     await processSewadar(sewadar)
   }
 
@@ -266,6 +269,19 @@ export default function ScannerPage({ isOnline }) {
     }
     // Show success immediately
     playBeep(type)
+    // If this was a manual entry, add to manual log
+    if (manualEntryRef.current) {
+      const entry = {
+        id: Date.now(),
+        badge: popupState.sewadar.badge_number,
+        name: popupState.sewadar.sewadar_name,
+        type,
+        time: scanTime,
+        by: profile.name
+      }
+      setManualLog(prev => [entry, ...prev].slice(0, 20))
+      manualEntryRef.current = false
+    }
     // Optimistically prepend to recent scans feed (DB write is fire-and-forget)
     setRecentScans(prev => [{
       id: Date.now(), badge_number: record.badge_number,
@@ -360,6 +376,32 @@ export default function ScannerPage({ isOnline }) {
       </div>
 
       <BarcodeScanner ref={scannerRef} onScan={handleScan} />
+
+      {/* Manual entry log */}
+      {manualLog.length > 0 && (
+        <div style={{ margin: '0.85rem 0 0', padding: '0 0.1rem' }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#b45309', marginBottom: '0.45rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <PenLine size={11} /> Manual Entries This Session
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+            {manualLog.map(m => (
+              <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'rgba(180,100,0,0.06)', border: '1px solid rgba(180,100,0,0.2)', borderRadius: 8, padding: '0.4rem 0.7rem' }}>
+                <span style={{ width: 32, height: 20, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 800, background: m.type === 'IN' ? 'rgba(76,175,125,0.15)' : 'rgba(224,92,92,0.15)', color: m.type === 'IN' ? 'var(--green)' : 'var(--red)', flexShrink: 0 }}>{m.type}</span>
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <div style={{ fontWeight: 600, fontSize: '0.82rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.name}</div>
+                  <div style={{ fontFamily: 'monospace', fontSize: '0.68rem', color: 'var(--gold)' }}>{m.badge}</div>
+                </div>
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    {new Date(m.time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: '#b45309' }}>by {m.by}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Last 5 scans mini feed */}
       {recentScans.length > 0 && (
@@ -521,7 +563,6 @@ export default function ScannerPage({ isOnline }) {
       )}
     </div>
   )
-}
 
 function SewadarFoundCard({ sewadar, allowedTypes, scanCount, onMark, onClose }) {
   return (
