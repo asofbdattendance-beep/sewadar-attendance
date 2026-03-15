@@ -345,10 +345,10 @@ export default function SuperAdminPage() {
     // FIX: use setHours for correct IST→UTC conversion
     const attStart = new Date(attDate); attStart.setHours(0, 0, 0, 0)
     const attEnd   = new Date(attDate); attEnd.setHours(23, 59, 59, 999)
-    let q = supabase.from('attendance').select('*')
+    let q = supabase.from('attendance').select('id,badge_number,sewadar_name,centre,department,type,scan_time,scanner_name,scanner_badge,scanner_centre')
       .gte('scan_time', attStart.toISOString())
       .lte('scan_time', attEnd.toISOString())
-      .order('scan_time', { ascending: false }).limit(500)
+      .order('scan_time', { ascending: false }).limit(1000)
     if (attSearch.length >= 2) q = q.or(`sewadar_name.ilike.%${attSearch}%,badge_number.ilike.%${attSearch.toUpperCase()}%`)
     if (attCentreFilter) q = q.eq('centre', attCentreFilter)
     const { data, error } = await q

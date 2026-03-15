@@ -24,7 +24,8 @@ function AttendanceTab() {
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
-  const [dateFilter, setDateFilter] = useState(new Date().toISOString().split('T')[0]) // default today
+  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0])
+  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0])
   const [centreFilter, setCentreFilter] = useState('')
   const [centres, setCentres] = useState([])
   const [flagModal, setFlagModal] = useState(null)
@@ -41,7 +42,7 @@ function AttendanceTab() {
   useEffect(() => {
     fetchRecords()
     if (isAdmin) fetchCentres()
-  }, [dateFilter, centreFilter])
+  }, [dateFrom, dateTo, centreFilter])
 
   async function fetchCentres() {
     if (profile?.role === ROLES.ASO) {
@@ -56,13 +57,12 @@ function AttendanceTab() {
 
   async function fetchRecords() {
     setLoading(true)
-    let query = supabase.from('attendance').select('*').order('scan_time', { ascending: false })
+    let query = supabase.from('attendance').select('id,badge_number,sewadar_name,centre,department,type,scan_time,scanner_name').order('scan_time', { ascending: false })
 
-    // Always scope to a date to avoid cross-day IN/OUT mismatch
-    const activeDate = dateFilter || new Date().toISOString().split('T')[0]
-    const start = new Date(activeDate + 'T00:00:00')
-    const end = new Date(activeDate + 'T23:59:59.999')
-    query = query.gte('scan_time', start.toISOString()).lte('scan_time', end.toISOString())
+    // Date range — correct IST timezone via setHours
+    const startMs = new Date(dateFrom).setHours(0, 0, 0, 0)
+    const endMs   = new Date(dateTo).setHours(23, 59, 59, 999)
+    query = query.gte('scan_time', new Date(startMs).toISOString()).lte('scan_time', new Date(endMs).toISOString())
 
     if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
       query = query.eq('centre', profile.centre)
@@ -75,7 +75,7 @@ function AttendanceTab() {
       query = query.eq('centre', centreFilter)
     }
 
-    const { data } = await query.limit(500)
+    const { data } = await query.limit(2000)
 
     const grouped = {}
     data?.forEach(r => {
@@ -141,7 +141,7 @@ function AttendanceTab() {
     ].join('\n')
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = `attendance_${dateFilter || 'all'}.csv`; a.click()
+    a.download = `attendance_${dateFrom}_to_${dateTo}.csv`; a.click()
   }
 
   async function deleteRecord(id, badge, type) {
@@ -177,6 +177,7 @@ function AttendanceTab() {
   const todayStr = new Date().toISOString().split('T')[0]
   const todayCount = records.filter(r => r.date === todayStr).length
   const inOnlyCount = records.filter(r => r.in_time && !r.out_time).length
+  const outOnlyCount = records.filter(r => !r.in_time && r.out_time).length
 
   return (
     <div>
@@ -189,7 +190,13 @@ function AttendanceTab() {
         </div>
         {inOnlyCount > 0 && (
           <div style={{ background: 'rgba(224,92,92,0.08)', border: '1px solid rgba(224,92,92,0.25)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem', color: 'var(--red)' }}>
-            {inOnlyCount} IN-only (no OUT)
+            {inOnlyCount} IN-only (no OUT yet)
+          </div>
+        )}
+        {outOnlyCount > 0 && (
+          <div style={{ background: 'rgba(180,100,0,0.08)', border: '1px solid rgba(180,100,0,0.25)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem', color: '#b45309' }}
+            title="These sewadars scanned IN on a previous date">
+            {outOnlyCount} OUT-only · IN was on a different date
           </div>
         )}
       </div>
@@ -203,12 +210,9 @@ function AttendanceTab() {
         </div>
         <div className="filter-group">
           <Calendar size={15} />
-          <input type="date" value={dateFilter} onChange={e => setDateFilter(e.target.value)} />
-          {dateFilter && (
-            <button onClick={() => setDateFilter('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
-              <X size={14} />
-            </button>
-          )}
+          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', padding: '0 2px' }}>→</span>
+          <input type="date" value={dateTo} min={dateFrom} onChange={e => setDateTo(e.target.value)} />
         </div>
         {isAdmin && centres.length > 1 && (
           <div className="filter-group">
@@ -240,7 +244,7 @@ function AttendanceTab() {
       {loading ? (
         <div className="text-center" style={{ padding: '3rem 0' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
       ) : (
-        <div className="records-table-wrap">
+        <div className="records-table-wrap records-table-responsive">
           <table className="records-table">
             <thead>
               <tr>
