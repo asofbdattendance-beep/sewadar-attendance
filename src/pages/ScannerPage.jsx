@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import { lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getAttendanceCache, getCacheAge, getCachedSewadars } from '../lib/offline'
+import { lookupBadgeOffline, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getCacheAge, getCachedSewadars } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, RefreshCw, Activity, PenLine } from 'lucide-react'
@@ -65,17 +65,23 @@ export default function ScannerPage({ isOnline }) {
   }, [profile?.centre, profile?.role])
 
   async function fetchTodayCount() {
-    const today = new Date(); today.setHours(0, 0, 0, 0)
-    // Fetch all today's scans to compute live stats accurately from DB
+    // Guard: profile must be loaded before we can scope the query correctly
+    if (!profile?.centre && profile?.role !== ROLES.ASO) return
+    const today = new Date(); today.setHours(0, 0, 0, 0) // local midnight → correct for IST
     let q = supabase.from('attendance')
-      .select('badge_number, type, scan_time, centre')
+      .select('badge_number, type, scan_time, centre, sewadar_name')
       .gte('scan_time', today.toISOString())
-    if (profile?.role !== ROLES.ASO && profile?.centre) q = q.eq('centre', profile.centre)
-    const { data } = await q
-    if (!data) return
+    // Scope to centre for non-ASO users
+    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
+      q = q.eq('centre', profile.centre)
+    } else if (profile?.role === ROLES.CENTRE_USER && profile?.centre) {
+      q = q.eq('centre', profile.centre)
+    }
+    const { data, error } = await q
+    if (error || !data) return
     const ins = data.filter(r => r.type === 'IN')
     setTodayCount(ins.length)
-    // Compute who is currently inside (latest scan per badge = IN)
+    // Who is currently inside = badge whose latest scan today is IN
     const latest = {}
     data.forEach(r => {
       if (!latest[r.badge_number] || new Date(r.scan_time) > new Date(latest[r.badge_number].scan_time))
@@ -96,10 +102,27 @@ export default function ScannerPage({ isOnline }) {
   useEffect(() => {
     setPendingSync(getOfflineQueueCount())
     const id = setInterval(() => setPendingSync(getOfflineQueueCount()), 5000)
-    // Load initial recent scans from cache
-    // initial load — profile not yet available here, stats computed after first scan
     return () => clearInterval(id)
   }, [])
+
+  // Load recent scans from DB once profile is available
+  useEffect(() => {
+    if (!profile?.centre) return
+    fetchRecentScans()
+  }, [profile?.centre])
+
+  async function fetchRecentScans() {
+    if (!profile?.centre) return
+    const today = new Date(); today.setHours(0, 0, 0, 0)
+    let q = supabase.from('attendance')
+      .select('id,badge_number,sewadar_name,type,scan_time,centre,scanner_centre')
+      .gte('scan_time', today.toISOString())
+      .order('scan_time', { ascending: false })
+      .limit(5)
+    if (profile.role !== 'aso') q = q.eq('centre', profile.centre)
+    const { data } = await q
+    setRecentScans(data || [])
+  }
 
   async function handleManualSync() {
     if (!isOnline) return
@@ -241,30 +264,14 @@ export default function ScannerPage({ isOnline }) {
       longitude: userLocation?.lng || null,
       device_id: navigator.userAgent.slice(0, 50),
     }
-    // Show success immediately — DB write happens in background
-    addToAttendanceCache({ ...record, id: Date.now() })
-    const centreCache = getAttendanceCache().filter(r => !profile?.centre || r.scanner_centre === profile.centre || r.centre === profile.centre)
-    setRecentScans(centreCache.slice(0, 5))
-    // Live stats: sewadars currently inside (last scan is IN)
-    const todaySt = new Date().toISOString().split('T')[0]
-    const todayRecs = centreCache.filter(r => r.scan_time?.startsWith(todaySt))
-    const latestByBadge = {}
-    todayRecs.forEach(r => {
-      if (!latestByBadge[r.badge_number] || new Date(r.scan_time) > new Date(latestByBadge[r.badge_number].scan_time))
-        latestByBadge[r.badge_number] = r
-    })
-    const insideNow = Object.values(latestByBadge).filter(r => r.type === 'IN')
-    // Get gender from sewadar cache
-    const sewadars = getCachedSewadars() || []
-    let male = 0, female = 0
-    insideNow.forEach(r => {
-      const s = sewadars.find(sw => sw.badge_number === r.badge_number)
-      const g = (s?.gender || '').toUpperCase()
-      if (g === 'MALE' || g === 'M') male++
-      else if (g === 'FEMALE' || g === 'F') female++
-    })
-    setLiveStats({ total: insideNow.length, male, female })
+    // Show success immediately
     playBeep(type)
+    // Optimistically prepend to recent scans feed (DB write is fire-and-forget)
+    setRecentScans(prev => [{
+      id: Date.now(), badge_number: record.badge_number,
+      sewadar_name: record.sewadar_name, type, scan_time: scanTime,
+      centre: record.centre, scanner_centre: record.scanner_centre
+    }, ...prev].slice(0, 5))
     setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
     setTimeout(closePopup, 1200)
 
@@ -272,6 +279,7 @@ export default function ScannerPage({ isOnline }) {
     if (isOnline) {
       supabase.from('attendance').insert(record).then(({ error }) => {
         if (error) { console.warn('Insert failed, saving offline:', error.message); addToOfflineQueue(record) }
+        else { fetchTodayCount(); fetchRecentScans() }
       })
       supabase.from('logs').insert({
         user_badge: profile.badge_number,

@@ -52,10 +52,13 @@ export default function SuperAdminPage() {
   const [sewadarSearch, setSewadarSearch] = useState('')
   const [sewadarCentreFilter, setSewadarCentreFilter] = useState('')
   const [sewadarLoading, setSewadarLoading] = useState(false)
+  const [sewadarTotal, setSewadarTotal] = useState(0)
+  const [sewadarPage, setSewadarPage] = useState(0)
+  const SEWADAR_PAGE_SIZE = 100
   const [editingSewadar, setEditingSewadar] = useState(null)
   const [sewadarForm, setSewadarForm] = useState({})
   const [showAddSewadar, setShowAddSewadar] = useState(false)
-  const [newSewadar, setNewSewadar] = useState({ sewadar_name:'', badge_number:'', centre: PARENT_CENTRES[0], department:'', gender:'Male', age:'', father_husband_name:'' })
+  const [newSewadar, setNewSewadar] = useState({ sewadar_name:'', badge_number:'', centre: PARENT_CENTRES[0], department:'', gender:'Male', age:'', father_husband_name:'', badge_status:'Active' })
   const [attSearch, setAttSearch] = useState('')
   const [attDate, setAttDate] = useState(new Date().toISOString().split('T')[0])
   const [attRecords, setAttRecords] = useState([])
@@ -63,6 +66,7 @@ export default function SuperAdminPage() {
   const [editingAtt, setEditingAtt] = useState(null)
   const [editAttTime, setEditAttTime] = useState('')
   const [editAttType, setEditAttType] = useState('')
+  const [attCentreFilter, setAttCentreFilter] = useState('')
   // Jatha Centres
   const [jathaCentres, setJathaCentres] = useState([])
   const [jathaCentresLoading, setJathaCentresLoading] = useState(false)
@@ -75,13 +79,13 @@ export default function SuperAdminPage() {
   useEffect(() => {
     if (tab === 'users') fetchUsers()
     else if (tab === 'centres') fetchCentres()
-    else if (tab === 'reports') fetchReports()
-    else if (tab === 'sewadars') fetchSewadars()
+    else if (tab === 'sewadars') fetchSewadars(0)
     else if (tab === 'attendance') fetchAttendance()
     else if (tab === 'jatha_centres') fetchJathaCentres()
-  }, [tab, dateRange])
+    // reports only fetched on explicit button press
+  }, [tab])
 
-  useEffect(() => { if (tab === 'sewadars') fetchSewadars() }, [sewadarSearch, sewadarCentreFilter])
+  useEffect(() => { if (tab === 'sewadars') { setSewadarPage(0); fetchSewadars(0) } }, [sewadarSearch, sewadarCentreFilter])
   useEffect(() => { if (tab === 'attendance') fetchAttendance() }, [attDate, attSearch])
   useEffect(() => { if (tab === 'jatha_centres') fetchJathaCentres() }, [jathaTypeFilter])
 
@@ -256,12 +260,18 @@ export default function SuperAdminPage() {
   const exportLogs = () => dlCSV(['Time,Badge,Action,Details', ...reportData.logs.map(l => [new Date(l.timestamp).toLocaleString('en-IN'), l.user_badge, l.action, `"${l.details||''}"`].join(','))].join('\n'), 'logs_export.csv')
 
   // ── Sewadars ──
-  async function fetchSewadars() {
+  async function fetchSewadars(page = 0) {
     setSewadarLoading(true)
-    let q = supabase.from('sewadars').select('*').order('sewadar_name').limit(200)
+    const from = page * SEWADAR_PAGE_SIZE
+    const to = from + SEWADAR_PAGE_SIZE - 1
+    let q = supabase.from('sewadars').select('*', { count: 'exact' }).order('sewadar_name').range(from, to)
     if (sewadarSearch.length >= 2) q = q.or(`sewadar_name.ilike.%${sewadarSearch}%,badge_number.ilike.%${sewadarSearch.toUpperCase()}%,department.ilike.%${sewadarSearch}%`)
     if (sewadarCentreFilter) q = q.eq('centre', sewadarCentreFilter)
-    const { data } = await q; setSewadars(data || []); setSewadarLoading(false)
+    const { data, count } = await q
+    setSewadars(data || [])
+    setSewadarTotal(count || 0)
+    setSewadarPage(page)
+    setSewadarLoading(false)
   }
   async function saveSewadar() {
     const clean = {}
@@ -325,18 +335,22 @@ export default function SuperAdminPage() {
     await logAction(profile, 'CREATE_SEWADAR', `Created ${newSewadar.badge_number.toUpperCase()} ${newSewadar.sewadar_name}`)
     showMsg('✓ Sewadar created!')
     setShowAddSewadar(false)
-    setNewSewadar({ sewadar_name:'', badge_number:'', centre: PARENT_CENTRES[0], department:'', gender:'Male', age:'', father_husband_name:'' })
+    setNewSewadar({ sewadar_name:'', badge_number:'', centre: PARENT_CENTRES[0], department:'', gender:'Male', age:'', father_husband_name:'', badge_status:'Active' })
     fetchSewadars(); setSaving(false)
   }
 
   // ── Attendance correction ──
   async function fetchAttendance() {
     setAttLoading(true)
+    // FIX: use setHours for correct IST→UTC conversion
+    const attStart = new Date(attDate); attStart.setHours(0, 0, 0, 0)
+    const attEnd   = new Date(attDate); attEnd.setHours(23, 59, 59, 999)
     let q = supabase.from('attendance').select('*')
-      .gte('scan_time', new Date(attDate + 'T00:00:00').toISOString())
-      .lte('scan_time', new Date(attDate + 'T23:59:59.999').toISOString())
-      .order('scan_time', { ascending: false }).limit(300)
+      .gte('scan_time', attStart.toISOString())
+      .lte('scan_time', attEnd.toISOString())
+      .order('scan_time', { ascending: false }).limit(500)
     if (attSearch.length >= 2) q = q.or(`sewadar_name.ilike.%${attSearch}%,badge_number.ilike.%${attSearch.toUpperCase()}%`)
+    if (attCentreFilter) q = q.eq('centre', attCentreFilter)
     const { data, error } = await q
     if (error) {
       showMsg('✗ Failed to load attendance: ' + error.message)
@@ -570,10 +584,19 @@ export default function SuperAdminPage() {
             </select>
             <button className="btn btn-gold" onClick={() => setShowAddSewadar(true)}><PlusCircle size={15} /> Add</button>
           </div>
-          <p className="text-muted text-xs mb-2">{sewadars.length > 0 ? `${sewadars.length} results` : 'Type ≥2 chars or choose a centre to search'}</p>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.5rem' }}>
+            <p className="text-muted text-xs">{sewadarTotal > 0 ? `${sewadarTotal} total · showing ${sewadarPage * SEWADAR_PAGE_SIZE + 1}–${Math.min((sewadarPage + 1) * SEWADAR_PAGE_SIZE, sewadarTotal)}` : 'Type ≥2 chars or choose a centre'}</p>
+            {sewadarTotal > SEWADAR_PAGE_SIZE && (
+              <div style={{ display:'flex', gap:'0.35rem' }}>
+                <button className="btn btn-ghost" style={{ padding:'0.25rem 0.6rem', fontSize:'0.78rem' }} disabled={sewadarPage === 0} onClick={() => fetchSewadars(sewadarPage - 1)}>← Prev</button>
+                <span style={{ fontSize:'0.78rem', color:'var(--text-muted)', padding:'0.25rem 0.4rem' }}>{sewadarPage + 1} / {Math.ceil(sewadarTotal / SEWADAR_PAGE_SIZE)}</span>
+                <button className="btn btn-ghost" style={{ padding:'0.25rem 0.6rem', fontSize:'0.78rem' }} disabled={(sewadarPage + 1) * SEWADAR_PAGE_SIZE >= sewadarTotal} onClick={() => fetchSewadars(sewadarPage + 1)}>Next →</button>
+              </div>
+            )}
+          </div>
           {sewadarLoading ? <div className="spinner" style={{ margin:'2rem auto' }} /> : (
             <div className="table-wrap"><table>
-              <thead><tr><th>Name</th><th>Badge</th><th>Centre</th><th>Dept</th><th>Gender</th><th>Age</th><th></th></tr></thead>
+              <thead><tr><th>Name</th><th>Badge</th><th>Centre</th><th>Dept</th><th>Gender</th><th>Age</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {sewadars.map(s => (
                   <tr key={s.id}>
@@ -585,6 +608,7 @@ export default function SuperAdminPage() {
                         <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem' }} value={sewadarForm.department ?? (s.department??'')} onChange={e => setSewadarForm(f => ({...f, department: e.target.value}))} /></td>
                         <td><select className="input" style={{ padding:'0.3rem', fontSize:'0.82rem' }} value={sewadarForm.gender ?? s.gender} onChange={e => setSewadarForm(f => ({...f, gender: e.target.value}))}><option>Male</option><option>Female</option></select></td>
                         <td><input className="input" type="number" style={{ padding:'0.3rem', fontSize:'0.82rem', width:60 }} value={sewadarForm.age ?? (s.age??'')} onChange={e => setSewadarForm(f => ({...f, age: e.target.value}))} /></td>
+                        <td><select className="input" style={{ padding:'0.3rem', fontSize:'0.82rem' }} value={sewadarForm.badge_status ?? (s.badge_status||'Active')} onChange={e => setSewadarForm(f => ({...f, badge_status: e.target.value}))}><option>Active</option><option>Open</option><option>Permanent</option><option>Elderly</option><option>Cancelled</option><option>Surrendered</option><option>Expired</option></select></td>
                         <td style={{ display:'flex', gap:4 }}>
                           <button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveSewadar}><Check size={15} /></button>
                           <button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => { setEditingSewadar(null); setSewadarForm({}) }}><X size={15} /></button>
@@ -598,6 +622,7 @@ export default function SuperAdminPage() {
                         <td style={{ fontSize:'0.82rem', color:'var(--text-muted)' }}>{s.department||'—'}</td>
                         <td style={{ fontSize:'0.82rem' }}>{s.gender||'—'}</td>
                         <td style={{ fontSize:'0.82rem' }}>{s.age||'—'}</td>
+                        <td><span style={{ fontSize:'0.72rem', fontWeight:700, padding:'1px 7px', borderRadius:4, background: ['open','permanent','elderly'].includes((s.badge_status||'').toLowerCase()) ? 'rgba(33,115,70,0.1)' : 'rgba(100,100,100,0.1)', color: ['open','permanent','elderly'].includes((s.badge_status||'').toLowerCase()) ? 'var(--green)' : 'var(--text-muted)' }}>{s.badge_status||'—'}</span></td>
                         <td style={{ display:'flex', gap:4 }}>
                           <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--blue)' }} onClick={() => { setEditingSewadar(s.id); setSewadarForm({}) }}><Pencil size={14} /></button>
                           <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--red)' }} onClick={() => deleteSewadar(s)}><Trash2 size={14} /></button>
@@ -755,10 +780,14 @@ export default function SuperAdminPage() {
               <Calendar size={14} color="var(--text-muted)"/>
               <input type="date" value={attDate} onChange={e => setAttDate(e.target.value)} style={{ border:'none', background:'none', color:'var(--text-primary)', fontSize:'0.875rem', outline:'none' }}/>
             </div>
-            <div className="search-box" style={{ flex:1, minWidth:200 }}>
+            <div className="search-box" style={{ flex:1, minWidth:180 }}>
               <Search size={15}/>
               <input type="text" placeholder="Filter by name or badge…" value={attSearch} onChange={e => setAttSearch(e.target.value)}/>
             </div>
+            <select className="input" style={{ width:160, fontSize:'0.82rem' }} value={attCentreFilter} onChange={e => setAttCentreFilter(e.target.value)}>
+              <option value="">All Centres</option>
+              {PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
             <button className="btn btn-ghost" onClick={fetchAttendance} style={{ padding:'0.4rem 0.75rem' }}><RefreshCw size={14}/></button>
           </div>
           <p className="text-muted text-xs mb-2">{attRecords.length} records{attSearch ? ` matching "${attSearch}"` : ''} for {attDate}</p>
@@ -895,6 +924,7 @@ export default function SuperAdminPage() {
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'1rem', marginBottom:'1rem' }}>
               <div><label className="label">Gender</label><select className="input" value={newSewadar.gender} onChange={e => setNewSewadar({...newSewadar, gender:e.target.value})}><option>Male</option><option>Female</option></select></div>
+              <div><label className="label">Badge Status</label><select className="input" value={newSewadar.badge_status} onChange={e => setNewSewadar({...newSewadar, badge_status:e.target.value})}><option>Active</option><option>Open</option><option>Permanent</option><option>Elderly</option><option>Cancelled</option><option>Surrendered</option><option>Expired</option></select></div>
               <div><label className="label">Age</label><input className="input" type="number" min="1" max="120" value={newSewadar.age} onChange={e => setNewSewadar({...newSewadar, age:e.target.value})}/></div>
               <div><label className="label">Father/Husband</label><input className="input" value={newSewadar.father_husband_name} onChange={e => setNewSewadar({...newSewadar, father_husband_name:e.target.value})}/></div>
             </div>
