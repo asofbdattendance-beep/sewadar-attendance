@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import { lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getAttendanceCache } from '../lib/offline'
+import { lookupBadgeOffline, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getCacheAge } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, RefreshCw, Activity, PenLine } from 'lucide-react'
@@ -17,14 +17,17 @@ export default function ScannerPage({ isOnline }) {
   const [pendingSync, setPendingSync] = useState(0)
   const [syncing, setSyncing] = useState(false)
   const [recentScans, setRecentScans] = useState([])
+  const [liveStats, setLiveStats] = useState({ total: 0, male: 0, female: 0 })
   const [manualModal, setManualModal] = useState(false)
   const [manualSearch, setManualSearch] = useState('')
   const [manualResults, setManualResults] = useState([])
   const [manualSearching, setManualSearching] = useState(false)
+  const [manualLog, setManualLog] = useState([]) // log of manual entries this session
   const soundEnabled = localStorage.getItem('sa_sound') !== 'false'
 
   const scannerRef = useRef(null)
   const lastScanRef = useRef({ badge: null, time: 0 })
+  const manualEntryRef = useRef(false)
   const watchIdRef = useRef(null)
   const audioCtxRef = useRef(null)
 
@@ -64,21 +67,64 @@ export default function ScannerPage({ isOnline }) {
   }, [profile?.centre, profile?.role])
 
   async function fetchTodayCount() {
+    if (!profile?.centre && profile?.role !== ROLES.ASO) return
     const today = new Date(); today.setHours(0, 0, 0, 0)
-    let q = supabase.from('attendance').select('id', { count: 'exact', head: true })
-      .gte('scan_time', today.toISOString()).eq('type', 'IN')
+    let q = supabase.from('attendance')
+      .select('badge_number, type, scan_time, centre')
+      .gte('scan_time', today.toISOString())
     if (profile?.role === ROLES.SC_SP_USER && profile?.centre) q = q.eq('centre', profile.centre)
-    const { count } = await q
-    setTodayCount(count || 0)
+    else if (profile?.role === ROLES.CENTRE_USER && profile?.centre) q = q.eq('centre', profile.centre)
+    const { data, error } = await q
+    if (error || !data) return
+    setTodayCount(data.filter(r => r.type === 'IN').length)
+    const latest = {}
+    data.forEach(r => {
+      if (!latest[r.badge_number] || new Date(r.scan_time) > new Date(latest[r.badge_number].scan_time))
+        latest[r.badge_number] = r
+    })
+    const inside = Object.values(latest).filter(r => r.type === 'IN')
+    if (inside.length === 0) { setLiveStats({ total: 0, male: 0, female: 0 }); return }
+    // Fetch gender from sewadars directly — separate query, no FK join needed
+    const badgeList = inside.map(r => r.badge_number)
+    const { data: sewadarData } = await supabase
+      .from('sewadars')
+      .select('badge_number, gender')
+      .in('badge_number', badgeList)
+    const genderMap = {}
+    ;(sewadarData || []).forEach(s => { genderMap[s.badge_number] = (s.gender || '').toUpperCase().trim() })
+    let male = 0, female = 0
+    inside.forEach(r => {
+      const g = genderMap[r.badge_number] || ''
+      if (g === 'MALE' || g === 'M') male++
+      else if (g === 'FEMALE' || g === 'F') female++
+    })
+    setLiveStats({ total: inside.length, male, female })
   }
 
   useEffect(() => {
     setPendingSync(getOfflineQueueCount())
     const id = setInterval(() => setPendingSync(getOfflineQueueCount()), 5000)
-    // Load initial recent scans from cache
-    setRecentScans(getAttendanceCache().slice(0, 5))
     return () => clearInterval(id)
   }, [])
+
+  // Load recent scans from DB once profile is available
+  useEffect(() => {
+    if (!profile?.centre) return
+    fetchRecentScans()
+  }, [profile?.centre])
+
+  async function fetchRecentScans() {
+    if (!profile?.centre) return
+    const today = new Date(); today.setHours(0, 0, 0, 0)
+    let q = supabase.from('attendance')
+      .select('id,badge_number,sewadar_name,type,scan_time,centre,scanner_centre')
+      .gte('scan_time', today.toISOString())
+      .order('scan_time', { ascending: false })
+      .limit(5)
+    if (profile.role !== 'aso') q = q.eq('centre', profile.centre)
+    const { data } = await q
+    setRecentScans(data || [])
+  }
 
   async function handleManualSync() {
     if (!isOnline) return
@@ -115,6 +161,7 @@ export default function ScannerPage({ isOnline }) {
 
   async function selectManualSewadar(sewadar) {
     setManualModal(false); setManualSearch(''); setManualResults([])
+    manualEntryRef.current = true  // flag this as manual entry
     await processSewadar(sewadar)
   }
 
@@ -186,7 +233,7 @@ export default function ScannerPage({ isOnline }) {
       }
     }
 
-    // Block badges that are not eligible for attendance
+    // Block ineligible badge statuses — only Open, Permanent, Elderly allowed
     const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
     const badgeStatus = (found.badge_status || '').toLowerCase().trim()
     if (!ALLOWED_STATUSES.includes(badgeStatus)) {
@@ -220,27 +267,44 @@ export default function ScannerPage({ isOnline }) {
       longitude: userLocation?.lng || null,
       device_id: navigator.userAgent.slice(0, 50),
     }
-    let success = false
-    if (isOnline) {
-      const { error } = await supabase.from('attendance').insert(record)
-      if (!error) {
-        await supabase.from('logs').insert({
-          user_badge: profile.badge_number,
-          action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
-          details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
-          timestamp: scanTime
-        })
-        success = true
+    // Show success immediately
+    playBeep(type)
+    // If this was a manual entry, add to manual log
+    if (manualEntryRef.current) {
+      const entry = {
+        id: Date.now(),
+        badge: popupState.sewadar.badge_number,
+        name: popupState.sewadar.sewadar_name,
+        type,
+        time: scanTime,
+        by: profile.name
       }
-    } else {
-      addToOfflineQueue(record); success = true
+      setManualLog(prev => [entry, ...prev].slice(0, 20))
+      manualEntryRef.current = false
     }
-    if (success) {
-      addToAttendanceCache({ ...record, id: Date.now() })
-      setRecentScans(getAttendanceCache().slice(0, 5))
-      playBeep(type)
-      setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
-      setTimeout(closePopup, 2000)
+    // Optimistically prepend to recent scans feed (DB write is fire-and-forget)
+    setRecentScans(prev => [{
+      id: Date.now(), badge_number: record.badge_number,
+      sewadar_name: record.sewadar_name, type, scan_time: scanTime,
+      centre: record.centre, scanner_centre: record.scanner_centre
+    }, ...prev].slice(0, 5))
+    setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
+    setTimeout(closePopup, 1200)
+
+    // FIX #4: fire-and-forget with offline fallback on failure
+    if (isOnline) {
+      supabase.from('attendance').insert(record).then(({ error }) => {
+        if (error) { console.warn('Insert failed, saving offline:', error.message); addToOfflineQueue(record) }
+        else { fetchTodayCount(); fetchRecentScans() }
+      })
+      supabase.from('logs').insert({
+        user_badge: profile.badge_number,
+        action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
+        details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
+        timestamp: scanTime
+      })
+    } else {
+      addToOfflineQueue(record)
     }
   }
 
@@ -277,20 +341,67 @@ export default function ScannerPage({ isOnline }) {
             <MapPin size={11} />
             GPS {gpsStatus === 'success' ? '✓' : gpsStatus === 'failed' ? '✗' : '…'}
           </span>
+          {(() => { const age = getCacheAge(); return age !== null ? (
+            <span className="scanner-pill pill-gps-ok" title="Sewadar data cache age">
+              ⚡ {age === 0 ? 'fresh' : `${age}m`}
+            </span>
+          ) : null })()}
         </div>
       </div>
 
       <div className="scanner-live-strip">
         <span className="pulse-dot green" />
         <span className="scanner-live-count">{todayCount} IN today</span>
-        {isAso && (
+        {(isAso || profile?.role === ROLES.CENTRE_USER) && (
           <button className="scanner-manual-btn" onClick={() => setManualModal(true)}>
             <PenLine size={13} /> Manual
           </button>
         )}
       </div>
 
+      {/* Live centre stats */}
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.6rem', flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Inside Now</span>
+          <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--green)' }}>{liveStats.total}</span>
+        </div>
+        <div style={{ flex: 1, background: 'rgba(33,100,200,0.07)', border: '1px solid rgba(33,100,200,0.18)', borderRadius: 8, padding: '0.45rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: '0.72rem', color: 'var(--blue)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Male</span>
+          <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--blue)' }}>{liveStats.male}</span>
+        </div>
+        <div style={{ flex: 1, background: 'rgba(220,80,120,0.07)', border: '1px solid rgba(220,80,120,0.18)', borderRadius: 8, padding: '0.45rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: '0.72rem', color: '#dc5078', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Female</span>
+          <span style={{ fontSize: '1.1rem', fontWeight: 800, color: '#dc5078' }}>{liveStats.female}</span>
+        </div>
+      </div>
+
       <BarcodeScanner ref={scannerRef} onScan={handleScan} />
+
+      {/* Manual entry log */}
+      {manualLog.length > 0 && (
+        <div style={{ margin: '0.85rem 0 0', padding: '0 0.1rem' }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#b45309', marginBottom: '0.45rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <PenLine size={11} /> Manual Entries This Session
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+            {manualLog.map(m => (
+              <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'rgba(180,100,0,0.06)', border: '1px solid rgba(180,100,0,0.2)', borderRadius: 8, padding: '0.4rem 0.7rem' }}>
+                <span style={{ width: 32, height: 20, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 800, background: m.type === 'IN' ? 'rgba(76,175,125,0.15)' : 'rgba(224,92,92,0.15)', color: m.type === 'IN' ? 'var(--green)' : 'var(--red)', flexShrink: 0 }}>{m.type}</span>
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <div style={{ fontWeight: 600, fontSize: '0.82rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.name}</div>
+                  <div style={{ fontFamily: 'monospace', fontSize: '0.68rem', color: 'var(--gold)' }}>{m.badge}</div>
+                </div>
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    {new Date(m.time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: '#b45309' }}>by {m.by}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Last 5 scans mini feed */}
       {recentScans.length > 0 && (
@@ -300,7 +411,10 @@ export default function ScannerPage({ isOnline }) {
             {recentScans.map((r, i) => (
               <div key={r.id || i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.7rem' }}>
                 <span style={{ width: 32, height: 20, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 800, background: r.type === 'IN' ? 'rgba(76,175,125,0.15)' : 'rgba(224,92,92,0.15)', color: r.type === 'IN' ? 'var(--green)' : 'var(--red)', flexShrink: 0 }}>{r.type}</span>
-                <span style={{ fontWeight: 600, fontSize: '0.82rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sewadar_name}</span>
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <div style={{ fontWeight: 600, fontSize: '0.82rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sewadar_name}</div>
+                  <div style={{ fontFamily: 'monospace', fontSize: '0.68rem', color: 'var(--gold)' }}>{r.badge_number}</div>
+                </div>
                 <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>
                   {new Date(r.scan_time || r.queued_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
                 </span>
@@ -361,7 +475,7 @@ export default function ScannerPage({ isOnline }) {
                 <div className="error-title">Badge Ineligible</div>
                 <div className="error-name">{popupState.sewadar.sewadar_name}</div>
                 <div className="error-badge">{popupState.badge}</div>
-                <div style={{ margin: '8px auto', display: 'inline-block', background: 'rgba(198,40,40,0.1)', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 6, padding: '3px 10px', fontSize: 13, fontWeight: 700, color: '#dc2626' }}>
+                <div style={{ margin: '8px auto', display: 'inline-block', background: 'rgba(198,40,40,0.1)', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 6, padding: '3px 12px', fontSize: 13, fontWeight: 700, color: '#dc2626' }}>
                   Status: {popupState.sewadar.badge_status || 'Unknown'}
                 </div>
                 <div className="error-msg">Only Open, Permanent &amp; Elderly badges can be marked</div>
@@ -467,26 +581,10 @@ function SewadarFoundCard({ sewadar, allowedTypes, scanCount, onMark, onClose })
         <div className="detail">
           <span>Status</span>
           <span style={{
-            background: (() => {
-              const s = (sewadar.badge_status || '').toLowerCase()
-              if (s === 'permanent') return 'rgba(33,115,70,0.12)'
-              if (s === 'open') return 'rgba(33,100,200,0.12)'
-              if (s === 'elderly') return 'rgba(201,168,76,0.15)'
-              return 'rgba(198,40,40,0.1)'
-            })(),
-            color: (() => {
-              const s = (sewadar.badge_status || '').toLowerCase()
-              if (s === 'permanent') return 'var(--green)'
-              if (s === 'open') return 'var(--blue)'
-              if (s === 'elderly') return 'var(--gold)'
-              return 'var(--red)'
-            })(),
-            border: '1px solid currentColor',
-            borderRadius: 5,
-            padding: '1px 8px',
-            fontSize: 12,
-            fontWeight: 700,
-            opacity: 0.85
+            background: (() => { const s = (sewadar.badge_status||'').toLowerCase(); return s==='permanent'?'rgba(33,115,70,0.12)':s==='open'?'rgba(33,100,200,0.12)':s==='elderly'?'rgba(201,168,76,0.15)':'rgba(198,40,40,0.1)' })(),
+            color: (() => { const s = (sewadar.badge_status||'').toLowerCase(); return s==='permanent'?'var(--green)':s==='open'?'var(--blue)':s==='elderly'?'var(--gold)':'var(--red)' })(),
+            border: '1px solid currentColor', borderRadius: 5, padding: '1px 8px',
+            fontSize: 12, fontWeight: 700, opacity: 0.9
           }}>
             {sewadar.badge_status || 'Unknown'}
           </span>
