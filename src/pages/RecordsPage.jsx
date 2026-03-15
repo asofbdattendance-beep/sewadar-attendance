@@ -24,7 +24,7 @@ function AttendanceTab() {
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
-  const [dateFilter, setDateFilter] = useState('')
+  const [dateFilter, setDateFilter] = useState(new Date().toISOString().split('T')[0]) // default today
   const [centreFilter, setCentreFilter] = useState('')
   const [centres, setCentres] = useState([])
   const [flagModal, setFlagModal] = useState(null)
@@ -33,6 +33,7 @@ function AttendanceTab() {
   const [flagSubmitting, setFlagSubmitting] = useState(false)
   const [flagSuccess, setFlagSuccess] = useState(false)
   const [deleteMsg, setDeleteMsg] = useState('')
+  const [flaggedIds, setFlaggedIds] = useState(new Set())
 
   const isAdmin = [ROLES.ASO, ROLES.CENTRE_USER].includes(profile?.role)
   const isAso = profile?.role === ROLES.ASO
@@ -57,11 +58,11 @@ function AttendanceTab() {
     setLoading(true)
     let query = supabase.from('attendance').select('*').order('scan_time', { ascending: false })
 
-    if (dateFilter) {
-      const start = new Date(dateFilter + 'T00:00:00')
-      const end = new Date(dateFilter + 'T23:59:59.999')
-      query = query.gte('scan_time', start.toISOString()).lte('scan_time', end.toISOString())
-    }
+    // Always scope to a date to avoid cross-day IN/OUT mismatch
+    const activeDate = dateFilter || new Date().toISOString().split('T')[0]
+    const start = new Date(activeDate + 'T00:00:00')
+    const end = new Date(activeDate + 'T23:59:59.999')
+    query = query.gte('scan_time', start.toISOString()).lte('scan_time', end.toISOString())
 
     if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
       query = query.eq('centre', profile.centre)
@@ -98,7 +99,11 @@ function AttendanceTab() {
       }
     })
 
-    let filteredRecords = Object.values(grouped).sort((a, b) => new Date(b.date) - new Date(a.date))
+    let filteredRecords = Object.values(grouped).sort((a, b) => {
+      const dateDiff = new Date(b.date) - new Date(a.date)
+      if (dateDiff !== 0) return dateDiff
+      return new Date(b.in_time || b.out_time || 0) - new Date(a.in_time || a.out_time || 0)
+    })
     if (searchTerm) {
       const term = searchTerm.toUpperCase()
       filteredRecords = filteredRecords.filter(r =>
@@ -107,6 +112,19 @@ function AttendanceTab() {
     }
 
     setRecords(filteredRecords)
+
+    // FIX: Fetch which attendance IDs have open flags so we can show indicators
+    const allIds = filteredRecords.flatMap(r => [r.in_id, r.out_id].filter(Boolean))
+    if (allIds.length > 0) {
+      const { data: flagData } = await supabase
+        .from('queries')
+        .select('attendance_id')
+        .in('attendance_id', allIds)
+        .neq('status', 'resolved')
+      setFlaggedIds(new Set((flagData || []).map(f => f.attendance_id)))
+    } else {
+      setFlaggedIds(new Set())
+    }
     setLoading(false)
   }
 
@@ -229,6 +247,7 @@ function AttendanceTab() {
                 <th>Badge</th>
                 <th>Name</th>
                 {isAdmin && <th>Centre</th>}
+                <th>Dept</th>
                 <th>Date</th>
                 <th>IN</th>
                 <th>OUT</th>
@@ -242,6 +261,7 @@ function AttendanceTab() {
                   <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.82rem' }}>{r.badge_number}</td>
                   <td style={{ fontWeight: 500 }}>{r.sewadar_name}</td>
                   {isAdmin && <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{r.centre}</td>}
+                  <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.department || '—'}</td>
                   <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                     {new Date(r.date + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
                   </td>
@@ -263,8 +283,9 @@ function AttendanceTab() {
                   <td>
                     <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
                       <button className="records-flag-btn" title="Raise flag"
-                        onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}>
-                        <Flag size={13} />
+                        onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}
+                        style={{ color: (flaggedIds.has(r.in_id) || flaggedIds.has(r.out_id)) ? 'var(--red)' : undefined, opacity: (flaggedIds.has(r.in_id) || flaggedIds.has(r.out_id)) ? 1 : undefined }}>
+                        <Flag size={13} fill={(flaggedIds.has(r.in_id) || flaggedIds.has(r.out_id)) ? 'currentColor' : 'none'} />
                       </button>
                       {isAso && r.in_id && (
                         <button className="records-delete-btn" title="Delete IN"

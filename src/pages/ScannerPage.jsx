@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import { lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getAttendanceCache, getCacheAge } from '../lib/offline'
+import { lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getAttendanceCache, getCacheAge, getCachedSewadars } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, RefreshCw, Activity, PenLine } from 'lucide-react'
@@ -17,6 +17,7 @@ export default function ScannerPage({ isOnline }) {
   const [pendingSync, setPendingSync] = useState(0)
   const [syncing, setSyncing] = useState(false)
   const [recentScans, setRecentScans] = useState([])
+  const [liveStats, setLiveStats] = useState({ total: 0, male: 0, female: 0 })
   const [manualModal, setManualModal] = useState(false)
   const [manualSearch, setManualSearch] = useState('')
   const [manualResults, setManualResults] = useState([])
@@ -65,18 +66,38 @@ export default function ScannerPage({ isOnline }) {
 
   async function fetchTodayCount() {
     const today = new Date(); today.setHours(0, 0, 0, 0)
-    let q = supabase.from('attendance').select('id', { count: 'exact', head: true })
-      .gte('scan_time', today.toISOString()).eq('type', 'IN')
-    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) q = q.eq('centre', profile.centre)
-    const { count } = await q
-    setTodayCount(count || 0)
+    // Fetch all today's scans to compute live stats accurately from DB
+    let q = supabase.from('attendance')
+      .select('badge_number, type, scan_time, centre')
+      .gte('scan_time', today.toISOString())
+    if (profile?.role !== ROLES.ASO && profile?.centre) q = q.eq('centre', profile.centre)
+    const { data } = await q
+    if (!data) return
+    const ins = data.filter(r => r.type === 'IN')
+    setTodayCount(ins.length)
+    // Compute who is currently inside (latest scan per badge = IN)
+    const latest = {}
+    data.forEach(r => {
+      if (!latest[r.badge_number] || new Date(r.scan_time) > new Date(latest[r.badge_number].scan_time))
+        latest[r.badge_number] = r
+    })
+    const inside = Object.values(latest).filter(r => r.type === 'IN')
+    const sewadars = getCachedSewadars() || []
+    let male = 0, female = 0
+    inside.forEach(r => {
+      const s = sewadars.find(sw => sw.badge_number === r.badge_number)
+      const g = (s?.gender || '').toUpperCase()
+      if (g === 'MALE' || g === 'M') male++
+      else if (g === 'FEMALE' || g === 'F') female++
+    })
+    setLiveStats({ total: inside.length, male, female })
   }
 
   useEffect(() => {
     setPendingSync(getOfflineQueueCount())
     const id = setInterval(() => setPendingSync(getOfflineQueueCount()), 5000)
     // Load initial recent scans from cache
-    setRecentScans(getAttendanceCache().slice(0, 5))
+    // initial load — profile not yet available here, stats computed after first scan
     return () => clearInterval(id)
   }, [])
 
@@ -222,7 +243,27 @@ export default function ScannerPage({ isOnline }) {
     }
     // Show success immediately — DB write happens in background
     addToAttendanceCache({ ...record, id: Date.now() })
-    setRecentScans(getAttendanceCache().slice(0, 5))
+    const centreCache = getAttendanceCache().filter(r => !profile?.centre || r.scanner_centre === profile.centre || r.centre === profile.centre)
+    setRecentScans(centreCache.slice(0, 5))
+    // Live stats: sewadars currently inside (last scan is IN)
+    const todaySt = new Date().toISOString().split('T')[0]
+    const todayRecs = centreCache.filter(r => r.scan_time?.startsWith(todaySt))
+    const latestByBadge = {}
+    todayRecs.forEach(r => {
+      if (!latestByBadge[r.badge_number] || new Date(r.scan_time) > new Date(latestByBadge[r.badge_number].scan_time))
+        latestByBadge[r.badge_number] = r
+    })
+    const insideNow = Object.values(latestByBadge).filter(r => r.type === 'IN')
+    // Get gender from sewadar cache
+    const sewadars = getCachedSewadars() || []
+    let male = 0, female = 0
+    insideNow.forEach(r => {
+      const s = sewadars.find(sw => sw.badge_number === r.badge_number)
+      const g = (s?.gender || '').toUpperCase()
+      if (g === 'MALE' || g === 'M') male++
+      else if (g === 'FEMALE' || g === 'F') female++
+    })
+    setLiveStats({ total: insideNow.length, male, female })
     playBeep(type)
     setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
     setTimeout(closePopup, 1200)
@@ -294,6 +335,22 @@ export default function ScannerPage({ isOnline }) {
         )}
       </div>
 
+      {/* Live centre stats */}
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.6rem', flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Inside Now</span>
+          <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--green)' }}>{liveStats.total}</span>
+        </div>
+        <div style={{ flex: 1, background: 'rgba(33,100,200,0.07)', border: '1px solid rgba(33,100,200,0.18)', borderRadius: 8, padding: '0.45rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: '0.72rem', color: 'var(--blue)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Male</span>
+          <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--blue)' }}>{liveStats.male}</span>
+        </div>
+        <div style={{ flex: 1, background: 'rgba(220,80,120,0.07)', border: '1px solid rgba(220,80,120,0.18)', borderRadius: 8, padding: '0.45rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: '0.72rem', color: '#dc5078', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Female</span>
+          <span style={{ fontSize: '1.1rem', fontWeight: 800, color: '#dc5078' }}>{liveStats.female}</span>
+        </div>
+      </div>
+
       <BarcodeScanner ref={scannerRef} onScan={handleScan} />
 
       {/* Last 5 scans mini feed */}
@@ -304,7 +361,10 @@ export default function ScannerPage({ isOnline }) {
             {recentScans.map((r, i) => (
               <div key={r.id || i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.7rem' }}>
                 <span style={{ width: 32, height: 20, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 800, background: r.type === 'IN' ? 'rgba(76,175,125,0.15)' : 'rgba(224,92,92,0.15)', color: r.type === 'IN' ? 'var(--green)' : 'var(--red)', flexShrink: 0 }}>{r.type}</span>
-                <span style={{ fontWeight: 600, fontSize: '0.82rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sewadar_name}</span>
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <div style={{ fontWeight: 600, fontSize: '0.82rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sewadar_name}</div>
+                  <div style={{ fontFamily: 'monospace', fontSize: '0.68rem', color: 'var(--gold)' }}>{r.badge_number}</div>
+                </div>
                 <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>
                   {new Date(r.scan_time || r.queued_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
                 </span>
