@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { syncOfflineQueue, getOfflineQueueCount, setCachedSewadars, getCachedSewadars } from '../lib/offline'
+import { syncOfflineQueue, getOfflineQueueCount, setCachedSewadars, getCachedSewadars, getCacheAge, isOfflineQueueFull } from '../lib/offline'
 import { supabase } from '../lib/supabase'
 import { LogOut, RefreshCw, Wifi, WifiOff, User, Database, Shield } from 'lucide-react'
 
@@ -8,13 +8,15 @@ export default function ProfilePage({ isOnline }) {
   const { profile, signOut } = useAuth()
   const [pendingCount, setPendingCount] = useState(0)
   const [syncing, setSyncing] = useState(false)
+  const [soundOn, setSoundOn] = useState(localStorage.getItem('sa_sound') !== 'false')
   const [cacheInfo, setCacheInfo] = useState(null)
   const [syncMsg, setSyncMsg] = useState('')
 
   useEffect(() => {
     setPendingCount(getOfflineQueueCount())
     const cache = getCachedSewadars()
-    if (cache) setCacheInfo({ count: cache.length, note: 'Cached for offline use' })
+    const age = getCacheAge()
+    if (cache) setCacheInfo({ count: cache.length, note: age !== null ? `${age === 0 ? 'Just refreshed' : `${age}m ago`}` : 'Age unknown' })
   }, [])
 
   async function manualSync() {
@@ -113,9 +115,33 @@ export default function ProfilePage({ isOnline }) {
           </button>
         </div>
         <p className="text-muted text-sm">
-          {cacheInfo ? `${cacheInfo.count} sewadars cached locally · Tap Refresh if badge data seems outdated` : 'No sewadar data cached. Tap Refresh — scanning works fastest with a fresh cache.'}
+          {cacheInfo ? `${cacheInfo.count} sewadars cached · ${cacheInfo.note} · Used for offline scanning only` : 'No sewadar cache. Tap Refresh to enable offline scanning.'}
         </p>
       </div>
+
+      {/* Sound toggle */}
+      <div className="card mb-2">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-1">
+            <span style={{ fontSize: '0.9rem' }}>🔔</span>
+            <span style={{ fontWeight: 500 }}>Scan Sound &amp; Vibration</span>
+          </div>
+          <button
+            onClick={() => { const next = !soundOn; setSoundOn(next); localStorage.setItem('sa_sound', next ? 'true' : 'false') }}
+            style={{ width: 44, height: 26, borderRadius: 13, border: 'none', cursor: 'pointer', position: 'relative', transition: 'background 0.2s', background: soundOn ? 'var(--green)' : 'var(--border)' }}>
+            <span style={{ position: 'absolute', top: 3, left: soundOn ? 21 : 3, width: 20, height: 20, borderRadius: '50%', background: 'white', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }} />
+          </button>
+        </div>
+        <p className="text-muted text-sm mt-1">{soundOn ? 'Beep + vibration on each scan' : 'Silent scanning'}</p>
+      </div>
+
+      {/* Queue full warning */}
+      {isOfflineQueueFull() && (
+        <div className="card mb-2" style={{ borderColor: 'rgba(198,40,40,0.4)', background: 'rgba(198,40,40,0.06)' }}>
+          <p style={{ fontWeight: 700, color: 'var(--red)', fontSize: '0.88rem' }}>⚠ Offline queue is full (500 records)</p>
+          <p className="text-muted text-xs mt-1">Connect to internet and sync immediately. New scans may not be saved.</p>
+        </div>
+      )}
 
       {syncMsg && (
         <div style={{
@@ -128,7 +154,7 @@ export default function ProfilePage({ isOnline }) {
       )}
 
       {/* Sign out */}
-      <button className="btn btn-outline btn-full" onClick={signOut} style={{ marginTop: '1rem', borderColor: 'rgba(224,92,92,0.3)', color: 'var(--red)' }}>
+      <button className="btn btn-outline btn-full" onClick={() => { if (confirm('Sign out of Sewadar Attendance?')) signOut() }} style={{ marginTop: '1rem', borderColor: 'rgba(224,92,92,0.3)', color: 'var(--red)' }}>
         <LogOut size={16} /> Sign Out
       </button>
 

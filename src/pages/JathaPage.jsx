@@ -25,6 +25,7 @@ function MarkJathaTab() {
   const [searching, setSearching] = useState(false)
   const [searchResults, setSearchResults] = useState([])
   const [selected, setSelected] = useState(null)
+  const [sewadarJathaCount, setSewadarJathaCount] = useState(null) // { count, totalDays }
 
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -66,7 +67,7 @@ function MarkJathaTab() {
     const term = badgeInput.trim()
     if (!term) return
     setSearching(true)
-    const { data } = await supabase.from('sewadars').select('*')
+    const { data } = await supabase.from('sewadars').select('badge_number,sewadar_name,centre,department,badge_status')
       .or(`badge_number.ilike.%${term.toUpperCase()}%,sewadar_name.ilike.%${term}%`).limit(10)
     setSearchResults(data || [])
     setSearching(false)
@@ -74,6 +75,17 @@ function MarkJathaTab() {
 
   function selectSewadar(s) {
     setSelected(s); setSearchResults([]); setBadgeInput(s.badge_number); setSuccess(false); setError('')
+    setSewadarJathaCount(null)
+    // Fetch this sewadar's jatha count for current year
+    const yr = new Date().getFullYear()
+    supabase.from('jatha_attendance')
+      .select('satsang_days')
+      .eq('badge_number', s.badge_number)
+      .gte('date_from', `${yr}-01-01`)
+      .lte('date_from', `${yr}-12-31`)
+      .then(({ data }) => {
+        if (data) setSewadarJathaCount({ count: data.length, totalDays: data.reduce((a, r) => a + (r.satsang_days || 0), 0) })
+      })
   }
 
   async function submitJatha() {
@@ -117,6 +129,13 @@ function MarkJathaTab() {
     setSuccess(true)
     setDateFrom(''); setDateTo(''); setJathaType(''); setJathaCentre('')
     setJathaDept(''); setRemarks(''); setSatsangDays(0)
+    // Refresh count
+    if (selected) {
+      const yr = new Date().getFullYear()
+      supabase.from('jatha_attendance').select('satsang_days').eq('badge_number', selected.badge_number)
+        .gte('date_from', `${yr}-01-01`).lte('date_from', `${yr}-12-31`)
+        .then(({ data }) => { if (data) setSewadarJathaCount({ count: data.length, totalDays: data.reduce((a, r) => a + (r.satsang_days || 0), 0) }) })
+    }
   }
 
   const canSubmit = selected && dateFrom && dateTo && !dateError && jathaType && jathaCentre && jathaDept
@@ -160,15 +179,27 @@ function MarkJathaTab() {
         )}
 
         {selected && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', background: 'var(--gold-bg)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 8, padding: '0.7rem 0.85rem' }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--gold)' }}>{selected.sewadar_name}</div>
-              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{selected.badge_number} · {selected.centre} · {selected.department || '—'}</div>
+          <div style={{ background: 'var(--gold-bg)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 8, padding: '0.7rem 0.85rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--gold)' }}>{selected.sewadar_name}</div>
+                <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{selected.badge_number} · {selected.centre} · {selected.department || '—'}</div>
+              </div>
+              <button onClick={() => { setSelected(null); setBadgeInput(''); setSewadarJathaCount(null) }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
+                <X size={15} />
+              </button>
             </div>
-            <button onClick={() => { setSelected(null); setBadgeInput('') }}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
-              <X size={15} />
-            </button>
+            {sewadarJathaCount !== null && (
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.74rem', background: 'rgba(201,168,76,0.15)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 5, padding: '2px 8px', color: 'var(--gold)', fontWeight: 600 }}>
+                  {sewadarJathaCount.count} jatha{sewadarJathaCount.count !== 1 ? 's' : ''} this year
+                </span>
+                <span style={{ fontSize: '0.74rem', background: 'rgba(201,168,76,0.1)', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 5, padding: '2px 8px', color: 'var(--gold)' }}>
+                  {sewadarJathaCount.totalDays} total days
+                </span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -318,7 +349,7 @@ function ViewJathaTab() {
 
   async function fetchRecords() {
     setLoading(true)
-    let q = supabase.from('jatha_attendance').select('*').order('created_at', { ascending: false }).limit(300)
+    let q = supabase.from('jatha_attendance').select('*').order('created_at', { ascending: false }).limit(1000)
 
     if (typeFilter) q = q.eq('jatha_type', typeFilter)
     if (monthFilter) {
@@ -326,6 +357,10 @@ function ViewJathaTab() {
       const start = `${year}-${month}-01`
       const end = new Date(year, month, 0).toISOString().split('T')[0]
       q = q.gte('date_from', start).lte('date_from', end)
+    } else {
+      // Default to current year — prevent loading all-time records
+      const thisYear = new Date().getFullYear()
+      q = q.gte('date_from', `${thisYear}-01-01`).lte('date_from', `${thisYear}-12-31`)
     }
 
     if (profile?.role === ROLES.SC_SP_USER) q = q.eq('submitted_centre', profile.centre)

@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { ROLES, FLAG_TYPES, FLAG_STATUS } from '../lib/supabase'
 import {
   Flag, MessageSquare, CheckCircle, Clock, AlertCircle,
-  ChevronDown, ChevronUp, Send, Filter, RefreshCw
+  ChevronDown, ChevronUp, Send, Filter, RefreshCw, Search, X
 } from 'lucide-react'
 
 export default function FlagsPage() {
@@ -15,6 +15,7 @@ export default function FlagsPage() {
   const [expandedId, setExpandedId] = useState(null)
   const [replyTexts, setReplyTexts] = useState({})
   const [submitting, setSubmitting] = useState(false)
+  const [searchTerm, setSearchTerm] = useState('')
   const [childCentres, setChildCentres] = useState([])
 
   const isAdmin = [ROLES.ASO, ROLES.CENTRE_USER].includes(profile?.role)
@@ -44,30 +45,22 @@ export default function FlagsPage() {
         query_replies(id, replied_by_badge, replied_by_name, replied_by_centre, reply_text, created_at)
       `)
       .order('created_at', { ascending: false })
+      .limit(200)
 
-    if (statusFilter !== 'all') {
-      query = query.eq('status', statusFilter)
+    if (statusFilter !== 'all') query = query.eq('status', statusFilter)
+
+    // Scope at DB level — not JS filter
+    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
+      query = query.eq('raised_by_centre', profile.centre)
+    } else if (profile?.role === ROLES.CENTRE_USER) {
+      const scope = childCentres.length > 0 ? childCentres : [profile.centre]
+      query = query.in('raised_by_centre', scope)
     }
+    // ASO: no filter — sees all
 
     const { data, error } = await query
     if (error) { setLoading(false); return }
-
-    let filtered = data || []
-
-    // Scope: sc_sp_user sees only their own flags
-    if (profile?.role === ROLES.SC_SP_USER) {
-      filtered = filtered.filter(f => f.raised_by_centre === profile.centre)
-    }
-    // Centre User sees parent + children
-    else if (profile?.role === ROLES.CENTRE_USER) {
-      const scope = childCentres.length > 0 ? childCentres : [profile.centre]
-      filtered = filtered.filter(f =>
-        scope.includes(f.raised_by_centre) || scope.includes(f.target_centre)
-      )
-    }
-    // ASO sees all
-
-    setFlags(filtered)
+    setFlags(data || [])
     setLoading(false)
   }
 
@@ -76,7 +69,7 @@ export default function FlagsPage() {
     if (!text) return
     setSubmitting(true)
 
-    await supabase.from('query_replies').insert({
+    const { error: replyErr } = await supabase.from('query_replies').insert({
       query_id: flagId,
       replied_by_badge: profile.badge_number,
       replied_by_name: profile.name,
@@ -84,6 +77,13 @@ export default function FlagsPage() {
       reply_text: text,
       created_at: new Date().toISOString()
     })
+    if (!replyErr) {
+      supabase.from('logs').insert({
+        user_badge: profile.badge_number, action: 'FLAG_REPLY',
+        details: `Replied to flag #${flagId}: ${text.slice(0, 80)}`,
+        timestamp: new Date().toISOString()
+      })
+    }
 
     // If ASO replies, move to in_progress if still open
     const flag = flags.find(f => f.id === flagId)
@@ -163,6 +163,14 @@ export default function FlagsPage() {
         ))}
       </div>
 
+      {/* Search */}
+      <div className="search-box" style={{ marginBottom: '0.75rem' }}>
+        <Search size={15} />
+        <input type="text" placeholder="Search badge, name or issue…" value={searchTerm}
+          onChange={e => setSearchTerm(e.target.value)} />
+        {searchTerm && <button onClick={() => setSearchTerm('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}><X size={13} /></button>}
+      </div>
+
       {loading ? (
         <div className="text-center" style={{ padding: '3rem 0' }}>
           <div className="spinner" style={{ margin: '0 auto' }} />
@@ -174,7 +182,12 @@ export default function FlagsPage() {
         </div>
       ) : (
         <div className="flags-list">
-          {flags.map(flag => {
+          {flags.filter(flag => !searchTerm || 
+            flag.attendance?.badge_number?.includes(searchTerm.toUpperCase()) ||
+            flag.attendance?.sewadar_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            flag.issue_description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            flag.raised_by_name?.toLowerCase().includes(searchTerm.toLowerCase())
+          ).map(flag => {
             const isExpanded = expandedId === flag.id
             const replies = flag.query_replies || []
             const canReply =

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import { lookupBadgeOffline, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getCacheAge } from '../lib/offline'
+import { lookupBadgeOffline, addToOfflineQueue, getOfflineQueueCount, syncOfflineQueue, getCacheAge, isOfflineQueueFull } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, RefreshCw, Activity, PenLine } from 'lucide-react'
@@ -57,13 +57,18 @@ export default function ScannerPage({ isOnline }) {
     return () => { if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current) }
   }, [])
 
-  // Live IN count subscription
+  // Live IN count subscription — throttle handler to max 1 call per 3s
   useEffect(() => {
     fetchTodayCount()
+    let throttleTimer = null
+    const throttled = () => {
+      if (throttleTimer) return
+      throttleTimer = setTimeout(() => { throttleTimer = null; fetchTodayCount() }, 3000)
+    }
     const channel = supabase.channel('scanner-count')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, fetchTodayCount)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, throttled)
       .subscribe()
-    return () => supabase.removeChannel(channel)
+    return () => { supabase.removeChannel(channel); if (throttleTimer) clearTimeout(throttleTimer) }
   }, [profile?.centre, profile?.role])
 
   async function fetchTodayCount() {
@@ -182,7 +187,7 @@ export default function ScannerPage({ isOnline }) {
     let found = null
     try {
       if (isOnline) {
-        const { data } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
+        const { data } = await supabase.from('sewadars').select('badge_number,sewadar_name,centre,department,badge_status,gender,geo_required').eq('badge_number', badge).maybeSingle()
         found = data
       } else {
         found = lookupBadgeOffline(badge)
@@ -201,7 +206,7 @@ export default function ScannerPage({ isOnline }) {
     let todayEntries = []
     if (isOnline) {
       const today = new Date(); today.setHours(0, 0, 0, 0)
-      const { data } = await supabase.from('attendance').select('*').eq('badge_number', b)
+      const { data } = await supabase.from('attendance').select('id,type,scan_time').eq('badge_number', b)
         .gte('scan_time', today.toISOString()).order('scan_time', { ascending: true })
       todayEntries = data || []
     }
@@ -223,6 +228,14 @@ export default function ScannerPage({ isOnline }) {
     const isChildCentre = isCentreUserRole && childCentres.includes(found.centre)
     const isException = isExceptionDept(found.department)
 
+    // Badge status check FIRST — block ineligible before any other check
+    const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
+    const badgeStatus = (found.badge_status || '').toLowerCase().trim()
+    if (!ALLOWED_STATUSES.includes(badgeStatus)) {
+      setPopupState({ type: 'invalid_status', sewadar: found, badge: b }); setProcessing(false); return
+    }
+
+    // Geo check second
     if (found.geo_required && userLocation && centreConfig?.geo_enabled) {
       if (centreConfig.latitude && centreConfig.longitude) {
         const dist = getDistanceMetres(userLocation.lat, userLocation.lng, centreConfig.latitude, centreConfig.longitude)
@@ -231,13 +244,6 @@ export default function ScannerPage({ isOnline }) {
           setProcessing(false); return
         }
       }
-    }
-
-    // Block ineligible badge statuses — only Open, Permanent, Elderly allowed
-    const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
-    const badgeStatus = (found.badge_status || '').toLowerCase().trim()
-    if (!ALLOWED_STATUSES.includes(badgeStatus)) {
-      setPopupState({ type: 'invalid_status', sewadar: found, badge: b }); setProcessing(false); return
     }
 
     if (!isAso && !isCentreUserRole && !isSameCentre && !isException) {
@@ -304,6 +310,9 @@ export default function ScannerPage({ isOnline }) {
         timestamp: scanTime
       })
     } else {
+      if (isOfflineQueueFull()) {
+        console.warn('Offline queue full — oldest record dropped to make room')
+      }
       addToOfflineQueue(record)
     }
   }
@@ -324,9 +333,9 @@ export default function ScannerPage({ isOnline }) {
         </span>
         <div className="scanner-indicators">
           {pendingSync > 0 && (
-            <button className="scanner-pill pill-pending" onClick={handleManualSync} disabled={!isOnline || syncing} title="Tap to sync offline records">
+            <button className={`scanner-pill ${pendingSync >= 500 ? 'pill-offline' : 'pill-pending'}`} onClick={handleManualSync} disabled={!isOnline || syncing} title={pendingSync >= 500 ? 'Queue full! Connect internet urgently' : 'Tap to sync offline records'}>
               {syncing ? <RefreshCw size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Activity size={11} />}
-              {pendingSync} pending
+              {pendingSync}{pendingSync >= 500 ? ' FULL' : ' pending'}
             </button>
           )}
           <span className={`scanner-pill ${isOnline ? 'pill-online' : 'pill-offline'}`}>
@@ -362,17 +371,23 @@ export default function ScannerPage({ isOnline }) {
       {/* Live centre stats */}
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.6rem', flexWrap: 'wrap' }}>
         <div style={{ flex: 1, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Inside Now</span>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Inside</span>
           <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--green)' }}>{liveStats.total}</span>
         </div>
         <div style={{ flex: 1, background: 'rgba(33,100,200,0.07)', border: '1px solid rgba(33,100,200,0.18)', borderRadius: 8, padding: '0.45rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: '0.72rem', color: 'var(--blue)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Male</span>
+          <span style={{ fontSize: '0.72rem', color: 'var(--blue)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>M</span>
           <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--blue)' }}>{liveStats.male}</span>
         </div>
         <div style={{ flex: 1, background: 'rgba(220,80,120,0.07)', border: '1px solid rgba(220,80,120,0.18)', borderRadius: 8, padding: '0.45rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: '0.72rem', color: '#dc5078', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Female</span>
+          <span style={{ fontSize: '0.72rem', color: '#dc5078', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>F</span>
           <span style={{ fontSize: '1.1rem', fontWeight: 800, color: '#dc5078' }}>{liveStats.female}</span>
         </div>
+        {liveStats.total - liveStats.male - liveStats.female > 0 && (
+          <div style={{ flex: 1, background: 'rgba(100,100,100,0.07)', border: '1px solid rgba(100,100,100,0.18)', borderRadius: 8, padding: '0.45rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} title="Gender not set in sewadars table">
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>?</span>
+            <span style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--text-muted)' }}>{liveStats.total - liveStats.male - liveStats.female}</span>
+          </div>
+        )}
       </div>
 
       <BarcodeScanner ref={scannerRef} onScan={handleScan} />
@@ -539,7 +554,7 @@ export default function ScannerPage({ isOnline }) {
             </div>
             <input
               type="text" placeholder="Search by name or badge…" value={manualSearch} autoFocus
-              onChange={e => { setManualSearch(e.target.value); searchSewadars(e.target.value) }}
+              onChange={e => { const v = e.target.value; setManualSearch(v); clearTimeout(window._manualDebounce); window._manualDebounce = setTimeout(() => searchSewadars(v), 300) }}
               className="input" style={{ width: '100%', marginBottom: '0.75rem' }}
             />
             {manualSearching && <div className="spinner" style={{ margin: '1rem auto' }} />}
