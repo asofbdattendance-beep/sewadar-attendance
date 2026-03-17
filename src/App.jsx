@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
-import { syncOfflineQueue, getOfflineQueueCount, populateOfflineCache, populateAttendanceCache } from './lib/offline'
+import { syncOfflineQueue, getOfflineQueueCount, populateOfflineCache } from './lib/offline'
 import { supabase, ROLES } from './lib/supabase'
 import LoginPage from './pages/LoginPage'
 import ScannerPage from './pages/ScannerPage'
@@ -25,7 +25,6 @@ function AppLayout() {
       setIsOnline(true)
       syncOfflineQueue(supabase).then(() => setPendingSync(getOfflineQueueCount()))
       populateOfflineCache(supabase)
-      populateAttendanceCache(supabase)
     }
     const offline = () => setIsOnline(false)
     window.addEventListener('online', online)
@@ -33,7 +32,6 @@ function AppLayout() {
     setPendingSync(getOfflineQueueCount())
     if (navigator.onLine) {
       populateOfflineCache(supabase)
-      populateAttendanceCache(supabase)
     }
     // Fetch open flags count
     async function fetchFlagCount() {
@@ -42,17 +40,11 @@ function AppLayout() {
       setOpenFlagCount(count || 0)
     }
     fetchFlagCount()
-    // FIX #10: Only poll when tab is visible — no background DB calls
-    let flagInterval = setInterval(() => {
-      if (document.visibilityState === 'visible') fetchFlagCount()
-    }, 60000)
-    const onVisible = () => { if (document.visibilityState === 'visible') fetchFlagCount() }
-    document.addEventListener('visibilitychange', onVisible)
+    const flagInterval = setInterval(fetchFlagCount, 60000)
     return () => {
       window.removeEventListener('online', online)
       window.removeEventListener('offline', offline)
       clearInterval(flagInterval)
-      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [])
 
