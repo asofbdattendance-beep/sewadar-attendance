@@ -21,7 +21,8 @@ export default function FlagsPage() {
   const isAso = profile?.role === ROLES.ASO
 
   useEffect(() => {
-    loadChildCentres().then(fetchFlags)
+    loadChildCentres().catch(console.error)
+    fetchFlags().catch(console.error)
   }, [statusFilter, profile])
 
   async function loadChildCentres() {

@@ -65,7 +65,7 @@ function AttendanceTab() {
 
   // Load centres + recent searches
   useEffect(() => {
-    fetchCentres()
+    fetchCentres().catch(console.error)
     const saved = localStorage.getItem('records_recent_searches')
     if (saved) setRecentSearches(JSON.parse(saved))
     const savedSettings = localStorage.getItem('records_settings')
@@ -94,7 +94,7 @@ function AttendanceTab() {
 
   // Fetch records
   useEffect(() => {
-    fetchRecords()
+    fetchRecords().catch(console.error)
   }, [page, sortCol, sortDir, searchTerm, dateRange, centreFilter, quickFilter, profile, centres])
 
   async function fetchCentres() {

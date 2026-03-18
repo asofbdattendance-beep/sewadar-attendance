@@ -318,7 +318,7 @@ function ViewJathaTab() {
   const isAdmin = [ROLES.ASO, ROLES.CENTRE_USER].includes(profile?.role)
   const isAso = profile?.role === ROLES.ASO
 
-  useEffect(() => { fetchRecords() }, [typeFilter, monthFilter])
+  useEffect(() => { fetchRecords().catch(console.error) }, [typeFilter, monthFilter])
 
   async function fetchRecords() {
     setLoading(true)

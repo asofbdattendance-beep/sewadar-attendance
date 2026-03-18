@@ -112,14 +112,14 @@ export default function SuperAdminPage() {
 
   // Fetch centres on mount (needed everywhere)
   useEffect(() => {
-    fetchCentresData()
+    fetchCentresData().catch(console.error)
   }, [])
 
-  useEffect(() => { if (tab === 'users') fetchUsers() }, [tab])
-  useEffect(() => { if (tab === 'sewadars') fetchSewadars() }, [tab, sewadarPage, sewadarSearch, sewadarCentreFilter])
-  useEffect(() => { if (tab === 'attendance') fetchAttendance() }, [tab, attDate, attSearch, attPage])
-  useEffect(() => { if (tab === 'jatha_centres') fetchJathaCentres() }, [tab, jathaTypeFilter])
-  useEffect(() => { if (tab === 'reports') fetchReports() }, [tab, dateRange])
+  useEffect(() => { if (tab === 'users') fetchUsers().catch(console.error) }, [tab])
+  useEffect(() => { if (tab === 'sewadars') fetchSewadars().catch(console.error) }, [tab, sewadarPage, sewadarSearch, sewadarCentreFilter])
+  useEffect(() => { if (tab === 'attendance') fetchAttendance().catch(console.error) }, [tab, attDate, attSearch, attPage])
+  useEffect(() => { if (tab === 'jatha_centres') fetchJathaCentres().catch(console.error) }, [tab, jathaTypeFilter])
+  useEffect(() => { if (tab === 'reports') fetchReports().catch(console.error) }, [tab, dateRange])
 
   async function fetchCentresData() {
     const { data } = await supabase.from('centres').select('centre_name, parent_centre').order('centre_name')

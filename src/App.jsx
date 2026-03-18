@@ -24,7 +24,7 @@ function AppLayout() {
   useEffect(() => {
     const online = () => {
       setIsOnline(true)
-      syncOfflineQueue(supabase).then(() => setPendingSync(getOfflineQueueCount()))
+      syncOfflineQueue(supabase).then(() => setPendingSync(getOfflineQueueCount())).catch(console.warn)
       populateOfflineCache(supabase)
       populateAttendanceCache(supabase)
     }
@@ -36,18 +36,16 @@ function AppLayout() {
       populateOfflineCache(supabase)
       populateAttendanceCache(supabase)
     }
-    // Fetch open flags count
     async function fetchFlagCount() {
       if (!profile) return
       const { count } = await supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open')
       setOpenFlagCount(count || 0)
     }
-    fetchFlagCount()
-    // FIX #10: Only poll when tab is visible — no background DB calls
+    fetchFlagCount().catch(console.warn)
     let flagInterval = setInterval(() => {
-      if (document.visibilityState === 'visible') fetchFlagCount()
+      if (document.visibilityState === 'visible') fetchFlagCount().catch(console.warn)
     }, 60000)
-    const onVisible = () => { if (document.visibilityState === 'visible') fetchFlagCount() }
+    const onVisible = () => { if (document.visibilityState === 'visible') fetchFlagCount().catch(console.warn) }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
       window.removeEventListener('online', online)
