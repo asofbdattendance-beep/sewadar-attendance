@@ -191,7 +191,9 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   return (
     <div className="scanner-wrapper">
-      <video ref={videoRef} className="scanner-video" playsInline muted autoPlay />
+      <div className="scanner-view">
+  <video ref={videoRef} playsInline muted autoPlay />
+</div>
 
       {status === 'loading' && (
         <div className="scanner-overlay">
