@@ -13,6 +13,46 @@ import JathaPage from './pages/JathaPage'
 import ToastContainer from './components/Toast'
 import { Scan, FileText, User, Shield, WifiOff, Flag, Plane } from 'lucide-react'
 
+function SessionExpiredScreen({ signOut }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', textAlign: 'center' }}>
+      <div>
+        <div style={{ width: 56, height: 56, background: 'rgba(201,168,76,0.2)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+          <Shield size={28} color="var(--gold)" />
+        </div>
+        <h2 style={{ color: 'var(--gold)', marginBottom: '0.5rem' }}>Session Expired</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>You were logged out due to 60 minutes of inactivity.</p>
+        <button className="btn btn-gold" onClick={signOut}>Back to Login</button>
+      </div>
+    </div>
+  )
+}
+
+function InactiveScreen() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', textAlign: 'center' }}>
+      <div>
+        <div style={{ width: 56, height: 56, background: 'var(--red-bg)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+          <Shield size={28} color="var(--red)" />
+        </div>
+        <h2 style={{ color: 'var(--red)', marginBottom: '0.5rem' }}>Account Inactive</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Your account has been deactivated. Contact Super Admin.</p>
+      </div>
+    </div>
+  )
+}
+
+function LoadingScreen() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg)' }}>
+      <div style={{ textAlign: 'center' }}>
+        <div className="spinner" style={{ margin: '0 auto 1rem' }} />
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading…</p>
+      </div>
+    </div>
+  )
+}
+
 function AppLayout() {
   const { profile, loading, sessionExpired, setSessionExpired, signOut, resetActivity } = useAuth()
   const [isOnline, setIsOnline] = useState(navigator.onLine)
@@ -55,47 +95,21 @@ function AppLayout() {
     }
   }, [])
 
-  if (loading) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg)' }}>
-      <div style={{ textAlign: 'center' }}>
-        <div className="spinner" style={{ margin: '0 auto 1rem' }} />
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading…</p>
-      </div>
-    </div>
-  )
-
   useEffect(() => {
-    if (!sessionExpired) return
-    resetActivity()
-    setSessionExpired(false)
+    if (sessionExpired) {
+      resetActivity()
+      setSessionExpired(false)
+    }
   }, [sessionExpired])
 
-  if (sessionExpired) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', textAlign: 'center' }}>
-      <div>
-        <div style={{ width: 56, height: 56, background: 'rgba(201,168,76,0.2)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
-          <Shield size={28} color="var(--gold)" />
-        </div>
-        <h2 style={{ color: 'var(--gold)', marginBottom: '0.5rem' }}>Session Expired</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>You were logged out due to 60 minutes of inactivity.</p>
-        <button className="btn btn-gold" onClick={signOut}>Back to Login</button>
-      </div>
-    </div>
-  )
+  // ── Conditional screens (after all hooks) ──
+  if (loading) return <LoadingScreen />
+
+  if (sessionExpired) return <SessionExpiredScreen signOut={signOut} />
 
   if (!profile) return <LoginPage />
 
-  if (!profile.is_active) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', textAlign: 'center' }}>
-      <div>
-        <div style={{ width: 56, height: 56, background: 'var(--red-bg)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
-          <Shield size={28} color="var(--red)" />
-        </div>
-        <h2 style={{ color: 'var(--red)', marginBottom: '0.5rem' }}>Account Inactive</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Your account has been deactivated. Contact Super Admin.</p>
-      </div>
-    </div>
-  )
+  if (!profile.is_active) return <InactiveScreen />
 
   const isScSpUser = profile.role === ROLES.SC_SP_USER
   const isCentreUser = profile.role === ROLES.CENTRE_USER
@@ -114,7 +128,6 @@ function AppLayout() {
 
   return (
     <div>
-      {/* Navbar */}
       <nav className="navbar">
         <div className="navbar-brand">
           <span style={{ fontSize: '1rem' }}>⬛</span>
@@ -128,14 +141,12 @@ function AppLayout() {
         )}
       </nav>
 
-      {/* Offline banner */}
       {!isOnline && (
         <div className="offline-banner">
           <WifiOff size={13} /> Offline mode — scans saved locally, will sync when internet returns
         </div>
       )}
 
-      {/* Routes */}
       <Routes>
         <Route path="/scan" element={<ScannerPage isOnline={isOnline} />} />
         <Route path="/records" element={<RecordsPage />} />
@@ -146,7 +157,6 @@ function AppLayout() {
         <Route path="*" element={<Navigate to="/scan" replace />} />
       </Routes>
 
-      {/* Bottom Nav */}
       <nav className="bottom-nav">
         {navItems.map(({ path, label, icon: Icon, badge }) => (
           <button
