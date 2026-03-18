@@ -1,18 +1,36 @@
 // supabase/functions/create-user/index.ts
-// Deploy with: supabase functions deploy create-user --no-verify-jwt
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
+const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") || "https://sewadar-attendance.netlify.app"
+const ANON_KEY = Deno.env.get("ANON_KEY") || ""
+
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 }
 
 serve(async (req) => {
 
-  // Handle CORS
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders })
+    return new Response(null, { status: 204, headers: corsHeaders })
+  }
+
+  const origin = req.headers.get("origin") || ""
+  if (origin !== ALLOWED_ORIGIN) {
+    return new Response(
+      JSON.stringify({ error: "Unauthorized origin" }),
+      { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    )
+  }
+
+  // Basic API key check as a fallback (since --no-verify-jwt bypasses JWT auth)
+  const providedKey = req.headers.get("apikey") || ""
+  if (ANON_KEY && providedKey !== ANON_KEY) {
+    return new Response(
+      JSON.stringify({ error: "Invalid API key" }),
+      { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    )
   }
 
   try {
@@ -27,7 +45,6 @@ serve(async (req) => {
       )
     }
 
-    // Use service role to bypass RLS
     const adminClient = createClient(supabaseUrl, serviceRoleKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     })
@@ -35,10 +52,9 @@ serve(async (req) => {
     const body = await req.json()
     const { email, password, name, badge_number, role, centre } = body
 
-    // Validate required fields
     if (!email || !password || !name || !badge_number || !role || !centre) {
       return new Response(
-        JSON.stringify({ error: "All fields are required: email, password, name, badge_number, role, centre" }),
+        JSON.stringify({ error: "All fields are required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       )
     }
@@ -53,12 +69,11 @@ serve(async (req) => {
     const validRoles = ['aso', 'centre_user', 'sc_sp_user']
     if (!validRoles.includes(role)) {
       return new Response(
-        JSON.stringify({ error: `Invalid role. Must be: ${validRoles.join(', ')}` }),
+        JSON.stringify({ error: "Invalid role" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       )
     }
 
-    // Create auth user
     const { data: authData, error: authError } = await adminClient.auth.admin.createUser({
       email: email.toLowerCase().trim(),
       password,
@@ -72,10 +87,9 @@ serve(async (req) => {
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         )
       }
-      throw new Error(authError.message)
+      throw new Error("Failed to create auth user")
     }
 
-    // Insert profile
     const { error: insertError } = await adminClient.from("users").insert({
       auth_id: authData.user.id,
       email: email.toLowerCase().trim(),
@@ -95,7 +109,7 @@ serve(async (req) => {
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         )
       }
-      throw new Error(insertError.message)
+      throw new Error("Failed to create user profile")
     }
 
     return new Response(
@@ -107,9 +121,9 @@ serve(async (req) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     )
 
-  } catch (err) {
+  } catch (_err) {
     return new Response(
-      JSON.stringify({ error: err.message || "Internal server error" }),
+      JSON.stringify({ error: "Internal server error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     )
   }

@@ -10,10 +10,11 @@ import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
 import FlagsPage from './pages/FlagsPage'
 import JathaPage from './pages/JathaPage'
+import ToastContainer from './components/Toast'
 import { Scan, FileText, User, Shield, WifiOff, Flag, Plane } from 'lucide-react'
 
 function AppLayout() {
-  const { profile, loading } = useAuth()
+  const { profile, loading, sessionExpired, setSessionExpired, signOut, resetActivity } = useAuth()
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingSync, setPendingSync] = useState(0)
   const [openFlagCount, setOpenFlagCount] = useState(0)
@@ -61,6 +62,25 @@ function AppLayout() {
       <div style={{ textAlign: 'center' }}>
         <div className="spinner" style={{ margin: '0 auto 1rem' }} />
         <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading…</p>
+      </div>
+    </div>
+  )
+
+  useEffect(() => {
+    if (!sessionExpired) return
+    resetActivity()
+    setSessionExpired(false)
+  }, [sessionExpired])
+
+  if (sessionExpired) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem', textAlign: 'center' }}>
+      <div>
+        <div style={{ width: 56, height: 56, background: 'rgba(201,168,76,0.2)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+          <Shield size={28} color="var(--gold)" />
+        </div>
+        <h2 style={{ color: 'var(--gold)', marginBottom: '0.5rem' }}>Session Expired</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>You were logged out due to 60 minutes of inactivity.</p>
+        <button className="btn btn-gold" onClick={signOut}>Back to Login</button>
       </div>
     </div>
   )
@@ -162,6 +182,7 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <AppLayout />
+        <ToastContainer />
       </AuthProvider>
     </BrowserRouter>
   )

@@ -51,6 +51,12 @@ function MarkJathaTab() {
   }, [jathaType])
 
   useEffect(() => {
+    if (jathaType === JATHA_TYPE.BEAS && !jathaCentre && uniqueCentreNames.length > 0) {
+      setJathaCentre(uniqueCentreNames[0])
+    }
+  }, [jathaType, jathaCentre, uniqueCentreNames])
+
+  useEffect(() => {
     const err = validateRange(dateFrom, dateTo)
     setDateError(err || '')
     if (!err && dateFrom && dateTo) setSatsangDays(countSatsangDays(dateFrom, dateTo))
@@ -237,9 +243,7 @@ function MarkJathaTab() {
           </>
         )}
 
-        {jathaType === JATHA_TYPE.BEAS && !jathaCentre && uniqueCentreNames.length > 0 && (() => {
-          setTimeout(() => setJathaCentre(uniqueCentreNames[0]), 0); return null
-        })()}
+        {jathaType === JATHA_TYPE.BEAS && !jathaCentre && uniqueCentreNames.length > 0 && null}
 
         {jathaType && (jathaCentre || jathaType === JATHA_TYPE.BEAS) && deptOptions.length > 0 && (
           <>
@@ -328,12 +332,12 @@ function ViewJathaTab() {
       q = q.gte('date_from', start).lte('date_from', end)
     }
 
-    if (profile?.role === ROLES.SC_SP_USER) q = q.eq('submitted_centre', profile.centre)
+    if (profile?.role === ROLES.SC_SP_USER) q = q.eq('centre', profile.centre)
     else if (profile?.role === ROLES.CENTRE_USER) {
       const { data: childData } = await supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       const centreNames = childData?.map(c => c.centre_name) || [profile.centre]
-      q = q.in('submitted_centre', centreNames)
+      q = q.in('centre', centreNames)
     }
 
     const { data } = await q

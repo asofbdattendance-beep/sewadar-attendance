@@ -5,7 +5,7 @@
 //   2. deleteAttRecord / deleteUser now check both error AND count===0 for silent RLS blocks
 //   3. All errors are surfaced clearly in the message banner
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
@@ -15,20 +15,14 @@ import {
   ChevronDown, ChevronRight, Users, Building2, Plane,
   Pencil, X, Check, Search, PlusCircle, Eye, EyeOff
 } from 'lucide-react'
+import CentreComboBox from '../components/CentreComboBox'
+import SkeletonRows from '../components/SkeletonRows'
+import TablePagination from '../components/TablePagination'
+import EmptyState from '../components/EmptyState'
+import { showSuccess, showError } from '../components/Toast'
 
-const PARENT_CENTRES = [
-  'ANKHEER','BALLABGARH','DLF CITY GURGAON','FIROZPUR JHIRKA',
-  'TAORU','GURGAON','MOHANA','ZAIBABAD KHERLI','NANGLA GUJRAN',
-  'NIT - 2','PALWAL','BAROLI','HODAL','RAJENDRA PARK',
-  'SECTOR-15-A','PRITHLA','SURAJ KUND','TIGAON'
-]
-
-function logAction(profile, action, details) {
-  return supabase.from('logs').insert({
-    user_badge: profile.badge_number, action, details,
-    timestamp: new Date().toISOString()
-  })
-}
+const PAGE_SIZE = 50
+const SEARCH_DEBOUNCE = 300
 
 export default function SuperAdminPage() {
   const { profile } = useAuth()
@@ -40,29 +34,40 @@ export default function SuperAdminPage() {
   const [loading, setLoading] = useState(false)
   const [showAddUser, setShowAddUser] = useState(false)
   const [showPw, setShowPw] = useState(false)
-  const [newUser, setNewUser] = useState({ email:'', password:'', name:'', badge_number:'', role:'sc_sp_user', centre: PARENT_CENTRES[0] })
+  const [newUser, setNewUser] = useState({ email:'', password:'', name:'', badge_number:'', role:'sc_sp_user', centre:'' })
   const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState({ text:'', type:'' })
   const [reportData, setReportData] = useState({ users:[], centres:[], logs:[] })
   const [reportLoading, setReportLoading] = useState(false)
   const [dateRange, setDateRange] = useState({ from:'', to:'' })
   const [expandedParent, setExpandedParent] = useState(null)
   const [expandedChild, setExpandedChild] = useState(null)
+
+  // Sewadar tab state
   const [sewadars, setSewadars] = useState([])
+  const [sewadarTotal, setSewadarTotal] = useState(0)
+  const [sewadarPage, setSewadarPage] = useState(1)
   const [sewadarSearch, setSewadarSearch] = useState('')
-  const [sewadarCentreFilter, setSewadarCentreFilter] = useState('')
+  const [sewadarSearchInput, setSewadarSearchInput] = useState('')
+  const [sewadarCentreFilter, setSewadarCentreFilter] = useState(null)
   const [sewadarLoading, setSewadarLoading] = useState(false)
   const [editingSewadar, setEditingSewadar] = useState(null)
   const [sewadarForm, setSewadarForm] = useState({})
   const [showAddSewadar, setShowAddSewadar] = useState(false)
-  const [newSewadar, setNewSewadar] = useState({ sewadar_name:'', badge_number:'', centre: PARENT_CENTRES[0], department:'', gender:'Male', age:'', father_husband_name:'' })
+  const [newSewadar, setNewSewadar] = useState({ sewadar_name:'', badge_number:'', centre:'', department:'', gender:'Male', age:'', father_husband_name:'' })
+
+  // Attendance tab state
   const [attSearch, setAttSearch] = useState('')
+  const [attSearchInput, setAttSearchInput] = useState('')
   const [attDate, setAttDate] = useState(new Date().toISOString().split('T')[0])
   const [attRecords, setAttRecords] = useState([])
+  const [attTotal, setAttTotal] = useState(0)
+  const [attPage, setAttPage] = useState(1)
   const [attLoading, setAttLoading] = useState(false)
   const [editingAtt, setEditingAtt] = useState(null)
   const [editAttTime, setEditAttTime] = useState('')
   const [editAttType, setEditAttType] = useState('')
+
   // Jatha Centres
   const [jathaCentres, setJathaCentres] = useState([])
   const [jathaCentresLoading, setJathaCentresLoading] = useState(false)
@@ -72,163 +77,152 @@ export default function SuperAdminPage() {
   const [editJathaForm, setEditJathaForm] = useState({})
   const [jathaTypeFilter, setJathaTypeFilter] = useState('')
 
-  useEffect(() => {
-    if (tab === 'users') fetchUsers()
-    else if (tab === 'centres') fetchCentres()
-    else if (tab === 'reports') fetchReports()
-    else if (tab === 'sewadars') fetchSewadars()
-    else if (tab === 'attendance') fetchAttendance()
-    else if (tab === 'jatha_centres') fetchJathaCentres()
-  }, [tab, dateRange])
+  const searchTimerRef = useRef(null)
 
-  useEffect(() => { if (tab === 'sewadars') fetchSewadars() }, [sewadarSearch, sewadarCentreFilter])
-  useEffect(() => { if (tab === 'attendance') fetchAttendance() }, [attDate, attSearch])
-  useEffect(() => { if (tab === 'jatha_centres') fetchJathaCentres() }, [jathaTypeFilter])
+  // ── Audit log helper ──
+  async function logAction(userProfile, action, details) {
+    try {
+      await supabase.from('logs').insert({
+        user_badge: userProfile?.badge_number || '',
+        action,
+        details,
+        timestamp: new Date().toISOString(),
+      })
+    } catch {}
+  }
+
+  // Debounced sewadar search
+  useEffect(() => {
+    clearTimeout(searchTimerRef.current)
+    searchTimerRef.current = setTimeout(() => {
+      setSewadarSearch(sewadarSearchInput)
+      setSewadarPage(1)
+    }, SEARCH_DEBOUNCE)
+    return () => clearTimeout(searchTimerRef.current)
+  }, [sewadarSearchInput])
+
+  // Debounced attendance search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setAttSearch(attSearchInput)
+      setAttPage(1)
+    }, SEARCH_DEBOUNCE)
+    return () => clearTimeout(timer)
+  }, [attSearchInput])
+
+  // Fetch centres on mount (needed everywhere)
+  useEffect(() => {
+    fetchCentresData()
+  }, [])
+
+  useEffect(() => { if (tab === 'users') fetchUsers() }, [tab])
+  useEffect(() => { if (tab === 'sewadars') fetchSewadars() }, [tab, sewadarPage, sewadarSearch, sewadarCentreFilter])
+  useEffect(() => { if (tab === 'attendance') fetchAttendance() }, [tab, attDate, attSearch, attPage])
+  useEffect(() => { if (tab === 'jatha_centres') fetchJathaCentres() }, [tab, jathaTypeFilter])
+  useEffect(() => { if (tab === 'reports') fetchReports() }, [tab, dateRange])
+
+  async function fetchCentresData() {
+    const { data } = await supabase.from('centres').select('centre_name, parent_centre').order('centre_name')
+    setCentres(data || [])
+    if (data && data.length > 0 && !newUser.centre) {
+      const parents = [...new Set(data.filter(c => !c.parent_centre).map(c => c.centre_name))]
+      if (parents.length > 0) setNewUser(u => ({ ...u, centre: parents[0] }))
+      if (parents.length > 0) setNewSewadar(s => ({ ...s, centre: parents[0] }))
+    }
+  }
 
   // ── Guard ──
   if (profile?.role !== ROLES.ASO) return (
     <div className="page text-center mt-3"><p className="text-muted">Access denied.</p></div>
   )
 
-  function showMsg(msg) {
-    setMessage(msg)
-    // Auto-clear success messages after 4s
-    if (msg.startsWith('✓')) setTimeout(() => setMessage(m => m === msg ? '' : m), 4000)
+  function showMsg(msg, type = 'success') {
+    setMessage({ text: msg, type })
+    if (type === 'success') setTimeout(() => setMessage(m => m.text === msg ? { text: '', type: '' } : m), 4000)
   }
 
   // ── Users ──
   async function fetchUsers() {
     setLoading(true)
     const { data, error } = await supabase.from('users').select('*').order('name')
-    if (error) showMsg('✗ Failed to load users: ' + error.message)
+    if (error) showMsg('Failed to load users: ' + error.message, 'error')
     setUsers(data || []); setLoading(false)
   }
 
   async function toggleUserActive(u) {
     try {
       const { error } = await supabase.from('users').update({ is_active: !u.is_active }).eq('id', u.id)
-      if (error) {
-        showMsg('✗ Update failed: ' + error.message)
-        console.error('toggleUserActive error:', error)
-        return
-      }
+      if (error) { showMsg('Update failed: ' + error.message, 'error'); return }
       await logAction(profile, 'TOGGLE_USER', `is_active=${!u.is_active} for ${u.badge_number}`)
-      showMsg(`✓ User ${!u.is_active ? 'activated' : 'deactivated'}`)
+      showMsg(`User ${!u.is_active ? 'activated' : 'deactivated'}`)
       fetchUsers()
-    } catch (err) {
-      console.error('toggleUserActive exception:', err)
-      showMsg('✗ Update failed: ' + err.message)
-    }
+    } catch (err) { showMsg('Update failed: ' + err.message, 'error') }
   }
 
   async function deleteUser(u) {
     if (!confirm(`Delete user ${u.name}?\n\nThis removes their login access. Attendance records are preserved.`)) return
-    
     try {
       const { error, count } = await supabase.from('users').delete({ count: 'exact' }).eq('id', u.id)
-      
-      if (error) {
-        showMsg('✗ Delete failed: ' + error.message)
-        console.error('deleteUser error:', error)
-        return
-      }
+      if (error) { showMsg('Delete failed: ' + error.message, 'error'); return }
       if (count === 0) {
-        // Check if user still exists
         const { data: checkData } = await supabase.from('users').select('id').eq('id', u.id).maybeSingle()
-        if (!checkData) {
-          showMsg('✓ User already deleted')
-          fetchUsers()
-          return
-        }
-        showMsg('✗ Delete blocked by RLS policy. Make sure you are logged in as ASO.')
-        return
+        if (!checkData) { showMsg('User already deleted'); fetchUsers(); return }
+        showMsg('Delete blocked by RLS policy. Make sure you are logged in as ASO.', 'error'); return
       }
-      
       await logAction(profile, 'DELETE_USER', `Deleted ${u.badge_number} ${u.name}`)
-      showMsg('✓ User deleted successfully')
+      showMsg('User deleted successfully')
       fetchUsers()
-    } catch (err) {
-      console.error('deleteUser exception:', err)
-      showMsg('✗ Delete failed: ' + err.message)
-    }
+    } catch (err) { showMsg('Delete failed: ' + err.message, 'error') }
   }
 
-  // ── CREATE USER via Edge Function ──
   async function createUser() {
     const { email, password, name, badge_number, role, centre } = newUser
-    if (!email || !password || !name || !badge_number) {
-      showMsg('✗ All fields are required'); return
-    }
-    if (password.length < 6) { showMsg('✗ Password must be at least 6 characters'); return }
+    if (!email || !password || !name || !badge_number) { showMsg('All fields are required', 'error'); return }
+    if (password.length < 6) { showMsg('Password must be at least 6 characters', 'error'); return }
 
-    setSaving(true); setMessage('')
+    setSaving(true)
     try {
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
       const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+      if (!supabaseUrl || !supabaseAnonKey) throw new Error('Missing Supabase config')
 
-      if (!supabaseUrl || !supabaseAnonKey) {
-        throw new Error('Missing Supabase config')
-      }
-
-      // Get current session for auth
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token || ''
 
-      const res = await fetch(
-        `${supabaseUrl}/functions/v1/create-user`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': supabaseAnonKey,
-            'Authorization': `Bearer ${token}`,
-          },
-          body: JSON.stringify({ email, password, name, badge_number, role, centre }),
-        }
-      )
+      const res = await fetch(`${supabaseUrl}/functions/v1/create-user`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({ email, password, name, badge_number, role, centre }),
+      })
 
       const json = await res.json()
-      
-      if (!res.ok) {
-        throw new Error(json.error || `Error: ${res.status}`)
-      }
-      
-      if (json.error) {
-        throw new Error(json.error)
-      }
+      if (!res.ok) throw new Error(json.error || `Error: ${res.status}`)
+      if (json.error) throw new Error(json.error)
 
       await logAction(profile, 'CREATE_USER', `Created ${role} ${badge_number.toUpperCase()}`)
-      showMsg('✓ User created: ' + email)
+      showMsg('User created: ' + email)
       setShowAddUser(false)
-      setNewUser({ email:'', password:'', name:'', badge_number:'', role:'sc_sp_user', centre: PARENT_CENTRES[0] })
+      const parents = [...new Set(centres.filter(c => !c.parent_centre).map(c => c.centre_name))]
+      setNewUser({ email:'', password:'', name:'', badge_number:'', role:'sc_sp_user', centre: parents[0] || '' })
       fetchUsers()
-    } catch (err) {
-      console.error('User creation error:', err)
-      showMsg('✗ ' + (err.message || 'Failed to create user'))
-    } finally {
-      setSaving(false)
-    }
+    } catch (err) { showMsg(err.message || 'Failed to create user', 'error') }
+    finally { setSaving(false) }
   }
 
-  // ── Centres ──
-  async function fetchCentres() {
-    setLoading(true)
-    const { data, error } = await supabase.from('centres').select('*').order('centre_name')
-    if (error) {
-      console.error('fetchCentres error:', error)
-      showMsg('✗ Failed to load centres: ' + error.message)
-    }
-    setCentres(data || []); setLoading(false)
-  }
+  // ── Centres ── (data already fetched via fetchCentresData on mount)
   async function updateCentreGeo(centreId, field, value, centreName) {
     const { error } = await supabase.from('centres').update({ [field]: value }).eq('id', centreId)
-    if (error) { showMsg('✗ ' + error.message); return }
+    if (error) { showMsg(error.message, 'error'); return }
     if (field === 'geo_enabled' && centreName) {
       const { data: ch } = await supabase.from('centres').select('id').eq('parent_centre', centreName)
       if (ch?.length) await supabase.from('centres').update({ geo_enabled: value }).in('id', ch.map(c => c.id))
       await logAction(profile, 'GEO_TOGGLE_CASCADE', `geo_enabled=${value} for ${centreName} + ${ch?.length||0} sub-centres`)
     }
-    fetchCentres()
+    fetchCentresData()
   }
 
   // ── Reports ──
@@ -258,150 +252,125 @@ export default function SuperAdminPage() {
   // ── Sewadars ──
   async function fetchSewadars() {
     setSewadarLoading(true)
-    let q = supabase.from('sewadars').select('*').order('sewadar_name').limit(200)
-    if (sewadarSearch.length >= 2) q = q.or(`sewadar_name.ilike.%${sewadarSearch}%,badge_number.ilike.%${sewadarSearch.toUpperCase()}%,department.ilike.%${sewadarSearch}%`)
+    const offset = (sewadarPage - 1) * PAGE_SIZE
+    let q = supabase.from('sewadars')
+      .select('*', { count: 'exact' })
+      .order('sewadar_name')
+      .range(offset, offset + PAGE_SIZE - 1)
+
+    if (sewadarSearch.length >= 2) {
+      q = q.or(`sewadar_name.ilike.%${sewadarSearch}%,badge_number.ilike.%${sewadarSearch.toUpperCase()}%,department.ilike.%${sewadarSearch}%`)
+    }
     if (sewadarCentreFilter) q = q.eq('centre', sewadarCentreFilter)
-    const { data } = await q; setSewadars(data || []); setSewadarLoading(false)
+
+    const { data, count, error } = await q
+    if (!error) {
+      setSewadarTotal(count || 0)
+      setSewadars(data || [])
+    }
+    setSewadarLoading(false)
   }
+
   async function saveSewadar() {
     const clean = {}
     Object.entries(sewadarForm).forEach(([k,v]) => { clean[k] = v === '' ? null : v })
     if (clean.age !== undefined) clean.age = parseInt(clean.age) || null
-    
     try {
       const { error } = await supabase.from('sewadars').update(clean).eq('id', editingSewadar)
-      if (error) {
-        showMsg('✗ Update failed: ' + error.message)
-        console.error('saveSewadar error:', error)
-        return
-      }
+      if (error) { showMsg('Update failed: ' + error.message, 'error'); return }
       await logAction(profile, 'EDIT_SEWADAR', `Updated id=${editingSewadar} fields: ${Object.keys(clean).join(',')}`)
-      showMsg('✓ Sewadar updated successfully!')
+      showMsg('Sewadar updated successfully')
       setEditingSewadar(null); setSewadarForm({}); fetchSewadars()
-    } catch (err) {
-      console.error('saveSewadar exception:', err)
-      showMsg('✗ Update failed: ' + err.message)
-    }
+    } catch (err) { showMsg('Update failed: ' + err.message, 'error') }
   }
+
   async function deleteSewadar(s) {
     if (!confirm(`Delete ${s.sewadar_name} (${s.badge_number})?\n\nAttendance history is preserved.`)) return
-    
     try {
       const { error, count } = await supabase.from('sewadars').delete({ count: 'exact' }).eq('id', s.id)
-      
-      if (error) {
-        showMsg('✗ Delete failed: ' + error.message)
-        console.error('deleteSewadar error:', error)
-        return
-      }
+      if (error) { showMsg('Delete failed: ' + error.message, 'error'); return }
       if (count === 0) {
         const { data: checkData } = await supabase.from('sewadars').select('id').eq('id', s.id).maybeSingle()
-        if (!checkData) {
-          showMsg('✓ Sewadar already deleted')
-          fetchSewadars()
-          return
-        }
-        showMsg('✗ Delete blocked by RLS. Make sure you are logged in as ASO.')
-        return
+        if (!checkData) { showMsg('Sewadar already deleted'); fetchSewadars(); return }
+        showMsg('Delete blocked by RLS. Make sure you are logged in as ASO.', 'error'); return
       }
-      
       await logAction(profile, 'DELETE_SEWADAR', `Deleted sewadar ${s.badge_number} ${s.sewadar_name}`)
-      showMsg('✓ Sewadar deleted successfully')
+      showMsg('Sewadar deleted successfully')
       fetchSewadars()
-    } catch (err) {
-      console.error('deleteSewadar exception:', err)
-      showMsg('✗ Delete failed: ' + err.message)
-    }
+    } catch (err) { showMsg('Delete failed: ' + err.message, 'error') }
   }
+
   async function createSewadar() {
-    if (!newSewadar.sewadar_name || !newSewadar.badge_number) { showMsg('✗ Name and badge required'); return }
+    if (!newSewadar.sewadar_name || !newSewadar.badge_number) { showMsg('Name and badge are required', 'error'); return }
     setSaving(true)
     const { error } = await supabase.from('sewadars').insert({
       ...newSewadar,
       badge_number: newSewadar.badge_number.toUpperCase(),
-      age: parseInt(newSewadar.age)||null
+      age: parseInt(newSewadar.age)||null,
+      gender: newSewadar.gender?.toUpperCase(),
     })
-    if (error) { showMsg('✗ ' + error.message); setSaving(false); return }
+    if (error) { showMsg(error.message, 'error'); setSaving(false); return }
     await logAction(profile, 'CREATE_SEWADAR', `Created ${newSewadar.badge_number.toUpperCase()} ${newSewadar.sewadar_name}`)
-    showMsg('✓ Sewadar created!')
+    showMsg('Sewadar created!')
     setShowAddSewadar(false)
-    setNewSewadar({ sewadar_name:'', badge_number:'', centre: PARENT_CENTRES[0], department:'', gender:'Male', age:'', father_husband_name:'' })
+    const parents = [...new Set(centres.filter(c => !c.parent_centre).map(c => c.centre_name))]
+    setNewSewadar({ sewadar_name:'', badge_number:'', centre: parents[0] || '', department:'', gender:'Male', age:'', father_husband_name:'' })
     fetchSewadars(); setSaving(false)
   }
 
   // ── Attendance correction ──
   async function fetchAttendance() {
     setAttLoading(true)
-    let q = supabase.from('attendance').select('*')
+    const offset = (attPage - 1) * PAGE_SIZE
+    let q = supabase.from('attendance').select('*', { count: 'exact' })
       .gte('scan_time', new Date(attDate + 'T00:00:00').toISOString())
       .lte('scan_time', new Date(attDate + 'T23:59:59.999').toISOString())
-      .order('scan_time', { ascending: false }).limit(300)
+      .order('scan_time', { ascending: false })
+      .range(offset, offset + PAGE_SIZE - 1)
+
     if (attSearch.length >= 2) q = q.or(`sewadar_name.ilike.%${attSearch}%,badge_number.ilike.%${attSearch.toUpperCase()}%`)
-    const { data, error } = await q
-    if (error) {
-      showMsg('✗ Failed to load attendance: ' + error.message)
-      console.error('fetchAttendance error:', error)
+
+    const { data, count, error } = await q
+    if (!error) {
+      setAttTotal(count || 0)
+      setAttRecords(data || [])
     }
-    setAttRecords(data || []); setAttLoading(false)
+    setAttLoading(false)
   }
 
   async function deleteAttRecord(r) {
     if (!confirm(`Delete ${r.type} record for ${r.badge_number} at ${new Date(r.scan_time).toLocaleTimeString('en-IN')}?\n\nThis cannot be undone.`)) return
-
     try {
-      const { error, count } = await supabase
-        .from('attendance')
-        .delete({ count: 'exact' })
-        .eq('id', r.id)
-
-      if (error) {
-        showMsg(`✗ Delete failed: ${error.message}`)
-        console.error('deleteAttRecord error:', error)
-        return
-      }
+      const { error, count } = await supabase.from('attendance').delete({ count: 'exact' }).eq('id', r.id)
+      if (error) { showMsg(`Delete failed: ${error.message}`, 'error'); return }
       if (count === 0) {
-        // Try a workaround - maybe the record was already deleted or RLS blocked it
-        // Re-fetch to check if record still exists
         const { data: checkData } = await supabase.from('attendance').select('id').eq('id', r.id).maybeSingle()
-        if (!checkData) {
-          // Record doesn't exist anyway - treat as success
-          showMsg('✓ Record already deleted or does not exist')
-          fetchAttendance()
-          return
-        }
-        showMsg('✗ Delete was blocked by RLS policy. Make sure you are logged in as ASO.')
-        return
+        if (!checkData) { showMsg('Record already deleted or does not exist'); fetchAttendance(); return }
+        showMsg('Delete was blocked by RLS policy. Make sure you are logged in as ASO.', 'error'); return
       }
-
       await logAction(profile, 'DELETE_ATTENDANCE', `Deleted ${r.type} id=${r.id} badge=${r.badge_number}`)
-      showMsg('✓ Record deleted successfully')
+      showMsg('Record deleted successfully')
       fetchAttendance()
-    } catch (err) {
-      console.error('deleteAttRecord exception:', err)
-      showMsg('✗ Delete failed: ' + err.message)
-    }
+    } catch (err) { showMsg('Delete failed: ' + err.message, 'error') }
   }
 
+  // FIX #14: Timezone-safe edit save using UTC
   async function saveAttEdit() {
     const updates = {}
-    if (editAttTime) updates.scan_time = new Date(attDate + 'T' + editAttTime).toISOString()
+    if (editAttTime) {
+      // Parse in India timezone (UTC+5:30), convert to UTC ISO string
+      const localDateTime = new Date(`${attDate}T${editAttTime}:00`)
+      updates.scan_time = localDateTime.toISOString()
+    }
     if (editAttType && editAttType !== editingAtt.type) updates.type = editAttType
     if (!Object.keys(updates).length) { setEditingAtt(null); return }
-    
     try {
       const { error } = await supabase.from('attendance').update(updates).eq('id', editingAtt.id)
-      if (error) {
-        showMsg('✗ Update failed: ' + error.message)
-        console.error('saveAttEdit error:', error)
-        return
-      }
+      if (error) { showMsg('Update failed: ' + error.message, 'error'); return }
       await logAction(profile, 'EDIT_ATTENDANCE', `Edited id=${editingAtt.id} badge=${editingAtt.badge_number}: ${JSON.stringify(updates)}`)
-      showMsg('✓ Record updated successfully')
+      showMsg('Record updated successfully')
       setEditingAtt(null); fetchAttendance()
-    } catch (err) {
-      console.error('saveAttEdit exception:', err)
-      showMsg('✗ Update failed: ' + err.message)
-    }
+    } catch (err) { showMsg('Update failed: ' + err.message, 'error') }
   }
 
   // ── Jatha Centres ──
@@ -412,23 +381,23 @@ export default function SuperAdminPage() {
     const { data } = await q; setJathaCentres(data || []); setJathaCentresLoading(false)
   }
   async function createJathaCentre() {
-    if (!newJatha.centre_name.trim() || !newJatha.department.trim()) { showMsg('✗ Centre name and department are required'); return }
+    if (!newJatha.centre_name.trim() || !newJatha.department.trim()) { showMsg('Centre name and department are required', 'error'); return }
     setSaving(true)
     const { error } = await supabase.from('jatha_centres').insert({
       jatha_type: newJatha.jatha_type, centre_name: newJatha.centre_name.trim(),
       department: newJatha.department.trim(), is_active: true, created_at: new Date().toISOString()
     })
-    if (error) { showMsg('✗ ' + error.message); setSaving(false); return }
+    if (error) { showMsg(error.message, 'error'); setSaving(false); return }
     await logAction(profile, 'CREATE_JATHA_CENTRE', `Added ${newJatha.centre_name} (${newJatha.jatha_type})`)
-    showMsg('✓ Jatha centre added!'); setShowAddJatha(false)
+    showMsg('Jatha centre added!'); setShowAddJatha(false)
     setNewJatha({ jatha_type: JATHA_TYPE.MAJOR_CENTRE, centre_name:'', department:'', is_active: true })
     fetchJathaCentres(); setSaving(false)
   }
   async function saveJathaCentre(jc) {
     const { error } = await supabase.from('jatha_centres').update(editJathaForm).eq('id', jc.id)
-    if (error) { showMsg('✗ ' + error.message); return }
+    if (error) { showMsg(error.message, 'error'); return }
     await logAction(profile, 'EDIT_JATHA_CENTRE', `Updated jatha_centre id=${jc.id}`)
-    showMsg('✓ Updated!'); setEditingJatha(null); setEditJathaForm({}); fetchJathaCentres()
+    showMsg('Updated!'); setEditingJatha(null); setEditJathaForm({}); fetchJathaCentres()
   }
   async function toggleJathaCentreActive(jc) {
     await supabase.from('jatha_centres').update({ is_active: !jc.is_active }).eq('id', jc.id)
@@ -436,37 +405,23 @@ export default function SuperAdminPage() {
   }
   async function deleteJathaCentre(jc) {
     if (!confirm(`Delete "${jc.centre_name} — ${jc.department}"? Existing jatha records are unaffected.`)) return
-    
     try {
       const { error, count } = await supabase.from('jatha_centres').delete({ count: 'exact' }).eq('id', jc.id)
-      
-      if (error) {
-        showMsg('✗ Delete failed: ' + error.message)
-        console.error('deleteJathaCentre error:', error)
-        return
-      }
+      if (error) { showMsg('Delete failed: ' + error.message, 'error'); return }
       if (count === 0) {
         const { data: checkData } = await supabase.from('jatha_centres').select('id').eq('id', jc.id).maybeSingle()
-        if (!checkData) {
-          showMsg('✓ Jatha centre already deleted')
-          fetchJathaCentres()
-          return
-        }
-        showMsg('✗ Delete blocked by RLS. Make sure you are logged in as ASO.')
-        return
+        if (!checkData) { showMsg('Jatha centre already deleted'); fetchJathaCentres(); return }
+        showMsg('Delete blocked by RLS. Make sure you are logged in as ASO.', 'error'); return
       }
-      
       await logAction(profile, 'DELETE_JATHA_CENTRE', `Deleted ${jc.centre_name}`)
-      showMsg('✓ Deleted successfully')
+      showMsg('Deleted successfully')
       fetchJathaCentres()
-    } catch (err) {
-      console.error('deleteJathaCentre exception:', err)
-      showMsg('✗ Delete failed: ' + err.message)
-    }
+    } catch (err) { showMsg('Delete failed: ' + err.message, 'error') }
   }
 
   // ── Render helpers ──
-  const centreTree = PARENT_CENTRES.map(p => ({
+  const parentCentres = [...new Set(centres.filter(c => !c.parent_centre).map(c => c.centre_name))]
+  const centreTree = parentCentres.map(p => ({
     parent: p,
     children: centres.filter(c => c.parent_centre === p),
     config: centres.find(c => c.centre_name === p)
@@ -495,10 +450,13 @@ export default function SuperAdminPage() {
         <p className="text-muted text-xs mt-1">Area Secretary · Write access only</p>
       </div>
 
-      {message && (
-        <div className={`super-admin-msg ${message.startsWith('✓') ? 'msg-success' : 'msg-error'}`}
-          onClick={() => setMessage('')} style={{ cursor:'pointer', marginBottom:'1rem' }}>
-          {message}
+      {message.text && (
+        <div
+          className={`super-admin-msg ${message.type === 'error' ? 'msg-error' : 'msg-success'}`}
+          onClick={() => setMessage({ text:'', type:'' })}
+          style={{ cursor:'pointer', marginBottom:'1rem' }}
+        >
+          {message.text}
           <span style={{ float:'right', opacity:0.5, marginLeft:'1rem' }}>✕</span>
         </div>
       )}
@@ -562,53 +520,106 @@ export default function SuperAdminPage() {
           <div style={{ display:'flex', gap:'0.75rem', marginBottom:'0.75rem', flexWrap:'wrap', alignItems:'center' }}>
             <div className="search-box" style={{ flex:1, minWidth:200 }}>
               <Search size={15} />
-              <input type="text" placeholder="Search name, badge or dept…" value={sewadarSearch} onChange={e => setSewadarSearch(e.target.value)} />
+              <input type="text" placeholder="Search name, badge or dept…"
+                value={sewadarSearchInput}
+                onChange={e => setSewadarSearchInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Escape') setSewadarSearchInput('') }}
+              />
+              {sewadarSearchInput && (
+                <button onClick={() => { setSewadarSearchInput(''); setSewadarSearch('') }}
+                  style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', display:'flex' }}>
+                  <X size={13} />
+                </button>
+              )}
             </div>
-            <select className="input" style={{ width:180 }} value={sewadarCentreFilter} onChange={e => setSewadarCentreFilter(e.target.value)}>
-              <option value="">All Centres</option>
-              {PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
+            <CentreComboBox
+              value={sewadarCentreFilter}
+              onChange={val => { setSewadarCentreFilter(val); setSewadarPage(1) }}
+              centres={centres}
+              includeAll={true}
+            />
             <button className="btn btn-gold" onClick={() => setShowAddSewadar(true)}><PlusCircle size={15} /> Add</button>
           </div>
-          <p className="text-muted text-xs mb-2">{sewadars.length > 0 ? `${sewadars.length} results` : 'Type ≥2 chars or choose a centre to search'}</p>
-          {sewadarLoading ? <div className="spinner" style={{ margin:'2rem auto' }} /> : (
-            <div className="table-wrap"><table>
-              <thead><tr><th>Name</th><th>Badge</th><th>Centre</th><th>Dept</th><th>Gender</th><th>Age</th><th></th></tr></thead>
-              <tbody>
-                {sewadars.map(s => (
-                  <tr key={s.id}>
-                    {editingSewadar === s.id ? (
-                      <>
-                        <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem' }} value={sewadarForm.sewadar_name ?? s.sewadar_name} onChange={e => setSewadarForm(f => ({...f, sewadar_name: e.target.value}))} /></td>
-                        <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem', fontFamily:'monospace', textTransform:'uppercase' }} value={sewadarForm.badge_number ?? s.badge_number} onChange={e => setSewadarForm(f => ({...f, badge_number: e.target.value.toUpperCase()}))} /></td>
-                        <td><select className="input" style={{ padding:'0.3rem', fontSize:'0.82rem' }} value={sewadarForm.centre ?? s.centre} onChange={e => setSewadarForm(f => ({...f, centre: e.target.value}))}>{PARENT_CENTRES.map(c => <option key={c}>{c}</option>)}{centres.filter(c => c.parent_centre).map(c => <option key={c.centre_name}>{c.centre_name}</option>)}</select></td>
-                        <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem' }} value={sewadarForm.department ?? (s.department??'')} onChange={e => setSewadarForm(f => ({...f, department: e.target.value}))} /></td>
-                        <td><select className="input" style={{ padding:'0.3rem', fontSize:'0.82rem' }} value={sewadarForm.gender ?? s.gender} onChange={e => setSewadarForm(f => ({...f, gender: e.target.value}))}><option>Male</option><option>Female</option></select></td>
-                        <td><input className="input" type="number" style={{ padding:'0.3rem', fontSize:'0.82rem', width:60 }} value={sewadarForm.age ?? (s.age??'')} onChange={e => setSewadarForm(f => ({...f, age: e.target.value}))} /></td>
-                        <td style={{ display:'flex', gap:4 }}>
-                          <button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveSewadar}><Check size={15} /></button>
-                          <button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => { setEditingSewadar(null); setSewadarForm({}) }}><X size={15} /></button>
-                        </td>
-                      </>
-                    ) : (
-                      <>
-                        <td style={{ fontWeight:500 }}>{s.sewadar_name}</td>
-                        <td style={{ fontFamily:'monospace', fontSize:'0.82rem', color:'var(--gold)' }}>{s.badge_number}</td>
-                        <td style={{ fontSize:'0.82rem' }}>{s.centre}</td>
-                        <td style={{ fontSize:'0.82rem', color:'var(--text-muted)' }}>{s.department||'—'}</td>
-                        <td style={{ fontSize:'0.82rem' }}>{s.gender||'—'}</td>
-                        <td style={{ fontSize:'0.82rem' }}>{s.age||'—'}</td>
-                        <td style={{ display:'flex', gap:4 }}>
-                          <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--blue)' }} onClick={() => { setEditingSewadar(s.id); setSewadarForm({}) }}><Pencil size={14} /></button>
-                          <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--red)' }} onClick={() => deleteSewadar(s)}><Trash2 size={14} /></button>
-                        </td>
-                      </>
+
+          {sewadarLoading ? (
+            <SkeletonRows rows={10} cols={7} />
+          ) : (
+            <>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+                {sewadarTotal > 0
+                  ? `Showing ${(sewadarPage - 1) * PAGE_SIZE + 1}–${Math.min(sewadarPage * PAGE_SIZE, sewadarTotal)} of ${sewadarTotal.toLocaleString()} sewadars`
+                  : 'Type ≥2 characters or select a centre to search'
+                }
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th><th>Badge</th><th>Centre</th><th>Dept</th><th>Gender</th><th>Age</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sewadars.map(s => (
+                      <tr key={s.id}>
+                        {editingSewadar === s.id ? (
+                          <>
+                            <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem' }} value={sewadarForm.sewadar_name ?? s.sewadar_name} onChange={e => setSewadarForm(f => ({...f, sewadar_name: e.target.value}))} /></td>
+                            <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem', fontFamily:'monospace', textTransform:'uppercase' }} value={sewadarForm.badge_number ?? s.badge_number} onChange={e => setSewadarForm(f => ({...f, badge_number: e.target.value.toUpperCase()}))} /></td>
+                            <td>
+                              <select className="input" style={{ padding:'0.3rem', fontSize:'0.82rem' }} value={sewadarForm.centre ?? s.centre} onChange={e => setSewadarForm(f => ({...f, centre: e.target.value}))}>
+                                {parentCentres.map(c => <option key={c}>{c}</option>)}
+                                {centres.filter(c => c.parent_centre).map(c => <option key={c.centre_name}>{c.centre_name}</option>)}
+                              </select>
+                            </td>
+                            <td><input className="input" style={{ padding:'0.3rem 0.5rem', fontSize:'0.82rem' }} value={sewadarForm.department ?? (s.department??'')} onChange={e => setSewadarForm(f => ({...f, department: e.target.value}))} /></td>
+                            <td>
+                              <select className="input" style={{ padding:'0.3rem', fontSize:'0.82rem' }} value={sewadarForm.gender ?? s.gender} onChange={e => setSewadarForm(f => ({...f, gender: e.target.value}))}>
+                                <option>Male</option><option>Female</option>
+                              </select>
+                            </td>
+                            <td><input className="input" type="number" style={{ padding:'0.3rem', fontSize:'0.82rem', width:60 }} value={sewadarForm.age ?? (s.age??'')} onChange={e => setSewadarForm(f => ({...f, age: e.target.value}))} /></td>
+                            <td style={{ display:'flex', gap:4 }}>
+                              <button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveSewadar}><Check size={15} /></button>
+                              <button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => { setEditingSewadar(null); setSewadarForm({}) }}><X size={15} /></button>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td style={{ fontWeight:500 }}>{s.sewadar_name}</td>
+                            <td style={{ fontFamily:'monospace', fontSize:'0.82rem', color:'var(--gold)' }}>{s.badge_number}</td>
+                            <td style={{ fontSize:'0.82rem' }}>{s.centre}</td>
+                            <td style={{ fontSize:'0.82rem', color:'var(--text-muted)' }}>{s.department||'—'}</td>
+                            <td style={{ fontSize:'0.82rem' }}>{s.gender||'—'}</td>
+                            <td style={{ fontSize:'0.82rem' }}>{s.age||'—'}</td>
+                            <td style={{ display:'flex', gap:4 }}>
+                              <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--blue)' }} onClick={() => { setEditingSewadar(s.id); setSewadarForm({}) }}><Pencil size={14} /></button>
+                              <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--red)' }} onClick={() => deleteSewadar(s)}><Trash2 size={14} /></button>
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    ))}
+                    {sewadars.length === 0 && (
+                      <tr><td colSpan={7} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>
+                        <EmptyState
+                          icon={Shield}
+                          title="No sewadars found"
+                          message={sewadarSearch ? `No results for "${sewadarSearch}"` : 'Search by name, badge or department'}
+                        />
+                      </td></tr>
                     )}
-                  </tr>
-                ))}
-                {!sewadars.length && !sewadarLoading && <tr><td colSpan={7} style={{ textAlign:'center', color:'var(--text-muted)', padding:'2rem' }}>No results.</td></tr>}
-              </tbody>
-            </table></div>
+                  </tbody>
+                </table>
+              </div>
+              {sewadarTotal > PAGE_SIZE && (
+                <TablePagination
+                  page={sewadarPage}
+                  pageSize={PAGE_SIZE}
+                  total={sewadarTotal}
+                  onPageChange={p => setSewadarPage(p)}
+                />
+              )}
+            </>
           )}
         </div>
       )}
@@ -861,7 +872,7 @@ export default function SuperAdminPage() {
               </div>
               <div><label className="label">Centre</label>
                 <select className="input" value={newUser.centre} onChange={e => setNewUser({...newUser, centre:e.target.value})}>
-                  {PARENT_CENTRES.map(c => <option key={c} value={c}>{c}</option>)}
+                  {parentCentres.map(c => <option key={c} value={c}>{c}</option>)}
                   {centres.filter(c => c.parent_centre).map(c => <option key={c.centre_name} value={c.centre_name}>{c.centre_name}</option>)}
                 </select>
               </div>
@@ -890,7 +901,7 @@ export default function SuperAdminPage() {
             <div className="mb-2"><label className="label">Full Name *</label><input className="input" placeholder="Ravi Kumar" value={newSewadar.sewadar_name} onChange={e => setNewSewadar({...newSewadar, sewadar_name:e.target.value})}/></div>
             <div className="mb-2"><label className="label">Badge Number *</label><input className="input" placeholder="FB5978GA0001" style={{ textTransform:'uppercase' }} value={newSewadar.badge_number} onChange={e => setNewSewadar({...newSewadar, badge_number:e.target.value})}/></div>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'1rem', marginBottom:'1rem' }}>
-              <div><label className="label">Centre</label><select className="input" value={newSewadar.centre} onChange={e => setNewSewadar({...newSewadar, centre:e.target.value})}>{PARENT_CENTRES.map(c => <option key={c}>{c}</option>)}{centres.filter(c => c.parent_centre).map(c => <option key={c.centre_name}>{c.centre_name}</option>)}</select></div>
+              <div><label className="label">Centre</label><select className="input" value={newSewadar.centre} onChange={e => setNewSewadar({...newSewadar, centre:e.target.value})}>{parentCentres.map(c => <option key={c}>{c}</option>)}{centres.filter(c => c.parent_centre).map(c => <option key={c.centre_name}>{c.centre_name}</option>)}</select></div>
               <div><label className="label">Department</label><input className="input" placeholder="e.g. Pathis" value={newSewadar.department} onChange={e => setNewSewadar({...newSewadar, department:e.target.value})}/></div>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'1rem', marginBottom:'1rem' }}>

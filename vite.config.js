@@ -7,19 +7,19 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon-512.png'],
+      includeAssets: ['icon-512.svg'],
       manifest: {
         name: 'Sewadar Attendance',
         short_name: 'Attendance',
         description: 'Sewadar Attendance Management System',
-        theme_color: '#1a1a2e',
-        background_color: '#1a1a2e',
+        theme_color: '#217346',
+        background_color: '#f0f4f0',
         display: 'standalone',
         orientation: 'portrait',
         scope: '/',
         start_url: '/',
         icons: [
-          { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }
+          { src: '/icon-512.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }
         ]
       },
       workbox: {
