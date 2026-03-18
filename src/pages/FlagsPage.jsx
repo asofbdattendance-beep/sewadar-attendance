@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, FLAG_TYPES, FLAG_STATUS } from '../lib/supabase'
@@ -348,8 +348,8 @@ export default function FlagsPage() {
                 const canResolve = (isAso || isCentreUser) && flag.status !== FLAG_STATUS.RESOLVED
 
                 return (
-                  <>
-                    <tr key={flag.id} onClick={() => setExpandedId(isExpanded ? null : flag.id)}
+                  <React.Fragment key={flag.id}>
+                    <tr onClick={() => setExpandedId(isExpanded ? null : flag.id)}
                       style={{
                         cursor: 'pointer',
                         borderBottom: isExpanded ? 'none' : '1px solid var(--border)',
@@ -490,7 +490,7 @@ export default function FlagsPage() {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </React.Fragment>
                 )
               })
             )}

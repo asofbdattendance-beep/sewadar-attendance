@@ -122,7 +122,7 @@ export default function SuperAdminPage() {
   useEffect(() => { if (tab === 'reports') fetchReports().catch(console.error) }, [tab, dateRange])
 
   async function fetchCentresData() {
-    const { data } = await supabase.from('centres').select('centre_name, parent_centre').order('centre_name')
+    const { data } = await supabase.from('centres').select('id, centre_name, parent_centre, geo_enabled, latitude, longitude, geo_radius').order('centre_name')
     setCentres(data || [])
     if (data && data.length > 0 && !newUser.centre) {
       const parents = [...new Set(data.filter(c => !c.parent_centre).map(c => c.centre_name))]
@@ -215,6 +215,7 @@ export default function SuperAdminPage() {
 
   // ── Centres ── (data already fetched via fetchCentresData on mount)
   async function updateCentreGeo(centreId, field, value, centreName) {
+    if (!centreId) { showMsg('Centre ID missing — please refresh', 'error'); return }
     const { error } = await supabase.from('centres').update({ [field]: value }).eq('id', centreId)
     if (error) { showMsg(error.message, 'error'); return }
     if (field === 'geo_enabled' && centreName) {
@@ -542,7 +543,13 @@ export default function SuperAdminPage() {
           </div>
 
           {sewadarLoading ? (
-            <SkeletonRows rows={10} cols={7} />
+            <div className="table-wrap">
+              <table>
+                <tbody>
+                  <SkeletonRows rows={10} cols={7} />
+                </tbody>
+              </table>
+            </div>
           ) : (
             <>
               <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>

@@ -490,7 +490,11 @@ function AttendanceTab() {
         {/* Table */}
         <div className="records-table-wrap">
           {loading ? (
-            <SkeletonRows rows={15} cols={isAdmin ? 8 : 7} />
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <tbody>
+                <SkeletonRows rows={15} cols={isAdmin ? 8 : 7} />
+              </tbody>
+            </table>
           ) : records.length === 0 ? (
             <EmptyState
               icon={FileText}
