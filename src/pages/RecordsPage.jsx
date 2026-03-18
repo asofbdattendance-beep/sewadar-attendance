@@ -50,6 +50,7 @@ function AttendanceTab() {
   const [centreFilter, setCentreFilter] = useState(null)
   const [quickFilter, setQuickFilter] = useState('all')
   const [quickFilterCounts, setQuickFilterCounts] = useState({ all: 0, in: 0, out: 0, flagged: 0, manual: 0 })
+  const [flagDetails, setFlagDetails] = useState({})
   const [recentSearches, setRecentSearches] = useState([])
   const [centres, setCentres] = useState([])
   const [flagModal, setFlagModal] = useState(null)
@@ -110,6 +111,7 @@ function AttendanceTab() {
 
   async function fetchRecords() {
     setLoading(true)
+
     const fromDate = new Date(dateRange.from + 'T00:00:00')
     const toDate = new Date(dateRange.to + 'T23:59:59.999')
 
@@ -117,14 +119,22 @@ function AttendanceTab() {
       .select('*', { count: 'exact' })
       .gte('scan_time', fromDate.toISOString())
       .lte('scan_time', toDate.toISOString())
-      .order(sortCol === 'badge_number' ? 'badge_number' : sortCol === 'scan_time' ? 'scan_time' : 'scan_time', { ascending: sortDir === 'asc' })
+      .order(
+        sortCol === 'badge_number'
+          ? 'badge_number'
+          : 'scan_time',
+        { ascending: sortDir === 'asc' }
+      )
 
     // Centre filter
     if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
       q = q.eq('centre', profile.centre)
     } else if (isCentreUser) {
       const scope = [profile.centre]
-      const childData = centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)
+      const childData = centres
+        .filter(c => c.parent_centre === profile.centre)
+        .map(c => c.centre_name)
+
       scope.push(...childData)
       q = q.in('centre', scope)
     } else if (centreFilter) {
@@ -133,92 +143,153 @@ function AttendanceTab() {
 
     // Search
     if (searchTerm.trim()) {
-      q = q.or(`badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`)
+      q = q.or(
+        `badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`
+      )
     }
 
-    // Quick filters (fetch all for flag check, then filter client-side)
-    const { data, error, count } = await q.limit(2000)
-    setLoading(false)
+    // NOTE: keeping your UI-only approach (no backend change)
+    const { data, error } = await q.limit(2000)
 
+    setLoading(false)
     if (error) return
 
-    // Group into badge+date
+    // ───── GROUPING ─────
     const grouped = {}
-    ;(data || []).forEach(r => {
-      const date = new Date(r.scan_time).toISOString().split('T')[0]
-      const key = `${r.badge_number}-${date}`
-      if (!grouped[key]) {
-        grouped[key] = {
-          badge_number: r.badge_number, sewadar_name: r.sewadar_name,
-          centre: r.centre, department: r.department, date,
-          in_time: null, out_time: null, in_scanner: null, out_scanner: null,
-          in_id: null, out_id: null, raw_in: null, raw_out: null,
-          manual_entry: false,
+
+      ; (data || []).forEach(r => {
+        const date = new Date(r.scan_time).toISOString().split('T')[0]
+        const key = `${r.badge_number}-${date}`
+
+        if (!grouped[key]) {
+          grouped[key] = {
+            badge_number: r.badge_number,
+            sewadar_name: r.sewadar_name,
+            centre: r.centre,
+            department: r.department,
+            date,
+            in_time: null,
+            out_time: null,
+            in_scanner: null,
+            out_scanner: null,
+            in_id: null,
+            out_id: null,
+            raw_in: null,
+            raw_out: null,
+            manual_entry: false,
+          }
         }
-      }
-      if (r.type === 'IN') {
-        grouped[key].in_time = r.scan_time
-        grouped[key].in_scanner = r.scanner_name
-        grouped[key].in_id = r.id
-        grouped[key].raw_in = r
-        if (r.manual_entry) grouped[key].manual_entry = true
-      }
-      if (r.type === 'OUT') {
-        grouped[key].out_time = r.scan_time
-        grouped[key].out_scanner = r.scanner_name
-        grouped[key].out_id = r.id
-        grouped[key].raw_out = r
-        if (r.manual_entry) grouped[key].manual_entry = true
-      }
-    })
+
+        if (r.type === 'IN') {
+          grouped[key].in_time = r.scan_time
+          grouped[key].in_scanner = r.scanner_name
+          grouped[key].in_id = r.id
+          grouped[key].raw_in = r
+          if (r.manual_entry) grouped[key].manual_entry = true
+        }
+
+        if (r.type === 'OUT') {
+          grouped[key].out_time = r.scan_time
+          grouped[key].out_scanner = r.scanner_name
+          grouped[key].out_id = r.id
+          grouped[key].raw_out = r
+          if (r.manual_entry) grouped[key].manual_entry = true
+        }
+      })
 
     let rows = Object.values(grouped)
 
-    // Compute counts from full dataset (not current page)
+    // ───── FETCH FLAGS FOR CURRENT PAGE ─────
+    const { flaggedCount } = await fetchFlagsForCurrentPage(rows)
+
+    // ───── QUICK FILTER COUNTS ─────
     setQuickFilterCounts({
       all: rows.length,
       in: rows.filter(r => r.in_time && !r.out_time).length,
       out: rows.filter(r => r.out_time && !r.in_time).length,
       manual: rows.filter(r => r.manual_entry).length,
-      flagged: 0,
+      flagged: flaggedCount,
     })
 
-    // Apply quick filter
+    // ───── APPLY QUICK FILTERS ─────
     if (quickFilter === 'in') {
       rows = rows.filter(r => r.in_time && !r.out_time)
     } else if (quickFilter === 'out') {
       rows = rows.filter(r => r.out_time && !r.in_time)
-    } else if (quickFilter === 'flagged') {
-      const flaggedCounts = await fetchFlagCounts(rows)
-      const flaggedRows = rows.filter(r => {
-        const key = r.badge_number + r.date
-        return flaggedCounts[key]
-      })
-      rows = flaggedRows
     } else if (quickFilter === 'manual') {
       rows = rows.filter(r => r.manual_entry)
+    } else if (quickFilter === 'flagged') {
+      rows = rows.filter(r =>
+        (r.raw_in && flagDetails[r.raw_in.id]) ||
+        (r.raw_out && flagDetails[r.raw_out.id])
+      )
     }
 
+    // ───── PAGINATION ─────
     setTotalCount(rows.length)
+
     const start = (page - 1) * PAGE_SIZE
     setRecords(rows.slice(start, start + PAGE_SIZE))
   }
+  // Returns { flagMap: {attendance_id→flagInfo}, flaggedCount: number }
+  async function fetchFlagsForCurrentPage(rows) {
+    if (!rows || rows.length === 0) {
+      setFlagDetails({})
+      return { flagMap: {}, flaggedCount: 0 }
+    }
 
-  // Fetch flagged record IDs and return a map of badge+date → isFlagged
-  async function fetchFlagCounts(allRows) {
-    if (allRows.length === 0) return {}
-    const { data } = await supabase.from('queries')
-      .select('attendance_id')
-      .eq('status', 'open')
-    if (!data) return {}
-    const flaggedIds = new Set(data.map(q => q.attendance_id).filter(Boolean))
-    const map = {}
-    allRows.forEach(r => {
-      const isFlagged = (r.raw_in && flaggedIds.has(r.raw_in.id)) || (r.raw_out && flaggedIds.has(r.raw_out.id))
-      map[r.badge_number + r.date] = isFlagged
+    const ids = []
+    rows.forEach(r => {
+      if (r.raw_in?.id) ids.push(r.raw_in.id)
+      if (r.raw_out?.id) ids.push(r.raw_out.id)
     })
-    setQuickFilterCounts(prev => ({ ...prev, flagged: allRows.filter(r => map[r.badge_number + r.date]).length }))
-    return map
+
+    if (ids.length === 0) {
+      setFlagDetails({})
+      return { flagMap: {}, flaggedCount: 0 }
+    }
+
+    let q = supabase
+      .from('queries')
+      .select('attendance_id, flag_type, issue_description, raised_by_name, raised_by_badge, created_at, status')
+      .in('attendance_id', ids)
+      .eq('status', 'open')
+
+    if (isCentreUser && profile?.centre) {
+      const scope = [profile.centre]
+      const childData = centres
+        .filter(c => c.parent_centre === profile.centre)
+        .map(c => c.centre_name)
+      scope.push(...childData)
+      q = q.in('target_centre', scope)
+    }
+
+    const { data, error } = await q
+
+    if (error) {
+      console.error(error)
+      return { flagMap: {}, flaggedCount: 0 }
+    }
+
+    const newMap = {}
+    ;(data || []).forEach(q => {
+      newMap[q.attendance_id] = {
+        flag_type: q.flag_type,
+        issue_description: q.issue_description,
+        raised_by_name: q.raised_by_name,
+        raised_by_badge: q.raised_by_badge,
+        created_at: q.created_at,
+        status: q.status,
+      }
+    })
+
+    const flaggedCount = rows.filter(r =>
+      (r.raw_in && newMap[r.raw_in.id]) ||
+      (r.raw_out && newMap[r.raw_out.id])
+    ).length
+
+    setFlagDetails(prev => ({ ...prev, ...newMap }))
+    return { flagMap: newMap, flaggedCount }
   }
 
   const handleSort = (col) => {
@@ -242,7 +313,7 @@ function AttendanceTab() {
     if (!flagModal || !profile) return
     setFlagSubmitting(true)
     const record = flagModal.raw_in || flagModal.raw_out
-    await supabase.from('queries').insert({
+    const { error } = await supabase.from('queries').insert({
       raised_by_badge: profile.badge_number,
       raised_by_name: profile.name,
       raised_by_centre: profile.centre,
@@ -254,7 +325,22 @@ function AttendanceTab() {
       status: 'open',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    }).catch(e => { showError('Failed to raise flag: ' + e.message) })
+    })
+    if (error) { showError('Failed to raise flag: ' + error.message); setFlagSubmitting(false); return }
+    if (record?.id) {
+      setFlagDetails(prev => ({
+        ...prev,
+        [record.id]: {
+          flag_type: flagType,
+          issue_description: flagNote.trim() || FLAG_TYPES.find(f => f.value === flagType)?.label || flagType,
+          raised_by_name: profile.name,
+          raised_by_badge: profile.badge_number,
+          created_at: new Date().toISOString(),
+          status: 'open',
+        }
+      }))
+      setQuickFilterCounts(prev => ({ ...prev, flagged: (prev.flagged || 0) + 1 }))
+    }
     setFlagSubmitting(false)
     setFlagSuccess(true)
     setTimeout(() => {
@@ -271,7 +357,7 @@ function AttendanceTab() {
     await supabase.from('logs').insert({
       user_badge: profile.badge_number, action: 'DELETE_ATTENDANCE',
       details: `Deleted ${type} id=${id} badge=${badge}`, timestamp: new Date().toISOString()
-    }).catch(() => {})
+    }).catch(() => { })
     showSuccess(`${type} record deleted`)
     fetchRecords()
   }
@@ -298,9 +384,24 @@ function AttendanceTab() {
   return (
     <div>
       {/* Search + Filters row */}
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
+      <div style={{
+        display: 'flex',
+        gap: '0.75rem',
+        marginBottom: '1rem',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        padding: '0.75rem',
+        background: 'var(--bg-elevated)',
+        border: '1px solid var(--border)',
+        borderRadius: 10
+      }}>
         {/* Search box */}
-        <div className="search-box" style={{ flex: 1, minWidth: 180, position: 'relative' }}>
+        <div className="search-box" style={{
+          flex: 1,
+          minWidth: 260,
+          maxWidth: 400,
+          position: 'relative'
+        }}>
           <Search size={15} />
           <input
             type="text"
@@ -384,146 +485,186 @@ function AttendanceTab() {
         </div>
       )}
 
-      {/* Table */}
-      <div className="records-table-wrap" style={{ marginBottom: '0.5rem' }}>
-        {loading ? (
-          <SkeletonRows rows={15} cols={isAdmin ? 8 : 7} />
-        ) : records.length === 0 ? (
-          <EmptyState
-            icon={FileText}
-            title={searchTerm ? `No results for "${searchTerm}"` : 'No records found'}
-            message={
-              searchTerm
-                ? 'Try a different search term or adjust your date range'
-                : 'No attendance records in the selected date range'
-            }
-            searchTerm={searchTerm}
-            action={() => { setSearchInput(''); setSearchTerm(''); setDateRange({ from: todayDateStr(), to: todayDateStr() }) }}
-            actionLabel="Clear filters"
-          />
-        ) : (
-          <table className="records-table" ref={tableRef} tabIndex={0}
-            onKeyDown={e => {
-              if (e.key === 'ArrowDown') {
-                e.preventDefault()
-                highlightedRowRef.current = Math.min(highlightedRowRef.current + 1, records.length - 1)
-              } else if (e.key === 'ArrowUp') {
-                e.preventDefault()
-                highlightedRowRef.current = Math.max(highlightedRowRef.current - 1, 0)
+      {/* Full-width table on desktop — breaks out of page container */}
+      <div className="records-page-content">
+        {/* Table */}
+        <div className="records-table-wrap">
+          {loading ? (
+            <SkeletonRows rows={15} cols={isAdmin ? 8 : 7} />
+          ) : records.length === 0 ? (
+            <EmptyState
+              icon={FileText}
+              title={searchTerm ? `No results for "${searchTerm}"` : 'No records found'}
+              message={
+                searchTerm
+                  ? 'Try a different search term or adjust your date range'
+                  : 'No attendance records in the selected date range'
               }
-            }}
-          >
-            <thead>
-              <tr>
-                <SortHeader col="badge_number" label="Badge" />
-                <SortHeader col="sewadar_name" label="Name" />
-                {isAdmin && <th>Centre</th>}
-                <SortHeader col="scan_time" label="Date" />
-                <th>IN</th>
-                <th>OUT</th>
-                <th>Status</th>
-                <th style={{ width: isAso ? 80 : 36 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {records.map((r, i) => (
-                <tr
-                  key={`${r.badge_number}-${r.date}`}
-                  ref={highlightedRowRef.current === i ? tableRef : null}
-                  style={{
-                    background: highlightedRowRef.current === i ? 'var(--green-bg)' : 'transparent',
-                    outline: highlightedRowRef.current === i ? '2px solid var(--excel-green)' : 'none',
-                    outlineOffset: -2,
-                  }}
-                >
-                  <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.82rem', fontWeight: 600 }}>{r.badge_number}</td>
-                  <td>
-                    <div style={{ fontWeight: 500 }}>{r.sewadar_name}</div>
-                    {r.manual_entry && (
-                      <span style={{ fontSize: '0.6rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 5px', fontWeight: 700 }}>MANUAL</span>
-                    )}
-                  </td>
-                  {isAdmin && <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{r.centre}</td>}
-                  <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                    {new Date(r.date + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
-                  </td>
-                  <td>
-                    <span className={`time-cell ${r.in_time ? 'has-time' : ''}`}>{formatTime(r.in_time)}</span>
-                    {r.in_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.in_scanner}</div>}
-                  </td>
-                  <td>
-                    <span className={`time-cell ${r.out_time ? 'has-time out-time' : ''}`}>{formatTime(r.out_time)}</span>
-                    {r.out_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.out_scanner}</div>}
-                  </td>
-                  <td>
-                    {r.in_time && r.out_time
-                      ? <span className="status-complete">Complete</span>
-                      : r.in_time ? <span className="status-in-only">IN only</span>
-                        : r.out_time ? <span className="status-out-only">OUT only</span>
-                          : <span className="status-none">—</span>}
-                  </td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                      <button className="records-flag-btn" title="Raise flag"
-                        onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}>
-                        <Flag size={13} />
-                      </button>
-                      {isAso && r.in_id && (
-                        <button className="records-delete-btn" title="Delete IN"
-                          onClick={() => deleteRecord(r.in_id, r.badge_number, 'IN')}>
-                          <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>IN</span>
-                        </button>
-                      )}
-                      {isAso && r.out_id && (
-                        <button className="records-delete-btn" title="Delete OUT"
-                          onClick={() => deleteRecord(r.out_id, r.badge_number, 'OUT')}>
-                          <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>OUT</span>
-                        </button>
-                      )}
-                    </div>
-                  </td>
+              searchTerm={searchTerm}
+              action={() => { setSearchInput(''); setSearchTerm(''); setDateRange({ from: todayDateStr(), to: todayDateStr() }) }}
+              actionLabel="Clear filters"
+            />
+          ) : (
+            <table className="records-table records-table-desktop" ref={tableRef} tabIndex={0}
+              onKeyDown={e => {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault()
+                  highlightedRowRef.current = Math.min(highlightedRowRef.current + 1, records.length - 1)
+                } else if (e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  highlightedRowRef.current = Math.max(highlightedRowRef.current - 1, 0)
+                }
+              }}
+            >
+              <thead>
+                <tr>
+                  <th style={{ width: '120px' }}>Badge</th>
+                  <th style={{ width: '220px' }}>Name</th>
+                  <th style={{ width: '200px' }}>Centre</th>
+                  <th style={{ width: '120px' }}>Date</th>
+                  <th style={{ width: '140px' }}>IN</th>
+                  <th style={{ width: '140px' }}>OUT</th>
+                  <th style={{ width: '160px' }}>Status</th>
+                  <th style={{ width: '100px' }}></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {/* Pagination */}
-      {!loading && (
-        <TablePagination
-          page={page}
-          pageSize={PAGE_SIZE}
-          total={totalCount}
-          onPageChange={p => setPage(p)}
-        />
-      )}
-
-      {/* Export */}
-      {!loading && records.length > 0 && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-          <button className="btn btn-ghost" onClick={() => {
-            const today = todayDateStr()
-            const csv = [
-              ['Badge Number', 'Name', 'Centre', 'Department', 'Date', 'IN Time', 'OUT Time', 'Status', 'Manual Entry'].join(','),
-              ...records.map(r => [
-                r.badge_number, `"${r.sewadar_name}"`, r.centre, r.department || '',
-                r.date,
-                r.in_time ? formatTime(r.in_time) : '',
-                r.out_time ? formatTime(r.out_time) : '',
-                r.in_time && r.out_time ? 'Complete' : r.in_time ? 'IN only' : r.out_time ? 'OUT only' : '',
-                r.manual_entry ? 'Yes' : 'No'
-              ].join(','))
-            ].join('\n')
-            const a = document.createElement('a')
-            a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-            a.download = `attendance_${dateRange.from}_to_${dateRange.to}.csv`
-            a.click()
-          }} style={{ fontSize: '0.82rem' }}>
-            <Download size={14} /> Export CSV
-          </button>
+              </thead>
+              <tbody>
+                {records.map((r, i) => (
+                  <tr
+                    key={`${r.badge_number}-${r.date}`}
+                    ref={highlightedRowRef.current === i ? tableRef : null}
+                    style={{
+                      background: highlightedRowRef.current === i
+                        ? 'var(--green-bg)'
+                        : (r.raw_in && flagDetails[r.raw_in.id]) || (r.raw_out && flagDetails[r.raw_out.id])
+                          ? 'rgba(220,38,38,0.04)'
+                          : 'transparent',
+                      outline: highlightedRowRef.current === i ? '2px solid var(--excel-green)' : 'none',
+                      outlineOffset: -2,
+                    }}
+                  >
+                    <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.03em', lineHeight: 1.4 }}>{r.badge_number}</td>
+                    <td>
+                      <div style={{ fontWeight: 500, fontSize: '0.9rem' }}>{r.sewadar_name}</div>
+                      {r.manual_entry && (
+                        <span style={{ fontSize: '0.65rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 6px', fontWeight: 700, marginTop: 2, display: 'inline-block' }}>MANUAL</span>
+                      )}
+                    </td>
+                    {isAdmin && <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{r.centre}</td>}
+                    <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                      {new Date(r.date + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    </td>
+                    <td>
+                      <span className={`time-cell ${r.in_time ? 'has-time' : ''}`} style={{ fontSize: '0.82rem' }}>{formatTime(r.in_time)}</span>
+                      {r.in_scanner && <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>{r.in_scanner}</div>}
+                    </td>
+                    <td>
+                      <span className={`time-cell ${r.out_time ? 'has-time out-time' : ''}`}>{formatTime(r.out_time)}</span>
+                      {r.out_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.out_scanner}</div>}
+                    </td>
+                    <td>
+                      {(() => {
+                        const inFlag = r.raw_in ? flagDetails[r.raw_in.id] : null
+                        const outFlag = r.raw_out ? flagDetails[r.raw_out.id] : null
+                        const flagInfo = inFlag || outFlag
+                        if (r.in_time && r.out_time && !flagInfo)
+                          return <span className="status-complete">Complete</span>
+                        if (r.in_time && !r.out_time && !flagInfo)
+                          return <span className="status-in-only">IN only</span>
+                        if (r.out_time && !r.in_time && !flagInfo)
+                          return <span className="status-out-only">OUT only</span>
+                        if (!r.in_time && !r.out_time && !flagInfo)
+                          return <span className="status-none">—</span>
+                        const flagTypeLabel = FLAG_TYPES.find(f => f.value === flagInfo?.flag_type)?.label || flagInfo?.flag_type || 'Flag'
+                        const remark = flagInfo?.issue_description?.trim() || flagTypeLabel
+                        const flagStatusLabel = r.in_time && r.out_time ? 'Complete' : r.in_time ? 'IN only' : r.out_time ? 'OUT only' : '—'
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            <span className={flagStatusLabel === 'Complete' ? 'status-complete' : flagStatusLabel === 'IN only' ? 'status-in-only' : flagStatusLabel === 'OUT only' ? 'status-out-only' : 'status-none'}>
+                              {flagStatusLabel}
+                            </span>
+                            <span
+                              title={`${flagTypeLabel}${flagInfo?.issue_description ? '\nRemark: ' + flagInfo.issue_description : ''}\nBy: ${flagInfo?.raised_by_name || flagInfo?.raised_by_badge || '—'}\nOn: ${flagInfo?.created_at ? new Date(flagInfo.created_at).toLocaleDateString('en-IN') : '—'}\nStatus: ${flagInfo?.status || 'open'}`}
+                              style={{
+                                display: 'inline-flex', alignItems: 'flex-start', gap: '4px',
+                                fontSize: '0.72rem', fontWeight: 600,
+                                color: 'var(--red)', background: 'var(--red-bg)',
+                                border: '1px solid rgba(220,38,38,0.25)',
+                                borderRadius: 4, padding: '2px 6px',
+                                cursor: 'pointer', maxWidth: '100%',
+                              }}
+                            >
+                              <Flag size={11} style={{ flexShrink: 0, marginTop: '1px' }} />
+                              <span style={{ lineHeight: 1.4, wordBreak: 'break-word' }}>{remark}</span>
+                            </span>
+                          </div>
+                        )
+                      })()}
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                        <button className="records-flag-btn" title="Raise flag"
+                          onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}>
+                          <Flag size={13} />
+                        </button>
+                        {isAso && r.in_id && (
+                          <button className="records-delete-btn" title="Delete IN"
+                            onClick={() => deleteRecord(r.in_id, r.badge_number, 'IN')}>
+                            <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>IN</span>
+                          </button>
+                        )}
+                        {isAso && r.out_id && (
+                          <button className="records-delete-btn" title="Delete OUT"
+                            onClick={() => deleteRecord(r.out_id, r.badge_number, 'OUT')}>
+                            <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>OUT</span>
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
-      )}
+
+        {/* Pagination */}
+        {!loading && (
+          <TablePagination
+            page={page}
+            pageSize={PAGE_SIZE}
+            total={totalCount}
+            onPageChange={p => setPage(p)}
+          />
+        )}
+
+        {/* Export */}
+        {!loading && records.length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+            <button className="btn btn-ghost" onClick={() => {
+              const today = todayDateStr()
+              const csv = [
+                ['Badge Number', 'Name', 'Centre', 'Department', 'Date', 'IN Time', 'OUT Time', 'Status', 'Manual Entry'].join(','),
+                ...records.map(r => [
+                  r.badge_number, `"${r.sewadar_name}"`, r.centre, r.department || '',
+                  r.date,
+                  r.in_time ? formatTime(r.in_time) : '',
+                  r.out_time ? formatTime(r.out_time) : '',
+                  r.in_time && r.out_time ? 'Complete' : r.in_time ? 'IN only' : r.out_time ? 'OUT only' : '',
+                  r.manual_entry ? 'Yes' : 'No'
+                ].join(','))
+              ].join('\n')
+              const a = document.createElement('a')
+              a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+              a.download = `attendance_${dateRange.from}_to_${dateRange.to}.csv`
+              a.click()
+            }} style={{ fontSize: '0.82rem' }}>
+              <Download size={14} /> Export CSV
+            </button>
+          </div>
+        )}
+
+      </div>
 
       {/* Flag Modal */}
       {flagModal && (
@@ -667,18 +808,18 @@ function ReportsTab() {
     if (centreNames) { attQ = attQ.in('centre', centreNames); jathaQ = jathaQ.in('centre', centreNames) }
     const [attRes, jathaRes] = await Promise.all([attQ.limit(50000), jathaQ.limit(10000)])
     const sewadarMap = {}
-    ;(attRes.data || []).forEach(r => {
-      const d = new Date(r.scan_time).toISOString().split('T')[0]
-      const day = new Date(d + 'T12:00:00').getDay()
-      if (!sewadarMap[r.badge_number]) sewadarMap[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, dutyDays: new Set(), satsangDaysAtt: new Set(), jathaSatsangDays: 0, jathaCount: 0 }
-      sewadarMap[r.badge_number].dutyDays.add(d)
-      if (day === 0 || day === 3) sewadarMap[r.badge_number].satsangDaysAtt.add(d)
-    })
-    ;(jathaRes.data || []).forEach(r => {
-      if (!sewadarMap[r.badge_number]) sewadarMap[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, dutyDays: new Set(), satsangDaysAtt: new Set(), jathaSatsangDays: 0, jathaCount: 0 }
-      sewadarMap[r.badge_number].jathaSatsangDays += (r.satsang_days || 0)
-      sewadarMap[r.badge_number].jathaCount++
-    })
+      ; (attRes.data || []).forEach(r => {
+        const d = new Date(r.scan_time).toISOString().split('T')[0]
+        const day = new Date(d + 'T12:00:00').getDay()
+        if (!sewadarMap[r.badge_number]) sewadarMap[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, dutyDays: new Set(), satsangDaysAtt: new Set(), jathaSatsangDays: 0, jathaCount: 0 }
+        sewadarMap[r.badge_number].dutyDays.add(d)
+        if (day === 0 || day === 3) sewadarMap[r.badge_number].satsangDaysAtt.add(d)
+      })
+      ; (jathaRes.data || []).forEach(r => {
+        if (!sewadarMap[r.badge_number]) sewadarMap[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, dutyDays: new Set(), satsangDaysAtt: new Set(), jathaSatsangDays: 0, jathaCount: 0 }
+        sewadarMap[r.badge_number].jathaSatsangDays += (r.satsang_days || 0)
+        sewadarMap[r.badge_number].jathaCount++
+      })
     const rows = Object.values(sewadarMap).map(s => ({ badge: s.badge, name: s.name, centre: s.centre, dept: s.dept, dutyDays: s.dutyDays.size, satsangDaysAtt: s.satsangDaysAtt.size, jathaCount: s.jathaCount, jathaSatsangDays: s.jathaSatsangDays, totalSatsangDays: s.satsangDaysAtt.size + s.jathaSatsangDays })).sort((a, b) => b.totalSatsangDays - a.totalSatsangDays)
     setReportData({ type: 'satsang', rows, year: yearFilter })
     setLoading(false)
@@ -890,7 +1031,7 @@ export default function RecordsPage() {
   const [tab, setTab] = useState('records')
 
   return (
-    <div className="page-wide pb-nav" style={{ maxWidth: 960 }}>
+    <div className="page-wide pb-nav" style={{ maxWidth: '100%', padding: '0 1rem' }}>
       <div className="flex items-center justify-between mt-2 mb-3">
         <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>Records</h2>
       </div>

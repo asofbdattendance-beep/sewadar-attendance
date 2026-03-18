@@ -127,8 +127,8 @@ function AppLayout() {
   const rolePill = isAso ? 'ASO' : isCentreUser ? 'CENTRE USER' : 'SC_SP USER'
 
   return (
-    <div>
-      <nav className="navbar">
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <nav className="navbar" style={{ position: 'sticky', top: 0, zIndex: 100 }}>
         <div className="navbar-brand">
           <span style={{ fontSize: '1rem' }}>⬛</span>
           Sewadar Attendance
@@ -147,16 +147,36 @@ function AppLayout() {
         </div>
       )}
 
-      <Routes>
-        <Route path="/scan" element={<ScannerPage isOnline={isOnline} />} />
-        <Route path="/records" element={<RecordsPage />} />
-        <Route path="/jatha" element={<JathaPage />} />
-        <Route path="/flags" element={<FlagsPage />} />
-        <Route path="/super-admin" element={<SuperAdminPage />} />
-        <Route path="/profile" element={<ProfilePage isOnline={isOnline} />} />
-        <Route path="*" element={<Navigate to="/scan" replace />} />
-      </Routes>
+      {/* Desktop horizontal nav — shown on md+ */}
+      <nav className="desktop-nav">
+        {navItems.filter(item => item.path !== '/scan').map(({ path, label, icon: Icon, badge }) => (
+          <button
+            key={path}
+            className={`desktop-nav-item ${location.pathname === path ? 'active' : ''}`}
+            onClick={() => navigate(path)}
+          >
+            <Icon size={16} />
+            <span>{label}</span>
+            {badge > 0 && (
+              <span className="desktop-nav-badge">{badge > 9 ? '9+' : badge}</span>
+            )}
+          </button>
+        ))}
+      </nav>
 
+      <div style={{ flex: 1 }}>
+        <Routes>
+          <Route path="/scan" element={<ScannerPage isOnline={isOnline} />} />
+          <Route path="/records" element={<RecordsPage />} />
+          <Route path="/jatha" element={<JathaPage />} />
+          <Route path="/flags" element={<FlagsPage />} />
+          <Route path="/super-admin" element={<SuperAdminPage />} />
+          <Route path="/profile" element={<ProfilePage isOnline={isOnline} />} />
+          <Route path="*" element={<Navigate to="/scan" replace />} />
+        </Routes>
+      </div>
+
+      {/* Mobile bottom nav — shown on mobile only */}
       <nav className="bottom-nav">
         {navItems.map(({ path, label, icon: Icon, badge }) => (
           <button
