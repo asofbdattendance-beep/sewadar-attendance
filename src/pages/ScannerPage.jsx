@@ -59,11 +59,11 @@ export default function ScannerPage({ isOnline }) {
     return () => { if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current) }
   }, [])
 
-  // Live IN count — FIX #3: centre filter for CENTRE_USER too
+  // Live IN count — centre filter for CENTRE_USER too
   useEffect(() => {
-    fetchTodayCount()
+    fetchTodayCount().catch(console.error)
     const channel = supabase.channel('scanner-count')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, fetchTodayCount)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, () => fetchTodayCount().catch(console.error))
       .subscribe()
     return () => supabase.removeChannel(channel)
   }, [profile?.centre, profile?.role])
