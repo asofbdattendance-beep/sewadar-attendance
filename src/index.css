@@ -144,7 +144,15 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .scanner-processing-dot { width:8px; height:8px; background:var(--excel-green); border-radius:50%; animation:pulseDot 1s ease-in-out infinite; }
 @keyframes pulseDot { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:0.5;transform:scale(0.7);} }
 
-.scanner-wrapper { width:100%; position:relative; background:#000; border-radius:12px; overflow:hidden; }
+.scanner-wrapper {
+  width: 100%;
+  max-width: 420px;     /* 👈 limits width */
+  margin: 0 auto;
+  position: relative;
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+}
 .scanner-view { width:100%; height:320px; position:relative; }
 .scanner-view video { width:100%; height:100%; object-fit:cover; }
 .scanner-view canvas { display:none; }
