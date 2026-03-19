@@ -95,12 +95,8 @@ function AppLayout() {
     }
   }, [])
 
-  useEffect(() => {
-    if (sessionExpired) {
-      resetActivity()
-      setSessionExpired(false)
-    }
-  }, [sessionExpired])
+  // Note: sessionExpired screen shows until user clicks Back to Login
+  // resetActivity is called on signOut in AuthContext
 
   // ── Conditional screens (after all hooks) ──
   if (loading) return <LoadingScreen />
@@ -149,7 +145,7 @@ function AppLayout() {
 
       {/* Desktop horizontal nav — shown on md+ */}
       <nav className="desktop-nav">
-        {navItems.filter(item => item.path !== '/scan').map(({ path, label, icon: Icon, badge }) => (
+        {navItems.map(({ path, label, icon: Icon, badge }) => (
           <button
             key={path}
             className={`desktop-nav-item ${location.pathname === path ? 'active' : ''}`}

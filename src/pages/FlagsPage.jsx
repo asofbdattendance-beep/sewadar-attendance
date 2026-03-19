@@ -34,6 +34,7 @@ export default function FlagsPage() {
   const [replyTexts, setReplyTexts] = useState({})
   const [submitting, setSubmitting] = useState(false)
   const [childCentres, setChildCentres] = useState([])
+  const [totalCount, setTotalCount] = useState(0)
   const searchTimer = useRef(null)
 
   useEffect(() => {
@@ -47,7 +48,6 @@ export default function FlagsPage() {
 
   useEffect(() => {
     loadChildCentres()
-    fetchFlags()
     fetchStats()
   }, [statusFilter, profile])
 
@@ -111,8 +111,9 @@ export default function FlagsPage() {
     if (scope.length > 0) query = query.in('raised_by_centre', scope)
     query = query.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
 
-    const { data, error } = await query
+    const { data, count, error } = await query
     if (error) { showError('Failed to load flags'); setLoading(false); return }
+    setTotalCount(count || 0)
 
     let flags = data || []
     if (flagTypeFilter) flags = flags.filter(f => f.flag_type === flagTypeFilter)
@@ -514,7 +515,7 @@ export default function FlagsPage() {
         <TablePagination
           page={page}
           pageSize={PAGE_SIZE}
-          total={allFlags.length}
+          total={totalCount}
           onPageChange={p => setPage(p)}
         />
       )}

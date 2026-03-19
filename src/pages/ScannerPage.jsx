@@ -149,7 +149,7 @@ export default function ScannerPage({ isOnline }) {
     }
 
     await processSewadar(found, badge)
-  }, [isOnline, profile, userLocation, centreConfig, childCentres])
+  }, [isOnline, profile, userLocation, centreConfig, childCentres, isAso, isCentreUser])
 
   async function processSewadar(found, badge) {
     const now = Date.now()

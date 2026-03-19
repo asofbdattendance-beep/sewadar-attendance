@@ -271,8 +271,14 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 
 /* ── OVERLAY / MODAL ── */
 .overlay { position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; align-items:flex-end; justify-content:center; z-index:200; padding:1rem; animation:fadeIn 0.2s ease; }
+@media (min-width: 768px) {
+  .overlay { align-items:center; padding:2rem; }
+}
 @keyframes fadeIn { from{opacity:0;} to{opacity:1;} }
-.overlay-sheet { background:white; border-radius:var(--radius-lg) var(--radius-lg) 0 0; padding:1.75rem; width:100%; max-width:520px; animation:sheetUp 0.25s ease; box-shadow:var(--shadow-lg); border-radius:var(--radius-lg); }
+.overlay-sheet { background:white; border-radius:var(--radius-lg) var(--radius-lg) 0 0; padding:1.75rem; width:100%; max-width:520px; animation:sheetUp 0.25s ease; box-shadow:var(--shadow-lg); }
+@media (min-width: 768px) {
+  .overlay-sheet { border-radius:var(--radius-lg); animation:popIn 0.22s cubic-bezier(0.34,1.56,0.64,1); }
+}
 @keyframes sheetUp { from{transform:translateY(80px);opacity:0;} to{transform:translateY(0);opacity:1;} }
 
 /* ── MISC ── */
@@ -334,19 +340,19 @@ td {
   color:var(--text-primary); 
   white-space:nowrap;
 }
-/* Sticky first column for all tables */
-th:first-child, td:first-child {
+/* Sticky first column — only for .table-wrap tables, not records-table */
+.table-wrap th:first-child, .table-wrap td:first-child {
   position:sticky;
   left:0;
   z-index:5;
   background:white;
   border-right:1px solid var(--border);
 }
-thead th:first-child, thead td:first-child {
+.table-wrap thead th:first-child {
   background:#F8FAFB;
   z-index:15;
 }
-tr:hover td:first-child {
+.table-wrap tr:hover td:first-child {
   background:#FAFCFF;
 }
 tr:last-child td { border-bottom:none; }
@@ -390,15 +396,7 @@ tr:hover td { background:#FAFCFF; }
   border: 1px solid var(--border);
   -webkit-overflow-scrolling: touch;
 }
-@media (min-width: 768px) {
-  .records-table-wrap {
-    max-height: none;
-    overflow-y: visible;
-    overflow-x: visible;
-    border-radius: 14px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-  }
-}
+  
 @media (min-width: 768px) {
   .records-page-content {
     margin-left: -2rem;
@@ -813,14 +811,9 @@ tr:hover td { background:#FAFCFF; }
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--bg);
+  background: white;
 }
 
-.records-table {
-  width: 100%;
-  min-width: 1100px;
-  border-collapse: collapse;
-}
 
 .records-table thead th {
   position: sticky;
@@ -873,4 +866,37 @@ tr:hover td { background:#FAFCFF; }
 .records-table td,
 .records-table th {
   white-space: nowrap;
+}
+/* ── JATHA TABLE — responsive ── */
+.jatha-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+/* Ensure table cells wrap on mobile when needed */
+@media (max-width: 767px) {
+  .records-table-wrap {
+    max-height: 70vh;
+  }
+  .overlay-sheet {
+    max-height: 88vh;
+    overflow-y: auto;
+  }
+}
+
+/* ── DESKTOP LAYOUT ── */
+@media (min-width: 768px) {
+  /* Ensure content doesn't jump when switching tabs */
+  .page, .page-wide {
+    min-height: calc(100vh - 52px - 45px);
+  }
+  /* Records table — no max height cap on desktop */
+  .records-table-wrap {
+    max-height: none;
+    overflow-y: visible;
+  }
+  /* Table wrap — no cap on desktop either */
+  .table-wrap {
+    max-height: none;
+  }
 }

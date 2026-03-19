@@ -745,13 +745,18 @@ export default function SuperAdminPage() {
         <div>
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.75rem', gap:'0.75rem', flexWrap:'wrap' }}>
             <div style={{ display:'flex', gap:'0.5rem' }}>
-              {['', JATHA_TYPE.MAJOR_CENTRE, JATHA_TYPE.BEAS].map(t => (
+              {[
+                  { value: '', label: 'All' },
+                  { value: JATHA_TYPE.MAJOR_CENTRE, label: 'Major Centre' },
+                  { value: JATHA_TYPE.BEAS, label: 'Beas' },
+                  { value: 'jatha_home', label: 'Jatha Home' },
+                ].map(({ value: t, label: tLabel }) => (
                 <button key={t} onClick={() => setJathaTypeFilter(t)}
                   style={{ padding:'0.35rem 0.85rem', borderRadius:'var(--radius)', fontSize:'0.8rem', fontWeight:600, cursor:'pointer', fontFamily:'Inter,sans-serif',
                     background: jathaTypeFilter===t ? 'var(--excel-green)' : 'var(--bg)',
                     color: jathaTypeFilter===t ? 'white' : 'var(--text-muted)',
                     border: jathaTypeFilter===t ? 'none' : '1.5px solid var(--border)' }}>
-                  {t === '' ? 'All' : JATHA_TYPE_LABEL[t]}
+                  {tLabel}
                 </button>
               ))}
             </div>
@@ -1184,11 +1189,15 @@ export default function SuperAdminPage() {
             <h3 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', marginBottom:'1.5rem' }}>Add Jatha Centre Entry</h3>
             <div className="mb-2">
               <label className="label">Jatha Type</label>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.6rem' }}>
-                {[JATHA_TYPE.MAJOR_CENTRE, JATHA_TYPE.BEAS].map(t => (
-                  <button key={t} onClick={() => setNewJatha({...newJatha, jatha_type:t})}
-                    style={{ padding:'0.6rem', border:`2px solid ${newJatha.jatha_type===t ? 'var(--gold)' : 'var(--border)'}`, borderRadius:8, background:newJatha.jatha_type===t ? 'var(--gold-bg)' : 'var(--bg)', color:newJatha.jatha_type===t ? 'var(--gold)' : 'var(--text-secondary)', fontWeight:700, fontSize:'0.85rem', cursor:'pointer', fontFamily:'Inter,sans-serif' }}>
-                    {JATHA_TYPE_LABEL[t]}
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'0.6rem' }}>
+                {[
+                  { value: JATHA_TYPE.MAJOR_CENTRE, label: 'Major Centre' },
+                  { value: JATHA_TYPE.BEAS,         label: 'Beas'         },
+                  { value: 'jatha_home',             label: 'Jatha Home'   },
+                ].map(t => (
+                  <button key={t.value} onClick={() => setNewJatha({...newJatha, jatha_type:t.value})}
+                    style={{ padding:'0.6rem 0.3rem', border:`2px solid ${newJatha.jatha_type===t.value ? 'var(--gold)' : 'var(--border)'}`, borderRadius:8, background:newJatha.jatha_type===t.value ? 'var(--gold-bg)' : 'var(--bg)', color:newJatha.jatha_type===t.value ? 'var(--gold)' : 'var(--text-secondary)', fontWeight:700, fontSize:'0.78rem', cursor:'pointer', fontFamily:'Inter,sans-serif' }}>
+                    {t.label}
                   </button>
                 ))}
               </div>
