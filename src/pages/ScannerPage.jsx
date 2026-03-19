@@ -3,7 +3,7 @@ import { supabase, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supa
 import {
   lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue,
   getOfflineQueueCount, syncOfflineQueue, getAttendanceCache,
-  getCacheAge, getTodayEntriesForBadge, checkDuplicateInCache
+  getCacheAge, getTodayEntriesForBadge, checkDuplicateInCache, checkDuplicateInOfflineQueue
 } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
@@ -39,10 +39,10 @@ export default function ScannerPage({ isOnline }) {
     Promise.all([
       supabase.from('centres').select('latitude,longitude,geo_radius,geo_enabled').eq('centre_name', profile.centre).maybeSingle(),
       supabase.from('centres').select('centre_name').eq('parent_centre', profile.centre)
-    ]).then(([centreRes, childRes]) => {
+    ]    ).then(([centreRes, childRes]) => {
       setCentreConfig(centreRes.data)
       setChildCentres(childRes.data?.map(c => c.centre_name) || [])
-    }).catch(() => {})
+    }).catch(e => console.warn('Failed to load centre config:', e))
   }, [profile?.centre])
 
   // GPS watch
@@ -69,9 +69,11 @@ export default function ScannerPage({ isOnline }) {
   }, [profile?.centre, profile?.role])
 
   async function fetchTodayCount() {
-    const today = new Date(); today.setHours(0, 0, 0, 0)
+    // Use UTC start of today for consistency with DB timestamps
+    const today = new Date()
+    const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0, 0))
     let q = supabase.from('attendance').select('id', { count: 'exact', head: true })
-      .gte('scan_time', today.toISOString()).eq('type', 'IN')
+      .gte('scan_time', todayUTC.toISOString()).eq('type', 'IN')
 
     if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
       q = q.eq('centre', profile.centre)
@@ -156,9 +158,11 @@ export default function ScannerPage({ isOnline }) {
 
     let todayEntries = []
     if (isOnline) {
-      const today = new Date(); today.setHours(0, 0, 0, 0)
+      // Use UTC start of today for consistency with DB timestamps
+      const today = new Date()
+      const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0, 0))
       let q = supabase.from('attendance').select('*').eq('badge_number', b)
-        .gte('scan_time', today.toISOString()).order('scan_time', { ascending: true })
+        .gte('scan_time', todayUTC.toISOString()).order('scan_time', { ascending: true })
 
       // FIX #2: Centre filter — respect role boundaries
       if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
@@ -258,7 +262,7 @@ export default function ScannerPage({ isOnline }) {
         details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
         timestamp: scanTime,
         device_id: navigator.userAgent.slice(0, 50),
-      }).catch(() => {})
+      }).catch(e => console.warn('Log insert failed:', e))
       fetchTodayCount()
     } else {
       addToOfflineQueue(record)
@@ -618,10 +622,16 @@ function ManualEntryModal({ profile, isOnline, childCentres, onClose, onSuccess 
         details: `Manual ${attendanceType} for ${selected.badge_number} — "${remark.trim()}"`,
         timestamp: scanTimeISO,
         device_id: navigator.userAgent.slice(0, 50),
-      }).catch(() => {})
+      }).catch(e => console.warn('Log insert failed:', e))
 
       onSuccess()
     } else {
+      // FIX: Apply same remark validation for offline submissions
+      if (remark.trim().length < 3) {
+        setError('Remark must be at least 3 characters')
+        setSubmitting(false)
+        return
+      }
       addToOfflineQueue(record)
       onSuccess()
     }

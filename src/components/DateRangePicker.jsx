@@ -5,9 +5,8 @@ export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
   const [focusedInput, setFocusedInput] = useState(null)
 
   const today = () => {
-    const d = new Date()
-    d.setHours(0, 0, 0, 0)
-    return d.toISOString().split('T')[0]
+    // Use UTC date for consistency with DB timestamps
+    return new Date().toISOString().split('T')[0]
   }
 
   const handleFromChange = (val) => {
