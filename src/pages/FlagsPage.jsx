@@ -103,7 +103,7 @@ export default function FlagsPage() {
       .select(`
         *,
         attendance(badge_number, sewadar_name, type, scan_time, centre, department, scanner_name),
-        query_replies(id, replied_by_badge, replied_by_name, replied_by_centre, reply_text, created_at)
+        query_replies(id, replied_by_badge, replied_by_name, replied_by_centre, replied_by_role, reply_text, created_at)
       `, { count: 'exact' })
       .order(sortCol === 'created_at' ? 'created_at' : sortCol, { ascending: sortDir === 'asc' })
 
@@ -132,7 +132,10 @@ export default function FlagsPage() {
     setLoading(false)
   }
 
-  useEffect(() => { fetchFlags() }, [page, statusFilter, flagTypeFilter, search, sortCol, sortDir])
+  // FIX: Single useEffect with all dependencies to prevent double API calls
+  useEffect(() => { 
+    fetchFlags() 
+  }, [page, statusFilter, flagTypeFilter, search, sortCol, sortDir, childCentres])
 
   async function submitReply(flagId) {
     const text = (replyTexts[flagId] || '').trim()
@@ -143,6 +146,7 @@ export default function FlagsPage() {
       replied_by_badge: profile.badge_number,
       replied_by_name: profile.name,
       replied_by_centre: profile.centre,
+      replied_by_role: profile.role,
       reply_text: text,
       created_at: new Date().toISOString()
     })
@@ -165,10 +169,10 @@ export default function FlagsPage() {
       resolved_by: profile.badge_number,
       updated_at: new Date().toISOString()
     }).eq('id', flagId)
-    await supabase.from('logs').insert({
+    supabase.from('logs').insert({
       user_badge: profile.badge_number, action: 'RESOLVE_FLAG',
       details: `Resolved flag #${flagId}`, timestamp: new Date().toISOString()
-    }).catch(() => {})
+    }).then(() => {}).catch(e => console.warn('Log failed:', e))
     fetchFlags()
     fetchStats()
     showSuccess('Flag resolved')
@@ -435,7 +439,14 @@ export default function FlagsPage() {
                                     border: `1px solid ${isOwn ? 'rgba(22,163,74,0.2)' : 'var(--border)'}`,
                                   }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                                      <span style={{ fontWeight: 600, fontSize: '0.8rem' }}>{reply.replied_by_name}</span>
+                                      <span style={{ fontWeight: 600, fontSize: '0.8rem' }}>
+                                        {reply.replied_by_name}
+                                        {reply.replied_by_role && (
+                                          <span style={{ marginLeft: 6, fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400, background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
+                                            {reply.replied_by_role === 'aso' ? 'ASO' : reply.replied_by_role === 'centre_user' ? 'Centre User' : reply.replied_by_role === 'sc_sp_user' ? 'SC/SP User' : reply.replied_by_role}
+                                          </span>
+                                        )}
+                                      </span>
                                       <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{timeFmt(reply.created_at)}</span>
                                     </div>
                                     <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>{reply.reply_text}</p>

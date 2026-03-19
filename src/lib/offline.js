@@ -48,14 +48,31 @@ export async function syncOfflineQueue(supabase) {
 
 // ── Helpers ──
 function getLocalTodayBoundary() {
+  // Use UTC date for consistency with DB timestamps
   const d = new Date()
-  const localDate = d.toLocaleDateString('en-CA')
-  return localDate + 'T00:00:00'
+  return d.toISOString().split('T')[0] + 'T00:00:00Z'
+}
+
+export function checkDuplicateInOfflineQueue(badgeNumber, type) {
+  const queue = getOfflineQueue()
+  const todayBoundary = getLocalTodayBoundary()
+  return queue.some(r =>
+    r.badge_number === badgeNumber &&
+    r.type === type &&
+    r.scan_time >= todayBoundary
+  )
 }
 
 // Check if a record already exists in DB (dedup before sync)
 export async function checkDuplicateOffline(supabase, record) {
   if (!record.badge_number || !record.type) return false
+  
+  // Check local offline queue first (most likely source of duplicates when offline)
+  if (checkDuplicateInOfflineQueue(record.badge_number, record.type)) {
+    return true
+  }
+  
+  // Then check database if online
   const { data } = await supabase
     .from('attendance')
     .select('id')
@@ -141,12 +158,13 @@ export function setAttendanceCache(records) {
 
 export async function populateAttendanceCache(supabase) {
   try {
+    // Use UTC start of today for consistency with DB timestamps
     const today = new Date()
-    today.setHours(0, 0, 0, 0)
+    const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0, 0))
     const { data } = await supabase
       .from('attendance')
-      .select('id,badge_number,type,scan_time,centre,sewadar_name,scanner_name,manual_entry,submitted_by,scanner_badge')
-      .gte('scan_time', today.toISOString())
+      .select('id,badge_number,type,scan_time,centre,sewadar_name,department,scanner_name,manual_entry,submitted_by,scanner_badge')
+      .gte('scan_time', todayUTC.toISOString())
       .order('scan_time', { ascending: false })
       .limit(ATTENDANCE_CACHE_SIZE)
     if (data && data.length > 0) setAttendanceCache(data)

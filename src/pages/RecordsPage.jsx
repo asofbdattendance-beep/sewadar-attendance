@@ -20,13 +20,54 @@ const SEARCH_DEBOUNCE = 300
 const CURRENT_YEAR = new Date().getFullYear()
 const YEARS = [CURRENT_YEAR, CURRENT_YEAR - 1, CURRENT_YEAR - 2]
 
+// IST offset in minutes
+const IST_OFFSET = 5 * 60 + 30
+
 function formatTime(iso) {
   if (!iso) return '—'
-  return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+  return new Date(iso).toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Asia/Kolkata'
+  })
 }
 
 function todayDateStr() {
-  return new Date().toISOString().split('T')[0]
+  // Return today's date in IST as YYYY-MM-DD
+  const now = new Date()
+  const istDate = new Date(now.getTime() + IST_OFFSET * 60000)
+  return istDate.toISOString().split('T')[0]
+}
+
+// Convert a YYYY-MM-DD date string to UTC ISO string at IST start-of-day (00:00 IST = prev day 18:30 UTC)
+function istDayStart(dateStr) {
+  // dateStr like "2025-03-19"
+  // 00:00:00 IST = 00:00:00+05:30
+  return `${dateStr}T00:00:00.000+05:30`
+}
+
+// Convert a YYYY-MM-DD date string to UTC ISO string at IST end-of-day (23:59:59.999 IST)
+function istDayEnd(dateStr) {
+  return `${dateStr}T23:59:59.999+05:30`
+}
+
+// Parse scan_time and return YYYY-MM-DD in IST
+function scanTimeToISTDate(isoString) {
+  const d = new Date(isoString)
+  // shift to IST then take date portion
+  const istTime = new Date(d.getTime() + IST_OFFSET * 60000)
+  return istTime.toISOString().split('T')[0]
+}
+
+// Format a bare YYYY-MM-DD for display without timezone shift
+function formatDateStr(dateStr) {
+  // Append noon IST to avoid any local-tz shift on display
+  return new Date(dateStr + 'T12:00:00+05:30').toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata'
+  })
 }
 
 // ─────────────────────────────────────────────
@@ -112,92 +153,50 @@ function AttendanceTab() {
   async function fetchRecords() {
     setLoading(true)
 
-    const fromDate = new Date(dateRange.from + 'T00:00:00')
-    const toDate = new Date(dateRange.to + 'T23:59:59.999')
+    const start = istDayStart(dateRange.from)
+    const end   = istDayEnd(dateRange.to)
 
-    let q = supabase.from('attendance')
-      .select('*', { count: 'exact' })
-      .gte('scan_time', fromDate.toISOString())
-      .lte('scan_time', toDate.toISOString())
-      .order(
-        sortCol === 'badge_number'
-          ? 'badge_number'
-          : 'scan_time',
-        { ascending: sortDir === 'asc' }
-      )
-
-    // Centre filter
+    // ── Build centre scope ──
+    let centreScope = null
     if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
-      q = q.eq('centre', profile.centre)
+      centreScope = [profile.centre]
     } else if (isCentreUser) {
-      const scope = [profile.centre]
-      const childData = centres
-        .filter(c => c.parent_centre === profile.centre)
-        .map(c => c.centre_name)
-
-      scope.push(...childData)
-      q = q.in('centre', scope)
+      centreScope = [
+        profile.centre,
+        ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)
+      ]
     } else if (centreFilter) {
-      q = q.eq('centre', centreFilter)
+      centreScope = [centreFilter]
     }
 
-    // Search
-    if (searchTerm.trim()) {
-      q = q.or(
-        `badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`
-      )
-    }
-
-    // NOTE: keeping your UI-only approach (no backend change)
-    const { data, error } = await q.limit(2000)
+    // ── Single RPC call — grouping + IST dates + cross-day pairing all done in Postgres ──
+    const { data, error } = await supabase.rpc('get_attendance_grouped', {
+      p_start:   start,
+      p_end:     end,
+      p_centres: centreScope,
+      p_search:  searchTerm.trim() || null,
+    })
 
     setLoading(false)
-    if (error) return
+    if (error) { console.error('[Records] RPC error:', error); return }
 
-    // ───── GROUPING ─────
-    const grouped = {}
-
-      ; (data || []).forEach(r => {
-        const date = new Date(r.scan_time).toISOString().split('T')[0]
-        const key = `${r.badge_number}-${date}`
-
-        if (!grouped[key]) {
-          grouped[key] = {
-            badge_number: r.badge_number,
-            sewadar_name: r.sewadar_name,
-            centre: r.centre,
-            department: r.department,
-            date,
-            in_time: null,
-            out_time: null,
-            in_scanner: null,
-            out_scanner: null,
-            in_id: null,
-            out_id: null,
-            raw_in: null,
-            raw_out: null,
-            manual_entry: false,
-          }
-        }
-
-        if (r.type === 'IN') {
-          grouped[key].in_time = r.scan_time
-          grouped[key].in_scanner = r.scanner_name
-          grouped[key].in_id = r.id
-          grouped[key].raw_in = r
-          if (r.manual_entry) grouped[key].manual_entry = true
-        }
-
-        if (r.type === 'OUT') {
-          grouped[key].out_time = r.scan_time
-          grouped[key].out_scanner = r.scanner_name
-          grouped[key].out_id = r.id
-          grouped[key].raw_out = r
-          if (r.manual_entry) grouped[key].manual_entry = true
-        }
-      })
-
-    let rows = Object.values(grouped)
+    // ── Normalise: RPC returns grouped rows, attach raw_in/raw_out stubs for flag lookups ──
+    let rows = (data || []).map(r => ({
+      badge_number: r.badge_number,
+      sewadar_name: r.sewadar_name,
+      centre:       r.centre,
+      department:   r.department,
+      date:         r.ist_date,
+      in_time:      r.in_time  || null,
+      out_time:     r.out_time || null,
+      in_scanner:   r.in_scanner  || null,
+      out_scanner:  r.out_scanner || null,
+      in_id:        r.in_id  || null,
+      out_id:       r.out_id || null,
+      manual_entry: r.manual_entry || false,
+      raw_in:  r.in_id  ? { id: r.in_id  } : null,
+      raw_out: r.out_id ? { id: r.out_id } : null,
+    }))
 
     // ───── FETCH FLAGS FOR CURRENT PAGE ─────
     const { flaggedCount } = await fetchFlagsForCurrentPage(rows)
@@ -227,10 +226,10 @@ function AttendanceTab() {
 
     // ───── PAGINATION ─────
     setTotalCount(rows.length)
-
-    const start = (page - 1) * PAGE_SIZE
-    setRecords(rows.slice(start, start + PAGE_SIZE))
+    const pageStart = (page - 1) * PAGE_SIZE
+    setRecords(rows.slice(pageStart, pageStart + PAGE_SIZE))
   }
+
   // Returns { flagMap: {attendance_id→flagInfo}, flaggedCount: number }
   async function fetchFlagsForCurrentPage(rows) {
     if (!rows || rows.length === 0) {
@@ -357,7 +356,7 @@ function AttendanceTab() {
     await supabase.from('logs').insert({
       user_badge: profile.badge_number, action: 'DELETE_ATTENDANCE',
       details: `Deleted ${type} id=${id} badge=${badge}`, timestamp: new Date().toISOString()
-    }).catch(() => { })
+    }).catch(e => console.warn('Log insert failed:', e))
     showSuccess(`${type} record deleted`)
     fetchRecords()
   }
@@ -413,11 +412,6 @@ function AttendanceTab() {
                 addRecentSearch(searchInput)
                 setSearchTerm(searchInput)
                 setPage(1)
-              }
-            }}
-            onFocus={() => {
-              if (recentSearches.length > 0 && !searchInput) {
-                // Show recent searches dropdown
               }
             }}
           />
@@ -485,13 +479,13 @@ function AttendanceTab() {
         </div>
       )}
 
-      {/* Full-width table on desktop — breaks out of page container */}
+      {/* Table */}
       <div className="records-page-content">
-        {/* Table */}
         <div className="records-table-wrap">
           {loading ? (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <tbody>
+                {/* ── FIX: col count matches thead ── */}
                 <SkeletonRows rows={15} cols={isAdmin ? 8 : 7} />
               </tbody>
             </table>
@@ -524,7 +518,8 @@ function AttendanceTab() {
                 <tr>
                   <th style={{ width: '120px' }}>Badge</th>
                   <th style={{ width: '220px' }}>Name</th>
-                  <th style={{ width: '200px' }}>Centre</th>
+                  {/* ── FIX: conditional Centre column in thead ── */}
+                  {isAdmin && <th style={{ width: '200px' }}>Centre</th>}
                   <th style={{ width: '120px' }}>Date</th>
                   <th style={{ width: '140px' }}>IN</th>
                   <th style={{ width: '140px' }}>OUT</th>
@@ -547,23 +542,33 @@ function AttendanceTab() {
                       outlineOffset: -2,
                     }}
                   >
-                    <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.03em', lineHeight: 1.4 }}>{r.badge_number}</td>
+                    <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.03em', lineHeight: 1.4 }}>
+                      {r.badge_number}
+                    </td>
                     <td>
                       <div style={{ fontWeight: 500, fontSize: '0.9rem' }}>{r.sewadar_name}</div>
                       {r.manual_entry && (
                         <span style={{ fontSize: '0.65rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 6px', fontWeight: 700, marginTop: 2, display: 'inline-block' }}>MANUAL</span>
                       )}
                     </td>
-                    {isAdmin && <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{r.centre}</td>}
+                    {/* ── FIX: conditional Centre td ── */}
+                    {isAdmin && (
+                      <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{r.centre}</td>
+                    )}
                     <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                      {new Date(r.date + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                      {/* ── FIX: use formatDateStr to avoid off-by-one in IST ── */}
+                      {formatDateStr(r.date)}
                     </td>
                     <td>
-                      <span className={`time-cell ${r.in_time ? 'has-time' : ''}`} style={{ fontSize: '0.82rem' }}>{formatTime(r.in_time)}</span>
+                      <span className={`time-cell ${r.in_time ? 'has-time' : ''}`} style={{ fontSize: '0.82rem' }}>
+                        {formatTime(r.in_time)}
+                      </span>
                       {r.in_scanner && <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>{r.in_scanner}</div>}
                     </td>
                     <td>
-                      <span className={`time-cell ${r.out_time ? 'has-time out-time' : ''}`}>{formatTime(r.out_time)}</span>
+                      <span className={`time-cell ${r.out_time ? 'has-time out-time' : ''}`}>
+                        {formatTime(r.out_time)}
+                      </span>
                       {r.out_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.out_scanner}</div>}
                     </td>
                     <td>
@@ -646,7 +651,6 @@ function AttendanceTab() {
         {!loading && records.length > 0 && (
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
             <button className="btn btn-ghost" onClick={() => {
-              const today = todayDateStr()
               const csv = [
                 ['Badge Number', 'Name', 'Centre', 'Department', 'Date', 'IN Time', 'OUT Time', 'Status', 'Manual Entry'].join(','),
                 ...records.map(r => [
@@ -667,7 +671,6 @@ function AttendanceTab() {
             </button>
           </div>
         )}
-
       </div>
 
       {/* Flag Modal */}
@@ -694,7 +697,7 @@ function AttendanceTab() {
                   <div className="flag-modal-record-meta">
                     <span style={{ fontFamily: 'monospace', color: 'var(--gold)' }}>{flagModal.badge_number}</span>
                     <span>·</span>
-                    <span>{new Date(flagModal.date + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
+                    <span>{formatDateStr(flagModal.date)}</span>
                     {flagModal.in_time && <><span>·</span><span className="flag-modal-in">IN {formatTime(flagModal.in_time)}</span></>}
                     {flagModal.out_time && <><span>·</span><span className="flag-modal-out">OUT {formatTime(flagModal.out_time)}</span></>}
                     {flagModal.manual_entry && <><span>·</span><span style={{ color: 'var(--gold)', fontWeight: 700 }}>MANUAL</span></>}
@@ -780,11 +783,24 @@ function ReportsTab() {
     return [profile.centre]
   }
 
+  // ── Reports use IST boundaries too ──
+  function getReportRange() {
+    if (dateFrom && dateTo) {
+      return {
+        start: istDayStart(dateFrom),
+        end: istDayEnd(dateTo),
+      }
+    }
+    return {
+      start: istDayStart(`${yearFilter}-01-01`),
+      end: istDayEnd(`${yearFilter}-12-31`),
+    }
+  }
+
   async function runCentreWiseReport() {
     setLoading(true); setActiveReport('centrewise'); setReportData(null)
     const centreNames = await getCentreNames()
-    const start = dateFrom ? new Date(dateFrom + 'T00:00:00').toISOString() : new Date(yearFilter + '-01-01T00:00:00').toISOString()
-    const end = dateTo ? new Date(dateTo + 'T23:59:59.999').toISOString() : new Date(yearFilter + '-12-31T23:59:59.999').toISOString()
+    const { start, end } = getReportRange()
     let q = supabase.from('attendance').select('centre, badge_number, type, scan_time').gte('scan_time', start).lte('scan_time', end)
     if (centreNames) q = q.in('centre', centreNames)
     const { data } = await q.limit(50000)
@@ -805,25 +821,28 @@ function ReportsTab() {
   async function runYearlySatsangReport() {
     setLoading(true); setActiveReport('satsang'); setReportData(null)
     const centreNames = await getCentreNames()
-    const start = `${yearFilter}-01-01T00:00:00.000Z`
-    const end = `${yearFilter}-12-31T23:59:59.999Z`
+    const { start, end } = getReportRange()
+    // jatha uses date fields (no time), keep as plain date strings
+    const jathaFrom = dateFrom || `${yearFilter}-01-01`
+    const jathaTo   = dateTo   || `${yearFilter}-12-31`
     let attQ = supabase.from('attendance').select('badge_number, sewadar_name, centre, department, scan_time, type').gte('scan_time', start).lte('scan_time', end).eq('type', 'IN')
-    let jathaQ = supabase.from('jatha_attendance').select('badge_number, sewadar_name, centre, department, date_from, satsang_days').gte('date_from', `${yearFilter}-01-01`).lte('date_from', `${yearFilter}-12-31`)
+    let jathaQ = supabase.from('jatha_attendance').select('badge_number, sewadar_name, centre, department, date_from, satsang_days').gte('date_from', jathaFrom).lte('date_from', jathaTo)
     if (centreNames) { attQ = attQ.in('centre', centreNames); jathaQ = jathaQ.in('centre', centreNames) }
     const [attRes, jathaRes] = await Promise.all([attQ.limit(50000), jathaQ.limit(10000)])
     const sewadarMap = {}
-      ; (attRes.data || []).forEach(r => {
-        const d = new Date(r.scan_time).toISOString().split('T')[0]
-        const day = new Date(d + 'T12:00:00').getDay()
-        if (!sewadarMap[r.badge_number]) sewadarMap[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, dutyDays: new Set(), satsangDaysAtt: new Set(), jathaSatsangDays: 0, jathaCount: 0 }
-        sewadarMap[r.badge_number].dutyDays.add(d)
-        if (day === 0 || day === 3) sewadarMap[r.badge_number].satsangDaysAtt.add(d)
-      })
-      ; (jathaRes.data || []).forEach(r => {
-        if (!sewadarMap[r.badge_number]) sewadarMap[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, dutyDays: new Set(), satsangDaysAtt: new Set(), jathaSatsangDays: 0, jathaCount: 0 }
-        sewadarMap[r.badge_number].jathaSatsangDays += (r.satsang_days || 0)
-        sewadarMap[r.badge_number].jathaCount++
-      })
+    ;(attRes.data || []).forEach(r => {
+      // use IST date for satsang day classification
+      const d = scanTimeToISTDate(r.scan_time)
+      const day = new Date(d + 'T12:00:00+05:30').getDay()
+      if (!sewadarMap[r.badge_number]) sewadarMap[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, dutyDays: new Set(), satsangDaysAtt: new Set(), jathaSatsangDays: 0, jathaCount: 0 }
+      sewadarMap[r.badge_number].dutyDays.add(d)
+      if (day === 0 || day === 3) sewadarMap[r.badge_number].satsangDaysAtt.add(d)
+    })
+    ;(jathaRes.data || []).forEach(r => {
+      if (!sewadarMap[r.badge_number]) sewadarMap[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, dutyDays: new Set(), satsangDaysAtt: new Set(), jathaSatsangDays: 0, jathaCount: 0 }
+      sewadarMap[r.badge_number].jathaSatsangDays += (r.satsang_days || 0)
+      sewadarMap[r.badge_number].jathaCount++
+    })
     const rows = Object.values(sewadarMap).map(s => ({ badge: s.badge, name: s.name, centre: s.centre, dept: s.dept, dutyDays: s.dutyDays.size, satsangDaysAtt: s.satsangDaysAtt.size, jathaCount: s.jathaCount, jathaSatsangDays: s.jathaSatsangDays, totalSatsangDays: s.satsangDaysAtt.size + s.jathaSatsangDays })).sort((a, b) => b.totalSatsangDays - a.totalSatsangDays)
     setReportData({ type: 'satsang', rows, year: yearFilter })
     setLoading(false)
@@ -832,7 +851,9 @@ function ReportsTab() {
   async function runJathaReport() {
     setLoading(true); setActiveReport('jatha'); setReportData(null)
     const centreNames = await getCentreNames()
-    let q = supabase.from('jatha_attendance').select('*').gte('date_from', `${yearFilter}-01-01`).lte('date_from', `${yearFilter}-12-31`).order('date_from', { ascending: false })
+    const jathaFrom = dateFrom || `${yearFilter}-01-01`
+    const jathaTo   = dateTo   || `${yearFilter}-12-31`
+    let q = supabase.from('jatha_attendance').select('*').gte('date_from', jathaFrom).lte('date_from', jathaTo).order('date_from', { ascending: false })
     if (centreNames) q = q.in('centre', centreNames)
     const { data } = await q.limit(10000)
     setReportData({ type: 'jatha', rows: data || [], year: yearFilter })
@@ -842,8 +863,7 @@ function ReportsTab() {
   async function runSewadarCountReport() {
     setLoading(true); setActiveReport('sewadarcount'); setReportData(null)
     const centreNames = await getCentreNames()
-    const start = dateFrom ? new Date(dateFrom + 'T00:00:00').toISOString() : new Date(yearFilter + '-01-01T00:00:00').toISOString()
-    const end = dateTo ? new Date(dateTo + 'T23:59:59.999').toISOString() : new Date(yearFilter + '-12-31T23:59:59.999').toISOString()
+    const { start, end } = getReportRange()
     let q = supabase.from('attendance').select('badge_number, sewadar_name, centre, department, type, scan_time').gte('scan_time', start).lte('scan_time', end)
     if (centreNames) q = q.in('centre', centreNames)
     const { data } = await q.limit(50000)
@@ -853,7 +873,8 @@ function ReportsTab() {
       if (!map[r.badge_number]) map[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, ins: 0, outs: 0, days: new Set() }
       if (r.type === 'IN') map[r.badge_number].ins++
       else map[r.badge_number].outs++
-      map[r.badge_number].days.add(new Date(r.scan_time).toISOString().split('T')[0])
+      // use IST date for counting unique days
+      map[r.badge_number].days.add(scanTimeToISTDate(r.scan_time))
     })
     const rows = Object.values(map).map(s => ({ ...s, totalDays: s.days.size })).sort((a, b) => b.totalDays - a.totalDays)
     setReportData({ type: 'sewadarcount', rows, start, end })
