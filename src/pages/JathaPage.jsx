@@ -714,6 +714,14 @@ function JathaTableTab() {
   const isCentreUser = profile?.role === ROLES.CENTRE_USER
   const isAdmin      = isAso || isCentreUser
 
+  // Reactive desktop detection
+  const [isDesktop, setIsDesktop] = useState(() => window.innerWidth >= 1024)
+  useEffect(() => {
+    const handler = () => setIsDesktop(window.innerWidth >= 1024)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
+
   const PAGE_SIZE = 50
   const [records, setRecords]           = useState([])
   const [loading, setLoading]           = useState(false)
@@ -781,7 +789,6 @@ function JathaTableTab() {
     setPage(1)
   }
 
-  const isDesktop = window.innerWidth >= 1024
 
   function SortTh({ col, label }) {
     return (

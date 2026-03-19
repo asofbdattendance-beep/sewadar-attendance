@@ -218,9 +218,10 @@ function AttendanceTab() {
     } else if (quickFilter === 'manual') {
       rows = rows.filter(r => r.manual_entry)
     } else if (quickFilter === 'flagged') {
+      // Use freshly-built flagDetails from the state (updated by fetchFlagsForCurrentPage)
       rows = rows.filter(r =>
-        (r.raw_in && flagDetails[r.raw_in.id]) ||
-        (r.raw_out && flagDetails[r.raw_out.id])
+        (r.raw_in?.id && flagDetails[r.raw_in.id]) ||
+        (r.raw_out?.id && flagDetails[r.raw_out.id])
       )
     }
 
