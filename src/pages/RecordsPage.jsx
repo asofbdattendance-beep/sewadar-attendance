@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, FLAG_TYPES } from '../lib/supabase'
@@ -227,26 +227,76 @@ function AttendanceTab() {
       return
     }
 
-    // ── Group by badge_number + IST date, pair IN/OUT ──
-    const groupedMap = {}
+    // ── Group by badge_number + IST date, then build sessions ──
     const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000
+    const dayMap = {}   // key → { meta, scans[] }
     for (const r of (data || [])) {
       const istDate = new Date(new Date(r.scan_time).getTime() + IST_OFFSET_MS).toISOString().split('T')[0]
       const key = `${r.badge_number}::${istDate}`
-      if (!groupedMap[key]) {
-        groupedMap[key] = { badge_number: r.badge_number, sewadar_name: r.sewadar_name, centre: r.centre, department: r.department, date: istDate, in_time: null, out_time: null, in_scanner: null, out_scanner: null, in_id: null, out_id: null, manual_entry: false }
+      if (!dayMap[key]) {
+        dayMap[key] = {
+          badge_number: r.badge_number, sewadar_name: r.sewadar_name,
+          centre: r.centre, department: r.department, date: istDate,
+          scans: []
+        }
       }
-      const g = groupedMap[key]
-      if (r.type === 'IN' && (!g.in_time || r.scan_time < g.in_time)) {
-        g.in_time = r.scan_time; g.in_scanner = r.scanner_name; g.in_id = r.id
-        if (r.manual_entry) g.manual_entry = true
-      }
-      if (r.type === 'OUT' && (!g.out_time || r.scan_time > g.out_time)) {
-        g.out_time = r.scan_time; g.out_scanner = r.scanner_name; g.out_id = r.id
-        if (r.manual_entry) g.manual_entry = true
-      }
+      dayMap[key].scans.push({ id: r.id, type: r.type, scan_time: r.scan_time, scanner_name: r.scanner_name, manual_entry: r.manual_entry })
     }
-    const rpcData = Object.values(groupedMap)
+
+    // For each day-group, sort scans chronologically and pair them into sessions
+    // Session = { in_time, in_id, in_scanner, out_time, out_id, out_scanner, manual_entry }
+    // Algorithm: walk sorted scans, each IN starts a new session, next OUT closes it.
+    // Any orphaned INs or OUTs get their own session with the other side null.
+    function buildSessions(scans) {
+      const sorted = [...scans].sort((a, b) => new Date(a.scan_time) - new Date(b.scan_time))
+      const sessions = []
+      let current = null
+      for (const s of sorted) {
+        if (s.type === 'IN') {
+          // Close any open session that has no OUT yet
+          if (current) sessions.push(current)
+          current = { in_time: s.scan_time, in_id: s.id, in_scanner: s.scanner_name,
+                      out_time: null, out_id: null, out_scanner: null,
+                      manual_entry: !!s.manual_entry }
+        } else { // OUT
+          if (current && !current.out_time) {
+            // Close current session
+            current.out_time = s.scan_time
+            current.out_id   = s.id
+            current.out_scanner = s.scanner_name
+            if (s.manual_entry) current.manual_entry = true
+            sessions.push(current)
+            current = null
+          } else {
+            // Orphan OUT — no matching IN
+            sessions.push({ in_time: null, in_id: null, in_scanner: null,
+                            out_time: s.scan_time, out_id: s.id, out_scanner: s.scanner_name,
+                            manual_entry: !!s.manual_entry })
+          }
+        }
+      }
+      if (current) sessions.push(current)  // trailing IN with no OUT
+      return sessions
+    }
+
+    const rpcData = Object.values(dayMap).map(g => {
+      const sessions = buildSessions(g.scans)
+      const firstIn  = sessions.find(s => s.in_time)
+      const lastOut  = [...sessions].reverse().find(s => s.out_time)
+      const anyManual = sessions.some(s => s.manual_entry)
+      return {
+        badge_number: g.badge_number, sewadar_name: g.sewadar_name,
+        centre: g.centre, department: g.department, date: g.date,
+        in_time:     firstIn?.in_time   || null,
+        in_id:       firstIn?.in_id     || null,
+        in_scanner:  firstIn?.in_scanner|| null,
+        out_time:    lastOut?.out_time  || null,
+        out_id:      lastOut?.out_id    || null,
+        out_scanner: lastOut?.out_scanner || null,
+        manual_entry: anyManual,
+        sessions,   // ← all sessions for this badge+day
+      }
+    })
 
     // ── Normalise: attach raw_in/raw_out stubs for flag lookups ──
     let rows = rpcData.map(r => ({
@@ -262,6 +312,7 @@ function AttendanceTab() {
       in_id:        r.in_id  || null,
       out_id:       r.out_id || null,
       manual_entry: r.manual_entry || false,
+      sessions:     r.sessions || [],   // all IN/OUT sessions for this badge+day
       raw_in:  r.in_id  ? { id: r.in_id  } : null,
       raw_out: r.out_id ? { id: r.out_id } : null,
     }))
@@ -651,110 +702,160 @@ function AttendanceTab() {
                 </tr>
               </thead>
               <tbody>
-                {records.map((r, i) => (
-                  <tr
-                    key={`${r.badge_number}-${r.date}-${r.in_id || r.out_id || 'x'}`}
-                    ref={highlightedRowRef.current === i ? tableRef : null}
-                    style={{
-                      background: highlightedRowRef.current === i
-                        ? 'var(--green-bg)'
-                        : (r.raw_in && flagDetails[r.raw_in.id]) || (r.raw_out && flagDetails[r.raw_out.id])
-                          ? 'rgba(220,38,38,0.04)'
-                          : 'transparent',
-                      outline: highlightedRowRef.current === i ? '2px solid var(--excel-green)' : 'none',
-                      outlineOffset: -2,
-                    }}
-                  >
-                    <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.03em', lineHeight: 1.4 }}>
-                      {r.badge_number}
-                    </td>
-                    <td>
-                      <div style={{ fontWeight: 500, fontSize: '0.9rem' }}>{r.sewadar_name}</div>
-                      {r.manual_entry && (
-                        <span style={{ fontSize: '0.65rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 6px', fontWeight: 700, marginTop: 2, display: 'inline-block' }}>MANUAL</span>
-                      )}
-                    </td>
-                    {/* ── FIX: conditional Centre td ── */}
-                    {isAdmin && (
-                      <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{r.centre}</td>
-                    )}
-                    <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                      {/* ── FIX: use formatDateStr to avoid off-by-one in IST ── */}
-                      {formatDateStr(r.date)}
-                    </td>
-                    <td>
-                      <span className={`time-cell ${r.in_time ? 'has-time' : ''}`} style={{ fontSize: '0.82rem' }}>
-                        {formatTime(r.in_time)}
-                      </span>
-                      {r.in_scanner && <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>{r.in_scanner}</div>}
-                    </td>
-                    <td>
-                      <span className={`time-cell ${r.out_time ? 'has-time out-time' : ''}`}>
-                        {formatTime(r.out_time)}
-                      </span>
-                      {r.out_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.out_scanner}</div>}
-                    </td>
-                    <td>
-                      {(() => {
-                        const inFlag = r.raw_in ? flagDetails[r.raw_in.id] : null
-                        const outFlag = r.raw_out ? flagDetails[r.raw_out.id] : null
-                        const flagInfo = inFlag || outFlag
-                        if (r.in_time && r.out_time && !flagInfo)
-                          return <span className="status-complete">Complete</span>
-                        if (r.in_time && !r.out_time && !flagInfo)
-                          return <span className="status-in-only">IN only</span>
-                        if (r.out_time && !r.in_time && !flagInfo)
-                          return <span className="status-out-only">OUT only</span>
-                        if (!r.in_time && !r.out_time && !flagInfo)
-                          return <span className="status-none">—</span>
-                        const flagTypeLabel = FLAG_TYPES.find(f => f.value === flagInfo?.flag_type)?.label || flagInfo?.flag_type || 'Flag'
-                        const remark = flagInfo?.issue_description?.trim() || flagTypeLabel
-                        const flagStatusLabel = r.in_time && r.out_time ? 'Complete' : r.in_time ? 'IN only' : r.out_time ? 'OUT only' : '—'
-                        return (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                            <span className={flagStatusLabel === 'Complete' ? 'status-complete' : flagStatusLabel === 'IN only' ? 'status-in-only' : flagStatusLabel === 'OUT only' ? 'status-out-only' : 'status-none'}>
-                              {flagStatusLabel}
-                            </span>
-                            <span
-                              title={`${flagTypeLabel}${flagInfo?.issue_description ? '\nRemark: ' + flagInfo.issue_description : ''}\nBy: ${flagInfo?.raised_by_name || flagInfo?.raised_by_badge || '—'}\nOn: ${flagInfo?.created_at ? new Date(flagInfo.created_at).toLocaleDateString('en-IN') : '—'}\nStatus: ${flagInfo?.status || 'open'}`}
-                              style={{
-                                display: 'inline-flex', alignItems: 'flex-start', gap: '4px',
-                                fontSize: '0.72rem', fontWeight: 600,
-                                color: 'var(--red)', background: 'var(--red-bg)',
-                                border: '1px solid rgba(220,38,38,0.25)',
-                                borderRadius: 4, padding: '2px 6px',
-                                cursor: 'pointer', maxWidth: '100%',
-                              }}
-                            >
-                              <Flag size={11} style={{ flexShrink: 0, marginTop: '1px' }} />
-                              <span style={{ lineHeight: 1.4, wordBreak: 'break-word' }}>{remark}</span>
-                            </span>
-                          </div>
-                        )
-                      })()}
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                        <button className="records-flag-btn" title="Raise flag"
-                          onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}>
-                          <Flag size={13} />
-                        </button>
-                        {isAso && r.in_id && (
-                          <button className="records-delete-btn" title="Delete IN"
-                            onClick={() => setDeleteConfirm({ id: r.in_id, badge: r.badge_number, type: 'IN' })}>
-                            <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>IN</span>
-                          </button>
-                        )}
-                        {isAso && r.out_id && (
-                          <button className="records-delete-btn" title="Delete OUT"
-                            onClick={() => setDeleteConfirm({ id: r.out_id, badge: r.badge_number, type: 'OUT' })}>
-                            <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>OUT</span>
-                          </button>
-                        )}
+                {records.map((r, i) => {
+                  const rowKey = `${r.badge_number}-${r.date}`
+                  const hasMultiSessions = r.sessions && r.sessions.length > 1
+                  const isExpanded = expandedRows.has(rowKey)
+                  const inFlag = r.raw_in ? flagDetails[r.raw_in.id] : null
+                  const outFlag = r.raw_out ? flagDetails[r.raw_out.id] : null
+                  const flagInfo = inFlag || outFlag
+
+                  function statusCell(inTime, outTime, fInfo) {
+                    if (inTime && outTime && !fInfo) return <span className="status-complete">Complete</span>
+                    if (inTime && !outTime && !fInfo) return <span className="status-in-only">IN only</span>
+                    if (outTime && !inTime && !fInfo) return <span className="status-out-only">OUT only</span>
+                    if (!inTime && !outTime && !fInfo) return <span className="status-none">—</span>
+                    const ftLabel = FLAG_TYPES.find(f => f.value === fInfo?.flag_type)?.label || fInfo?.flag_type || 'Flag'
+                    const remark = fInfo?.issue_description?.trim() || ftLabel
+                    const sl = inTime && outTime ? 'Complete' : inTime ? 'IN only' : outTime ? 'OUT only' : '—'
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span className={sl === 'Complete' ? 'status-complete' : sl === 'IN only' ? 'status-in-only' : sl === 'OUT only' ? 'status-out-only' : 'status-none'}>{sl}</span>
+                        <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '4px', fontSize: '0.72rem', fontWeight: 600, color: 'var(--red)', background: 'var(--red-bg)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 4, padding: '2px 6px', maxWidth: '100%' }}>
+                          <Flag size={11} style={{ flexShrink: 0, marginTop: '1px' }} />
+                          <span style={{ lineHeight: 1.4, wordBreak: 'break-word' }}>{remark}</span>
+                        </span>
                       </div>
-                    </td>
-                  </tr>
-                ))}
+                    )
+                  }
+
+                  return (
+                    <React.Fragment key={rowKey}>
+                      {/* ── Primary row ── */}
+                      <tr
+                        ref={highlightedRowRef.current === i ? tableRef : null}
+                        style={{
+                          background: highlightedRowRef.current === i
+                            ? 'var(--green-bg)'
+                            : flagInfo ? 'rgba(220,38,38,0.04)' : 'transparent',
+                          outline: highlightedRowRef.current === i ? '2px solid var(--excel-green)' : 'none',
+                          outlineOffset: -2,
+                        }}
+                      >
+                        <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.03em', lineHeight: 1.4 }}>
+                          {r.badge_number}
+                        </td>
+                        <td>
+                          <div style={{ fontWeight: 500, fontSize: '0.9rem' }}>{r.sewadar_name}</div>
+                          <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', marginTop: 2 }}>
+                            {r.manual_entry && (
+                              <span style={{ fontSize: '0.65rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 6px', fontWeight: 700 }}>MANUAL</span>
+                            )}
+                            {hasMultiSessions && (
+                              <button
+                                onClick={() => setExpandedRows(prev => {
+                                  const next = new Set(prev)
+                                  next.has(rowKey) ? next.delete(rowKey) : next.add(rowKey)
+                                  return next
+                                })}
+                                style={{ fontSize: '0.65rem', background: isExpanded ? 'rgba(33,115,70,0.12)' : 'var(--blue-bg)', color: isExpanded ? 'var(--excel-green)' : 'var(--blue)', border: `1px solid ${isExpanded ? 'rgba(33,115,70,0.3)' : 'rgba(21,101,192,0.3)'}`, borderRadius: 999, padding: '1px 7px', fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                              >
+                                {r.sessions.length} sessions {isExpanded ? '▲' : '▼'}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        {isAdmin && (
+                          <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{r.centre}</td>
+                        )}
+                        <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                          {formatDateStr(r.date)}
+                        </td>
+                        <td>
+                          <span className={`time-cell ${r.in_time ? 'has-time' : ''}`} style={{ fontSize: '0.82rem' }}>
+                            {formatTime(r.in_time)}
+                          </span>
+                          {r.in_scanner && <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>{r.in_scanner}</div>}
+                        </td>
+                        <td>
+                          <span className={`time-cell ${r.out_time ? 'has-time out-time' : ''}`}>
+                            {formatTime(r.out_time)}
+                          </span>
+                          {r.out_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.out_scanner}</div>}
+                        </td>
+                        <td>{statusCell(r.in_time, r.out_time, flagInfo)}</td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                            <button className="records-flag-btn" title="Raise flag"
+                              onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}>
+                              <Flag size={13} />
+                            </button>
+                            {isAso && r.in_id && (
+                              <button className="records-delete-btn" title="Delete first IN"
+                                onClick={() => setDeleteConfirm({ id: r.in_id, badge: r.badge_number, type: 'IN' })}>
+                                <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>IN</span>
+                              </button>
+                            )}
+                            {isAso && r.out_id && (
+                              <button className="records-delete-btn" title="Delete last OUT"
+                                onClick={() => setDeleteConfirm({ id: r.out_id, badge: r.badge_number, type: 'OUT' })}>
+                                <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>OUT</span>
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+
+                      {/* ── Session sub-rows (only when expanded and multi-session) ── */}
+                      {isExpanded && hasMultiSessions && r.sessions.map((s, si) => (
+                        <tr key={`${rowKey}-s${si}`} style={{ background: 'rgba(33,115,70,0.03)', borderLeft: '3px solid var(--excel-green)' }}>
+                          <td colSpan={isAdmin ? 3 : 2} style={{ paddingLeft: '2rem' }}>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+                              Session {si + 1}
+                            </span>
+                            {s.manual_entry && (
+                              <span style={{ marginLeft: 6, fontSize: '0.62rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 5px', fontWeight: 700 }}>MANUAL</span>
+                            )}
+                          </td>
+                          <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                            {formatDateStr(r.date)}
+                          </td>
+                          <td>
+                            <span className={`time-cell ${s.in_time ? 'has-time' : ''}`} style={{ fontSize: '0.82rem' }}>
+                              {formatTime(s.in_time)}
+                            </span>
+                            {s.in_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{s.in_scanner}</div>}
+                          </td>
+                          <td>
+                            <span className={`time-cell ${s.out_time ? 'has-time out-time' : ''}`}>
+                              {formatTime(s.out_time)}
+                            </span>
+                            {s.out_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{s.out_scanner}</div>}
+                          </td>
+                          <td>{statusCell(s.in_time, s.out_time, null)}</td>
+                          <td>
+                            {isAso && (
+                              <div style={{ display: 'flex', gap: 2 }}>
+                                {s.in_id && (
+                                  <button className="records-delete-btn" title="Delete this IN"
+                                    onClick={() => setDeleteConfirm({ id: s.in_id, badge: r.badge_number, type: 'IN' })}>
+                                    <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>IN</span>
+                                  </button>
+                                )}
+                                {s.out_id && (
+                                  <button className="records-delete-btn" title="Delete this OUT"
+                                    onClick={() => setDeleteConfirm({ id: s.out_id, badge: r.badge_number, type: 'OUT' })}>
+                                    <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>OUT</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  )
+                })}
               </tbody>
             </table>
           )}
@@ -779,7 +880,22 @@ function AttendanceTab() {
                         {colToggle.badge && <div style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.82rem', fontWeight: 700 }}>{r.badge_number}</div>}
                         {colToggle.name && <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{r.sewadar_name}</div>}
                       </div>
-                      {r.manual_entry && <span style={{ fontSize: '0.62rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 6px', fontWeight: 700 }}>MANUAL</span>}
+                      <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        {r.manual_entry && <span style={{ fontSize: '0.62rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 6px', fontWeight: 700 }}>MANUAL</span>}
+                        {r.sessions?.length > 1 && (
+                          <button
+                            onClick={() => setExpandedRows(prev => {
+                              const k = `${r.badge_number}-${r.date}`
+                              const next = new Set(prev)
+                              next.has(k) ? next.delete(k) : next.add(k)
+                              return next
+                            })}
+                            style={{ fontSize: '0.62rem', background: expandedRows.has(`${r.badge_number}-${r.date}`) ? 'rgba(33,115,70,0.12)' : 'var(--blue-bg)', color: expandedRows.has(`${r.badge_number}-${r.date}`) ? 'var(--excel-green)' : 'var(--blue)', border: '1px solid rgba(21,101,192,0.25)', borderRadius: 999, padding: '1px 7px', fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                          >
+                            {r.sessions.length} sessions {expandedRows.has(`${r.badge_number}-${r.date}`) ? '▲' : '▼'}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -843,18 +959,53 @@ function AttendanceTab() {
                       <Flag size={12} /> Flag
                     </button>
                     {isAso && r.in_id && (
-                      <button className="records-delete-btn" title="Delete IN" style={{ fontSize: '0.72rem', padding: '0.3rem 0.6rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                      <button className="records-delete-btn" title="Delete first IN" style={{ fontSize: '0.72rem', padding: '0.3rem 0.6rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
                         onClick={() => setDeleteConfirm({ id: r.in_id, badge: r.badge_number, type: 'IN' })}>
                         <Trash2 size={11} /> IN
                       </button>
                     )}
                     {isAso && r.out_id && (
-                      <button className="records-delete-btn" title="Delete OUT" style={{ fontSize: '0.72rem', padding: '0.3rem 0.6rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                      <button className="records-delete-btn" title="Delete last OUT" style={{ fontSize: '0.72rem', padding: '0.3rem 0.6rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
                         onClick={() => setDeleteConfirm({ id: r.out_id, badge: r.badge_number, type: 'OUT' })}>
                         <Trash2 size={11} /> OUT
                       </button>
                     )}
                   </div>
+
+                  {/* ── Session breakdown (shown when expanded) ── */}
+                  {expandedRows.has(`${r.badge_number}-${r.date}`) && r.sessions?.length > 1 && (
+                    <div style={{ marginTop: '0.6rem', borderTop: '2px solid var(--excel-green)', paddingTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--excel-green)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.1rem' }}>
+                        All Sessions
+                      </div>
+                      {r.sessions.map((s, si) => (
+                        <div key={si} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.3rem 0.5rem', background: 'rgba(33,115,70,0.04)', border: '1px solid rgba(33,115,70,0.12)', borderRadius: 6, padding: '0.4rem 0.6rem', alignItems: 'center' }}>
+                          <div>
+                            <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase' }}>IN</div>
+                            <span className={`time-cell ${s.in_time ? 'has-time' : ''}`} style={{ fontSize: '0.75rem' }}>
+                              {formatTime(s.in_time)}
+                            </span>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase' }}>OUT</div>
+                            <span className={`time-cell ${s.out_time ? 'has-time out-time' : ''}`} style={{ fontSize: '0.75rem' }}>
+                              {formatTime(s.out_time)}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.2rem' }}>
+                            <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', fontWeight: 700 }}>#{si + 1}</span>
+                            {s.manual_entry && <span style={{ fontSize: '0.55rem', background: 'var(--gold-bg)', color: 'var(--gold)', borderRadius: 999, padding: '0 4px', fontWeight: 700 }}>M</span>}
+                            {isAso && (
+                              <div style={{ display: 'flex', gap: 2 }}>
+                                {s.in_id && <button className="records-delete-btn" style={{ padding: '2px 4px', fontSize: '0.6rem' }} onClick={() => setDeleteConfirm({ id: s.in_id, badge: r.badge_number, type: 'IN' })}><Trash2 size={9} /></button>}
+                                {s.out_id && <button className="records-delete-btn" style={{ padding: '2px 4px', fontSize: '0.6rem' }} onClick={() => setDeleteConfirm({ id: s.out_id, badge: r.badge_number, type: 'OUT' })}><Trash2 size={9} /></button>}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )
             })}

@@ -59,7 +59,7 @@ function LoadingScreen() {
 }
 
 function AppLayout() {
-  const { profile, loading, sessionExpired, setSessionExpired, signOut, resetActivity, sessionWarning } = useAuth()
+  const { profile, loading, sessionExpired, signOut, resetActivity, sessionWarning } = useAuth()
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingSync, setPendingSync] = useState(0)
   const [openFlagCount, setOpenFlagCount] = useState(0)

@@ -55,6 +55,11 @@ export default function FlagsPage() {
     fetchStats()
   }, [statusFilter, profile])
 
+  // Re-fetch stats when childCentres loads (isCentreUser needs scope to be correct)
+  useEffect(() => {
+    if (childCentres.length > 0) fetchStats()
+  }, [childCentres])
+
   async function loadChildCentres() {
     if (isAso || !profile?.centre) return
     const { data } = await supabase.from('centres').select('centre_name').eq('parent_centre', profile.centre)
