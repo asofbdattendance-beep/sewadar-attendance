@@ -114,6 +114,7 @@ function AttendanceTab() {
     }
     return { badge: true, name: true, centre: true, date: true, in: true, out: true, status: true }
   })
+  const [expandedRows, setExpandedRows] = useState(() => new Set())
 
   const searchTimerRef = useRef(null)
   const tableRef = useRef(null)
@@ -496,10 +497,14 @@ function AttendanceTab() {
     setDeleteConfirm(null)
     const { error } = await supabase.from('attendance').delete().eq('id', id)
     if (error) { showError('Delete failed: ' + error.message); return }
-    await supabase.from('logs').insert({
-      user_badge: profile.badge_number, action: 'DELETE_ATTENDANCE',
-      details: `Deleted ${type} id=${id} badge=${badge}`, timestamp: new Date().toISOString()
-    }).catch(e => console.warn('Log insert failed:', e))
+    try {
+      await supabase.from('logs').insert({
+        user_badge: profile.badge_number, action: 'DELETE_ATTENDANCE',
+        details: `Deleted ${type} id=${id} badge=${badge}`, timestamp: new Date().toISOString()
+      })
+    } catch (e) {
+      console.warn('Log insert failed:', e)
+    }
     showSuccess(`${type} record deleted`)
     fetchRecords()
   }
