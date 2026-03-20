@@ -177,8 +177,15 @@ export default function ScannerPage({ isOnline }) {
       let q = supabase.from('attendance').select('*').eq('badge_number', b)
         .gte('scan_time', todayUTC.toISOString()).order('scan_time', { ascending: true })
 
-      // FIX #2: Centre filter — respect role boundaries
-      if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
+      // Exception-dept sewadars travel cross-centre — their attendance is always stored
+      // under their HOME centre. Query by their centre, not the scanner's centre,
+      // so IN/OUT ladder works correctly regardless of where they're scanned.
+      const isExceptionSewadar = isExceptionDept(found.department)
+
+      if (isExceptionSewadar) {
+        // No centre filter — query all of today's records for this badge across all centres
+        // (they could have been scanned IN at one centre and OUT at another)
+      } else if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
         q = q.eq('centre', profile.centre)
       } else if (profile?.role === ROLES.CENTRE_USER && profile?.centre) {
         const scope = [profile.centre, ...childCentres]
@@ -188,7 +195,7 @@ export default function ScannerPage({ isOnline }) {
       const { data, error } = await q
       if (!error) todayEntries = data || []
     } else {
-      // FIX #1: Offline mode — check local cache for today's entries
+      // Offline mode — cache holds all of today's entries regardless of centre
       todayEntries = getTodayEntriesForBadge(b)
     }
 
