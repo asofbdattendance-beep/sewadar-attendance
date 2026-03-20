@@ -13,7 +13,7 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
 import { CameraOff, RefreshCw, Zap } from 'lucide-react'
 
-const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{1,2}[0-9]{4,}$/
+const BADGE_REGEX = /^(FB)[0-9]{4}[GA|LA]{1,2}[0-9]{4,}$/
 
 function clean(raw) {
   return raw.trim().toUpperCase().replace(/\s+/g, '')
@@ -158,8 +158,11 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             onScan(text)
             break
           }
-          } catch (e) { console.warn('Barcode detection failed:', e) }
+        } catch (e) {
+          console.warn('Barcode detection failed:', e)
+        } finally {
           isDetectingRef.current = false
+        }
       }
 
       rafRef.current = requestAnimationFrame(detect)

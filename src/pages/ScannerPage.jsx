@@ -206,7 +206,7 @@ export default function ScannerPage({ isOnline }) {
     }
 
     const cfg = centreConfigRef.current
-    if (cfg?.geo_enabled && userLocationRef.current && cfg.latitude != null && cfg.longitude != null && cfg.geo_radius > 0) {
+    if (!isAsoHere && cfg?.geo_enabled && userLocationRef.current && cfg.latitude != null && cfg.longitude != null && cfg.geo_radius > 0) {
       const dist = getDistanceMetres(userLocationRef.current.lat, userLocationRef.current.lng, cfg.latitude, cfg.longitude)
       if (dist > cfg.geo_radius) {
         const distKm = (dist / 1000).toFixed(1)
@@ -588,8 +588,8 @@ function ManualEntryModal({ profile, isOnline, childCentres, onClose, onSuccess 
           .or(`badge_number.ilike.%${search.toUpperCase()}%,sewadar_name.ilike.%${search}%`)
           .limit(10)
 
-        if (profile.role === 'sc_sp_user') q = q.eq('centre', profile.centre)
-        else if (profile.role === 'centre_user') {
+        if (profile.role === ROLES.SC_SP_USER) q = q.eq('centre', profile.centre)
+        else if (profile.role === ROLES.CENTRE_USER) {
           const scope = [profile.centre, ...childCentres]
           q = q.in('centre', scope)
         }

@@ -135,9 +135,9 @@ function AppLayout() {
 
   const navItems = [
     { path: '/scan', label: 'Scan', icon: Scan },
-    { path: '/records', label: 'Records', icon: FileText },
-    { path: '/jatha', label: 'Jatha', icon: Plane },
-    { path: '/flags', label: 'Flags', icon: Flag, badge: openFlagCount },
+    ...(isAso || isCentreUser || isScSpUser ? [{ path: '/records', label: 'Records', icon: FileText }] : []),
+    ...(isAso || isCentreUser ? [{ path: '/jatha', label: 'Jatha', icon: Plane }] : []),
+    ...(isAso || isScSpUser ? [{ path: '/flags', label: 'Flags', icon: Flag, badge: openFlagCount }] : []),
     ...(isAso ? [{ path: '/super-admin', label: 'Control', icon: Shield }] : []),
     { path: '/profile', label: 'Profile', icon: User },
   ]
@@ -231,10 +231,10 @@ function AppLayout() {
       <div style={{ flex: 1 }}>
         <Routes>
           <Route path="/scan" element={<ScannerPage isOnline={isOnline} />} />
-          <Route path="/records" element={<RecordsPage />} />
-          <Route path="/jatha" element={<JathaPage isOnline={isOnline} />} />
-          <Route path="/flags" element={<FlagsPage />} />
-          <Route path="/super-admin" element={<SuperAdminPage isOnline={isOnline} />} />
+          <Route path="/records" element={(isAso || isCentreUser || isScSpUser) ? <RecordsPage /> : <Navigate to="/scan" replace />} />
+          <Route path="/jatha" element={(isAso || isCentreUser) ? <JathaPage isOnline={isOnline} /> : <Navigate to="/scan" replace />} />
+          <Route path="/flags" element={(isAso || isScSpUser) ? <FlagsPage /> : <Navigate to="/scan" replace />} />
+          <Route path="/super-admin" element={isAso ? <SuperAdminPage isOnline={isOnline} /> : <Navigate to="/scan" replace />} />
           <Route path="/profile" element={<ProfilePage isOnline={isOnline} />} />
           <Route path="*" element={<Navigate to="/scan" replace />} />
         </Routes>

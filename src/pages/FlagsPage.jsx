@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { ROLES, FLAG_TYPES, FLAG_STATUS } from '../lib/supabase'
 import {
   Flag, MessageSquare, CheckCircle, RefreshCw,
-  ChevronDown, ChevronUp, Send, Search, X, ArrowUpDown, ArrowUp, ArrowDown
+  ChevronDown, ChevronUp, Send, Search, X, ArrowUpDown, ArrowUp, ArrowDown, Plus
 } from 'lucide-react'
 import TablePagination from '../components/TablePagination'
 import SkeletonRows from '../components/SkeletonRows'
@@ -35,6 +35,10 @@ export default function FlagsPage() {
   const [submitting, setSubmitting] = useState(false)
   const [childCentres, setChildCentres] = useState([])
   const [totalCount, setTotalCount] = useState(0)
+  const [raiseModal, setRaiseModal] = useState(false)
+  const [raiseType, setRaiseType] = useState('other')
+  const [raiseNote, setRaiseNote] = useState('')
+  const [raising, setRaising] = useState(false)
   const searchTimer = useRef(null)
 
   useEffect(() => {
@@ -226,6 +230,28 @@ export default function FlagsPage() {
     showSuccess('Flag reopened')
   }
 
+  async function submitRaiseFlag() {
+    if (!raiseNote.trim()) return
+    setRaising(true)
+    const { error } = await supabase.from('queries').insert({
+      raised_by_badge: profile.badge_number,
+      raised_by_name: profile.name,
+      raised_by_centre: profile.centre,
+      raised_by_role: profile.role,
+      flag_type: raiseType,
+      issue_description: raiseNote.trim(),
+      status: FLAG_STATUS.OPEN,
+    })
+    setRaising(false)
+    if (error) { showError('Failed to raise flag'); return }
+    setRaiseModal(false)
+    setRaiseNote('')
+    setRaiseType('other')
+    fetchFlags()
+    fetchStats()
+    showSuccess('Flag raised successfully')
+  }
+
   function timeFmt(iso) {
     if (!iso) return '—'
     return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
@@ -276,6 +302,9 @@ export default function FlagsPage() {
         </div>
         <button className="btn btn-ghost" onClick={() => { fetchFlags(); fetchStats() }} style={{ padding: '0.4rem 0.6rem' }}>
           <RefreshCw size={14} /> Refresh
+        </button>
+        <button className="btn btn-primary" onClick={() => setRaiseModal(true)} style={{ padding: '0.4rem 0.75rem', gap: '0.3rem', display: 'flex', alignItems: 'center' }}>
+          <Plus size={14} /> Raise Flag
         </button>
       </div>
 
@@ -551,6 +580,50 @@ export default function FlagsPage() {
           total={totalCount}
           onPageChange={p => setPage(p)}
         />
+      )}
+
+      {/* Raise Flag Modal */}
+      {raiseModal && (
+        <div className="overlay" onClick={() => setRaiseModal(false)}>
+          <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>Raise Flag</h3>
+              <button onClick={() => setRaiseModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '0.4rem' }}>Flag Type</label>
+            <select
+              value={raiseType}
+              onChange={e => setRaiseType(e.target.value)}
+              style={{ width: '100%', padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.88rem', marginBottom: '0.85rem', boxSizing: 'border-box' }}
+            >
+              {FLAG_TYPES.map(ft => <option key={ft.value} value={ft.value}>{ft.label}</option>)}
+            </select>
+
+            <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '0.4rem' }}>Description</label>
+            <textarea
+              value={raiseNote}
+              onChange={e => setRaiseNote(e.target.value)}
+              placeholder="Describe the issue clearly…"
+              rows={4}
+              style={{ width: '100%', padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.88rem', marginBottom: '1rem', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit' }}
+            />
+
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setRaiseModal(false)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                style={{ flex: 1, opacity: (!raiseNote.trim() || raising) ? 0.5 : 1 }}
+                disabled={!raiseNote.trim() || raising}
+                onClick={submitRaiseFlag}
+              >
+                {raising ? 'Submitting…' : 'Submit Flag'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
