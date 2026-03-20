@@ -13,7 +13,9 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
 import { CameraOff, RefreshCw, Zap } from 'lucide-react'
 
-const BADGE_REGEX = /^(FB)[0-9]{4}[GA|LA]{1,2}[0-9]{4,}$/
+// Matches: FB or BH + 4 digits + 1-2 uppercase letters + 4+ digits
+// e.g. FB5991GA0070, FB5991LA0028, BH1234GA0001
+const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{1,2}[0-9]{4,}$/
 
 function clean(raw) {
   return raw.trim().toUpperCase().replace(/\s+/g, '')
@@ -26,42 +28,41 @@ async function hasLinearBarcodeSupport() {
   try {
     const formats = await window.BarcodeDetector.getSupportedFormats()
     return formats.includes('code_39') || formats.includes('code_128')
-  } catch (e) {
-    console.warn('BarcodeDetector.getSupportedFormats failed:', e)
+  } catch {
     return false
   }
 }
 
-// Load polyfill from CDN — only called on iOS/unsupported browsers
+// Load polyfill — only called on iOS/unsupported browsers
 // Uses ZBar WASM which supports Code39, Code128, and all linear formats
 async function loadPolyfill() {
-  // vite-ignore: loaded only on iOS/non-native — Android never hits this path
   // eslint-disable-next-line
   const { BarcodeDetectorPolyfill } = await import(/* @vite-ignore */ '@undecaf/barcode-detector-polyfill')
   window.BarcodeDetector = BarcodeDetectorPolyfill
 }
 
 const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
-  const videoRef = useRef(null)
-  const streamRef = useRef(null)
-  const rafRef = useRef(null)
-  const detectorRef = useRef(null)
-  const mountedRef = useRef(true)
-  const lastScanRef = useRef({ badge: null, time: 0 })
-  const isDetectingRef = useRef(false)
+  const videoRef        = useRef(null)
+  const streamRef       = useRef(null)
+  const rafRef          = useRef(null)
+  const detectorRef     = useRef(null)
+  const mountedRef      = useRef(true)
+  const lastScanRef     = useRef({ badge: null, time: 0 })
+  const isDetectingRef  = useRef(false)
+  const scanTimerRef    = useRef(null)   // tracks the "clear lastScanned" timeout
+  const fpsRef          = useRef({ frames: 0, last: Date.now() })
 
-  const [status, setStatus] = useState('starting')
-  const [errorMsg, setErrorMsg] = useState('')
+  const [status, setStatus]           = useState('starting')
+  const [errorMsg, setErrorMsg]       = useState('')
   const [lastScanned, setLastScanned] = useState('')
   const [engineLabel, setEngineLabel] = useState('')
-  const fpsRef = useRef({ frames: 0, last: Date.now() })
-  const [fps, setFps] = useState(0)
-  const scanTimerRef = useRef(null)
+  const [fps, setFps]                 = useState(0)
 
   const stopScanner = () => {
-    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+    if (rafRef.current)    { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+    if (scanTimerRef.current) { clearTimeout(scanTimerRef.current); scanTimerRef.current = null }
     if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
-    if (videoRef.current) videoRef.current.srcObject = null
+    if (videoRef.current)  videoRef.current.srcObject = null
     isDetectingRef.current = false
   }
 
@@ -71,18 +72,16 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     setStatus('loading')
     setErrorMsg('')
     setLastScanned('')
-    lastScanRef.current = { badge: null, time: 0 }
-    fpsRef.current = { frames: 0, last: Date.now() }
+    lastScanRef.current  = { badge: null, time: 0 }
+    fpsRef.current       = { frames: 0, last: Date.now() }
 
     // ── Step 1: Ensure BarcodeDetector supports linear barcodes ──
     const hasNative = await hasLinearBarcodeSupport()
     if (!hasNative) {
-      // Load polyfill — replaces window.BarcodeDetector with ZBar WASM
       try {
-        setStatus('loading') // still loading while WASM downloads
         await loadPolyfill()
         setEngineLabel('WASM')
-      } catch (err) {
+      } catch {
         if (mountedRef.current) {
           setStatus('error')
           setErrorMsg('Could not load barcode engine. Check internet connection and retry.')
@@ -98,7 +97,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       detectorRef.current = new window.BarcodeDetector({
         formats: ['code_39', 'code_128', 'codabar']
       })
-    } catch (err) {
+    } catch {
       if (mountedRef.current) { setStatus('error'); setErrorMsg('Failed to start barcode detector') }
       return
     }
@@ -108,7 +107,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
+          width:  { ideal: 1920 },
           height: { ideal: 1080 },
         },
         audio: false
@@ -135,6 +134,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     const detect = async () => {
       if (!mountedRef.current) return
 
+      // FPS counter
       fpsRef.current.frames++
       const now = Date.now()
       if (now - fpsRef.current.last >= 1000) {
@@ -149,17 +149,27 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
           for (const b of barcodes) {
             const text = clean(b.rawValue)
             if (!BADGE_REGEX.test(text)) continue
+
             const t = Date.now()
+            // Debounce: ignore same badge scanned within 2 seconds
             if (text === lastScanRef.current.badge && t - lastScanRef.current.time < 2000) continue
+
             lastScanRef.current = { badge: text, time: t }
             setLastScanned(text)
-            clearTimeout(scanTimerRef.current)
-            scanTimerRef.current = setTimeout(() => { if (mountedRef.current) setLastScanned('') }, 1500)
+
+            // Clear the badge display after 1.5s — tracked so it's cancelled on unmount
+            if (scanTimerRef.current) clearTimeout(scanTimerRef.current)
+            scanTimerRef.current = setTimeout(() => {
+              if (mountedRef.current) setLastScanned('')
+              scanTimerRef.current = null
+            }, 1500)
+
             onScan(text)
             break
           }
         } catch (e) {
-          console.warn('Barcode detection failed:', e)
+          // Detection errors are non-fatal — log for debugging, keep loop running
+          if (process.env.NODE_ENV === 'development') console.warn('[Scanner] detect error:', e)
         } finally {
           isDetectingRef.current = false
         }
@@ -174,12 +184,15 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   useEffect(() => {
     mountedRef.current = true
     startScanner()
-    return () => { mountedRef.current = false; clearTimeout(scanTimerRef.current); stopScanner() }
+    return () => {
+      mountedRef.current = false
+      stopScanner()
+    }
   }, [])
 
   useImperativeHandle(ref, () => ({
-    stop: stopScanner,
-    resume: () => { if (mountedRef.current) startScanner() },
+    stop:    stopScanner,
+    resume:  () => { if (mountedRef.current) startScanner() },
     restart: () => { stopScanner(); setTimeout(() => { if (mountedRef.current) startScanner() }, 100) }
   }), [])
 
