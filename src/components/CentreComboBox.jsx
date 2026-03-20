@@ -79,7 +79,7 @@ export default function CentreComboBox({ value, onChange, centres = [], includeA
     if (!value) return 'All Centres'
     const found = centres.find(c => c.centre_name === value)
     if (!found) return value
-    return value
+    return found.centre_name
   }
 
   return (

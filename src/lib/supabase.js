@@ -27,8 +27,8 @@ export function parseBadge(badge) {
 // Departments that travel centre-to-centre — scanned by ANY authorised user
 export const EXCEPTION_DEPARTMENTS = [
   'Administration', 'Office', 'Area Secretary Office',
-  'Pathis', 'Baal Pathis', 'Satsang Kartas', 'Baal Satsang Kartas',
   'Pathi', 'Satsang Karta', 'Baal Satsang Karta',
+  'Satsang Kartas', 'Baal Satsang Kartas',
 ]
 
 export function isExceptionDept(dept) {
@@ -60,11 +60,13 @@ export function validateJathaRange(fromDate, toDate) {
 export const JATHA_TYPE = {
   MAJOR_CENTRE: 'major_centre',
   BEAS: 'beas',
+  JATHA_HOME: 'jatha_home',
 }
 
 export const JATHA_TYPE_LABEL = {
   major_centre: 'Major Centre',
   beas: 'Beas',
+  jatha_home: 'Jatha Home',
 }
 
 export async function getCentreScope(centreName, role) {

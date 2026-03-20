@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useRef, useCallback } f
 import { supabase } from '../lib/supabase'
 
 const SESSION_TIMEOUT_MS = 60 * 60 * 1000 // 60 minutes
+const SESSION_WARNING_MS = 55 * 60 * 1000 // 55 minutes — show warning
 
 const AuthContext = createContext(null)
 
@@ -10,11 +11,13 @@ export function AuthProvider({ children }) {
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
   const [sessionExpired, setSessionExpired] = useState(false)
+  const [sessionWarning, setSessionWarning] = useState(false)
   const lastActivityRef = useRef(Date.now())
   const timeoutCheckRef = useRef(null)
 
   const resetActivity = useCallback(() => {
     lastActivityRef.current = Date.now()
+    setSessionWarning(false)
   }, [])
 
   useEffect(() => {
@@ -45,21 +48,25 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     const events = ['mousedown', 'keydown', 'touchstart', 'scroll']
-    events.forEach(e => window.addEventListener(e, resetActivity, { passive: true }))
+    events.forEach(e => window.addEventListener(e, resetActivity, { passive: true })) // NOTE: resetActivity only reads a ref — passive: true is safe and avoids performance penalty
     return () => events.forEach(e => window.removeEventListener(e, resetActivity))
   }, [resetActivity])
 
   useEffect(() => {
+    if (sessionExpired) return
     timeoutCheckRef.current = setInterval(() => {
+      if (sessionExpired) { clearInterval(timeoutCheckRef.current); return }
       const elapsed = Date.now() - lastActivityRef.current
       if (elapsed >= SESSION_TIMEOUT_MS) {
         clearInterval(timeoutCheckRef.current)
         setSessionExpired(true)
         supabase.auth.signOut()
+      } else if (elapsed >= SESSION_WARNING_MS && !sessionWarning) {
+        setSessionWarning(true)
       }
     }, 30000)
     return () => clearInterval(timeoutCheckRef.current)
-  }, [])
+  }, [sessionExpired, sessionWarning])
 
   async function fetchProfile(userId) {
     const { data, error } = await supabase
@@ -68,7 +75,7 @@ export function AuthProvider({ children }) {
       .eq('auth_id', userId)
       .single()
     if (error) {
-      console.error('Failed to load profile:', error)
+      console.warn('Failed to load profile:', error)
       setProfile(null)
     } else {
       setProfile(data)
@@ -87,10 +94,14 @@ export function AuthProvider({ children }) {
     await supabase.auth.signOut()
     setUser(null)
     setProfile(null)
+    localStorage.removeItem('attendance_offline_queue')
+    localStorage.removeItem('attendance_cache')
+    localStorage.removeItem('sewadars_cache')
+    localStorage.removeItem('sewadars_cache_time')
   }
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signIn, signOut, sessionExpired, setSessionExpired, resetActivity }}>
+    <AuthContext.Provider value={{ user, profile, loading, signIn, signOut, sessionExpired, setSessionExpired, sessionWarning, resetActivity }}>
       {children}
     </AuthContext.Provider>
   )

@@ -275,7 +275,7 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   .overlay { align-items:center; padding:2rem; }
 }
 @keyframes fadeIn { from{opacity:0;} to{opacity:1;} }
-.overlay-sheet { background:white; border-radius:var(--radius-lg) var(--radius-lg) 0 0; padding:1.75rem; width:100%; max-width:520px; animation:sheetUp 0.25s ease; box-shadow:var(--shadow-lg); }
+.overlay-sheet { background:white; border-radius:var(--radius-lg) var(--radius-lg) 0 0; padding:1.75rem; width:100%; max-width:520px; animation:sheetUp 0.25s ease; box-shadow:var(--shadow-lg); overflow-x:hidden; box-sizing:border-box; }
 @media (min-width: 768px) {
   .overlay-sheet { border-radius:var(--radius-lg); animation:popIn 0.22s cubic-bezier(0.34,1.56,0.64,1); }
 }
@@ -465,6 +465,158 @@ tr:hover td { background:#FAFCFF; }
 }
 .records-flag-btn { background:none; border:1.5px solid transparent; border-radius:6px; padding:5px 7px; cursor:pointer; color:var(--text-muted); display:flex; align-items:center; transition:all 0.12s; }
 .records-flag-btn:hover { background:var(--red-bg); border-color:rgba(198,40,40,0.2); color:var(--red); }
+
+/* Mobile column toggle button */
+.rec-col-toggle { display: none; }
+
+/* Mobile card view — hidden on desktop, shown on mobile */
+.rec-mobile-cards { display: none; }
+
+/* Responsive: mobile (< 768px) */
+@media (max-width: 767px) {
+  /* Hide desktop table on mobile */
+  .records-table-desktop,
+  .records-table-wrap > table { display: none !important; }
+
+  /* Show mobile cards on mobile */
+  .rec-mobile-cards { display: flex; flex-direction: column; gap: 0.5rem; }
+
+  /* Show col toggle on mobile */
+  .rec-col-toggle { display: flex !important; align-items: center; gap: 0.3rem; }
+}
+
+.rec-mobile-card {
+  border-radius: 10px;
+  padding: 0.75rem;
+  background: var(--bg-elevated);
+}
+
+@media (min-width: 768px) {
+  .rec-mobile-card { display: none; }
+}
+
+/* Jatha modal date grid — responsive */
+.jatha-date-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+@media (max-width: 480px) {
+  .jatha-date-grid { grid-template-columns: 1fr; gap: 0.6rem; }
+}
+
+/* All 2-col grids in overlay sheets go single-col on mobile */
+@media (max-width: 480px) {
+  .overlay-sheet [style*="grid-template-columns: 1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+    gap: 0.6rem !important;
+  }
+}
+
+/* ── JATHA PAGE ── */
+.jatha-records-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  overflow-x: hidden;
+}
+.jatha-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 0.85rem;
+  border-left-width: 3px;
+  border-left-style: solid;
+  border-left-color: var(--gold);
+}
+.jatha-card-flagged { border-left-color: var(--red); }
+.jatha-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.jatha-card-info { flex: 1; min-width: 0; }
+.jatha-card-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+  flex-wrap: wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.jatha-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+.jatha-card-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.jatha-right {
+  text-align: right;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.jatha-right-date {
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+.jatha-right-days {
+  font-size: 0.78rem;
+  color: var(--green);
+  font-weight: 700;
+  margin-top: 0.2rem;
+}
+.jatha-right-by {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.jatha-actions {
+  margin-top: 0.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.4rem;
+}
+.jatha-action-group {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 767px) {
+  .jatha-card { padding: 0.7rem; }
+  .jatha-right { min-width: 80px; }
+  .jatha-right-date { max-width: 110px; font-size: 0.78rem; }
+  .jatha-right-by { max-width: 110px; }
+}
+
+@media (min-width: 768px) {
+  .jatha-right { min-width: 130px; }
+  .jatha-right-date { max-width: 200px; }
+  .jatha-right-by { max-width: 200px; }
+}
 
 /* Flag modal */
 .flag-modal { max-width:440px; }
@@ -806,67 +958,6 @@ tr:hover td { background:#FAFCFF; }
   font-weight: 600;
   margin-top: 0.25rem;
 }
-.records-table-wrap {
-  width: 100%;
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: white;
-}
-
-
-.records-table thead th {
-  position: sticky;
-  top: 0;
-  background: var(--bg-elevated);
-  z-index: 2;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 0.6rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.records-table tbody td {
-  padding: 0.6rem;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.82rem;
-}
-
-.records-table tbody tr:hover {
-  background: rgba(255,255,255,0.03);
-}
-
-.records-table tbody tr:nth-child(even) {
-  background: rgba(255,255,255,0.015);
-}
-
-.status-complete {
-  background: rgba(34,197,94,0.15);
-  color: #22c55e;
-  padding: 2px 8px;
-  border-radius: 6px;
-  font-size: 0.7rem;
-  font-weight: 600;
-}
-
-.status-in-only {
-  background: rgba(59,130,246,0.15);
-  color: #3b82f6;
-  padding: 2px 8px;
-  border-radius: 6px;
-}
-
-.status-out-only {
-  background: rgba(239,68,68,0.15);
-  color: #ef4444;
-  padding: 2px 8px;
-  border-radius: 6px;
-}
-.records-table td,
-.records-table th {
-  white-space: nowrap;
-}
 /* ── JATHA TABLE — responsive ── */
 .jatha-table-wrap {
   width: 100%;
@@ -884,18 +975,47 @@ tr:hover td { background:#FAFCFF; }
   }
 }
 
+/* ── JATHA PAGE LAYOUT ── */
+.jatha-page {
+  max-width: 600px;
+}
+.jatha-page.table-full {
+  max-width: 100%;
+}
+@media (min-width: 768px) {
+  .jatha-page { max-width: 100%; }
+}
+
+/* ── JATHA STICKY FOOTER ── */
+.jatha-sticky-footer {
+  position: sticky;
+  bottom: calc(5.5rem + env(safe-area-inset-bottom));
+  background: var(--bg);
+  padding: 0.5rem 0;
+  margin: 0 -1rem;
+  padding-left: 1rem;
+  padding-right: 1rem;
+  z-index: 10;
+  box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
+}
+@media (min-width: 768px) {
+  .jatha-sticky-footer {
+    position: static;
+    box-shadow: none;
+    margin: 0;
+    padding: 0.5rem 0 0;
+  }
+}
+
 /* ── DESKTOP LAYOUT ── */
 @media (min-width: 768px) {
-  /* Ensure content doesn't jump when switching tabs */
   .page, .page-wide {
     min-height: calc(100vh - 52px - 45px);
   }
-  /* Records table — no max height cap on desktop */
   .records-table-wrap {
     max-height: none;
     overflow-y: visible;
   }
-  /* Table wrap — no cap on desktop either */
   .table-wrap {
     max-height: none;
   }

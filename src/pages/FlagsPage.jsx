@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, FLAG_TYPES, FLAG_STATUS } from '../lib/supabase'
@@ -90,8 +90,8 @@ export default function FlagsPage() {
 
   function getScope() {
     if (isAso) return []
-    if (isCentreUser) return childCentres.length > 0 ? childCentres : [profile?.centre]
-    if (isScSpUser) return [profile?.centre]
+    if (isCentreUser) return childCentres.length > 0 ? childCentres : profile?.centre ? [profile.centre] : []
+    if (isScSpUser) return profile?.centre ? [profile.centre] : []
     return []
   }
 
@@ -129,14 +129,45 @@ export default function FlagsPage() {
       )
     }
 
+    flags.sort((a, b) => {
+      let aVal, bVal
+      if (sortCol === 'attendance.badge_number') {
+        aVal = (a.attendance?.badge_number || '').toLowerCase()
+        bVal = (b.attendance?.badge_number || '').toLowerCase()
+      } else if (sortCol === 'attendance.sewadar_name') {
+        aVal = (a.attendance?.sewadar_name || '').toLowerCase()
+        bVal = (b.attendance?.sewadar_name || '').toLowerCase()
+      } else if (sortCol === 'created_at') {
+        aVal = a.created_at || ''
+        bVal = b.created_at || ''
+      } else if (sortCol === 'flag_type') {
+        aVal = a.flag_type || ''
+        bVal = b.flag_type || ''
+      } else if (sortCol === 'status') {
+        aVal = a.status || ''
+        bVal = b.status || ''
+      } else if (sortCol === 'raised_by_centre') {
+        aVal = (a.raised_by_centre || '').toLowerCase()
+        bVal = (b.raised_by_centre || '').toLowerCase()
+      } else if (sortCol === 'raised_by_name') {
+        aVal = (a.raised_by_name || '').toLowerCase()
+        bVal = (b.raised_by_name || '').toLowerCase()
+      } else {
+        aVal = (a[sortCol] || '').toString().toLowerCase()
+        bVal = (b[sortCol] || '').toString().toLowerCase()
+      }
+      if (aVal < bVal) return sortDir === 'asc' ? -1 : 1
+      if (aVal > bVal) return sortDir === 'asc' ? 1 : -1
+      return 0
+    })
+
     setAllFlags(flags)
     setLoading(false)
   }
 
-  // FIX: Single useEffect with all dependencies to prevent double API calls
   useEffect(() => { 
     fetchFlags() 
-  }, [page, statusFilter, flagTypeFilter, search, sortCol, sortDir, childCentres])
+  }, [page, statusFilter, flagTypeFilter, search, sortCol, sortDir, childCentres, profile])
 
   async function submitReply(flagId) {
     const text = (replyTexts[flagId] || '').trim()
@@ -170,10 +201,14 @@ export default function FlagsPage() {
       resolved_by: profile.badge_number,
       updated_at: new Date().toISOString()
     }).eq('id', flagId)
-    supabase.from('logs').insert({
-      user_badge: profile.badge_number, action: 'RESOLVE_FLAG',
-      details: `Resolved flag #${flagId}`, timestamp: new Date().toISOString()
-    }).then(() => {}).catch(e => console.warn('Log failed:', e))
+    try {
+      await supabase.from('logs').insert({
+        user_badge: profile.badge_number, action: 'RESOLVE_FLAG',
+        details: `Resolved flag #${flagId}`, timestamp: new Date().toISOString()
+      })
+    } catch (e) {
+      console.warn('Log insert failed:', e)
+    }
     fetchFlags()
     fetchStats()
     showSuccess('Flag resolved')
@@ -321,23 +356,22 @@ export default function FlagsPage() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
           <thead>
             <tr style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
-              <SortTh col="id" label="#" align="right" />
-              <SortTh col="flag_type" label="Type" />
-              <SortTh col="status" label="Status" />
               <SortTh col="attendance.badge_number" label="Badge" />
               <SortTh col="attendance.sewadar_name" label="Name" />
               <SortTh col="raised_by_centre" label="Centre" />
               <SortTh col="raised_by_name" label="Raised By" />
               <SortTh col="created_at" label="Date" />
+              <SortTh col="flag_type" label="Type" />
+              <SortTh col="status" label="Status" />
               <th style={{ width: 36 }}></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <SkeletonRows rows={8} cols={9} />
+              <SkeletonRows rows={8} cols={8} />
             ) : allFlags.length === 0 ? (
               <tr>
-                <td colSpan={9} style={{ padding: '2rem', textAlign: 'center' }}>
+                <td colSpan={8} style={{ padding: '2rem', textAlign: 'center' }}>
                   <EmptyState
                     icon={Flag}
                     title="No flags found"
@@ -360,17 +394,6 @@ export default function FlagsPage() {
                         borderBottom: isExpanded ? 'none' : '1px solid var(--border)',
                         background: isExpanded ? 'var(--bg)' : idx % 2 === 0 ? 'var(--surface)' : 'transparent',
                       }}>
-                      <td style={{ textAlign: 'right', color: 'var(--text-muted)', paddingRight: 8, fontSize: '0.75rem' }}>#{flag.id}</td>
-                      <td style={{ padding: '0.45rem 0.5rem' }}>
-                        <span style={{ fontSize: '0.72rem', background: 'var(--amber-bg)', color: 'var(--amber)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 4, padding: '1px 6px', fontWeight: 600, whiteSpace: 'nowrap' }}>
-                          {flagTypeLabel(flag.flag_type)}
-                        </span>
-                      </td>
-                      <td style={{ padding: '0.45rem 0.5rem' }}>
-                        <span className={`flag-status-badge ${statusConfig[flag.status]?.cls}`} style={{ fontSize: '0.72rem' }}>
-                          {statusConfig[flag.status]?.label}
-                        </span>
-                      </td>
                       <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.78rem', fontWeight: 600 }}>
                         {flag.attendance?.badge_number || '—'}
                       </td>
@@ -391,6 +414,16 @@ export default function FlagsPage() {
                       <td style={{ color: 'var(--text-muted)', fontSize: '0.78rem', padding: '0.45rem 0.5rem', whiteSpace: 'nowrap' }}>
                         {dateFmt(flag.created_at)}
                       </td>
+                      <td style={{ padding: '0.45rem 0.5rem' }}>
+                        <span style={{ fontSize: '0.72rem', background: 'var(--amber-bg)', color: 'var(--amber)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 4, padding: '1px 6px', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                          {flagTypeLabel(flag.flag_type)}
+                        </span>
+                      </td>
+                      <td style={{ padding: '0.45rem 0.5rem' }}>
+                        <span className={`flag-status-badge ${statusConfig[flag.status]?.cls}`} style={{ fontSize: '0.72rem' }}>
+                          {statusConfig[flag.status]?.label}
+                        </span>
+                      </td>
                       <td style={{ padding: '0.45rem 0.5rem', textAlign: 'center' }}>
                         {isExpanded ? <ChevronUp size={14} color="var(--text-muted)" /> : <ChevronDown size={14} color="var(--text-muted)" />}
                       </td>
@@ -399,7 +432,7 @@ export default function FlagsPage() {
                     {/* Expanded thread */}
                     {isExpanded && (
                       <tr key={`${flag.id}-thread`}>
-                        <td colSpan={9} style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg)', padding: '0.75rem 1rem' }}>
+                        <td colSpan={8} style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg)', padding: '0.75rem 1rem' }}>
                           <div style={{ maxWidth: 600 }}>
                             {/* Issue */}
                             <div style={{ marginBottom: '0.6rem' }}>
@@ -431,7 +464,7 @@ export default function FlagsPage() {
                               {replies.length === 0 && (
                                 <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontStyle: 'italic', margin: 0 }}>No replies yet.</p>
                               )}
-                              {replies.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(reply => {
+                              {[...replies].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(reply => {
                                 const isOwn = reply.replied_by_badge === profile?.badge_number
                                 return (
                                   <div key={reply.id} style={{

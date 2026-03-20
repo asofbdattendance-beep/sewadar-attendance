@@ -11,7 +11,7 @@ import ProfilePage from './pages/ProfilePage'
 import FlagsPage from './pages/FlagsPage'
 import JathaPage from './pages/JathaPage'
 import ToastContainer from './components/Toast'
-import { Scan, FileText, User, Shield, WifiOff, Flag, Plane } from 'lucide-react'
+import { Scan, FileText, User, Shield, WifiOff, Flag, Plane, Clock, RefreshCw } from 'lucide-react'
 
 function SessionExpiredScreen({ signOut }) {
   return (
@@ -21,7 +21,12 @@ function SessionExpiredScreen({ signOut }) {
           <Shield size={28} color="var(--gold)" />
         </div>
         <h2 style={{ color: 'var(--gold)', marginBottom: '0.5rem' }}>Session Expired</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>You were logged out due to 60 minutes of inactivity.</p>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '0.5rem', lineHeight: 1.5 }}>
+          You were automatically logged out after 60 minutes of inactivity.
+        </p>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '1.5rem' }}>
+          All pending offline scans are preserved and will sync after re-login.
+        </p>
         <button className="btn btn-gold" onClick={signOut}>Back to Login</button>
       </div>
     </div>
@@ -54,12 +59,21 @@ function LoadingScreen() {
 }
 
 function AppLayout() {
-  const { profile, loading, sessionExpired, setSessionExpired, signOut, resetActivity } = useAuth()
+  const { profile, loading, sessionExpired, setSessionExpired, signOut, resetActivity, sessionWarning } = useAuth()
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingSync, setPendingSync] = useState(0)
   const [openFlagCount, setOpenFlagCount] = useState(0)
+  const [pwaUpdate, setPwaUpdate] = useState(false)
+  const [realtimeStatus, setRealtimeStatus] = useState('disconnected')
   const navigate = useNavigate()
   const location = useLocation()
+
+  useEffect(() => {
+    if (window.__pwaUpdateAvailable) setPwaUpdate(true)
+    const handler = () => setPwaUpdate(true)
+    window.addEventListener('pwa-update-available', handler)
+    return () => window.removeEventListener('pwa-update-available', handler)
+  }, [])
 
   useEffect(() => {
     const online = () => {
@@ -87,11 +101,19 @@ function AppLayout() {
     }, 60000)
     const onVisible = () => { if (document.visibilityState === 'visible') fetchFlagCount().catch(console.warn) }
     document.addEventListener('visibilitychange', onVisible)
+
+    const rtChannel = supabase.channel('global-status')
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') setRealtimeStatus('connected')
+        else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') setRealtimeStatus('disconnected')
+      })
+
     return () => {
       window.removeEventListener('online', online)
       window.removeEventListener('offline', offline)
       clearInterval(flagInterval)
       document.removeEventListener('visibilitychange', onVisible)
+      supabase.removeChannel(rtChannel)
     }
   }, [])
 
@@ -137,9 +159,55 @@ function AppLayout() {
         )}
       </nav>
 
+      {sessionWarning && (
+        <div style={{
+          background: 'rgba(255,193,7,0.15)',
+          borderBottom: '1px solid rgba(255,193,7,0.4)',
+          padding: '0.5rem 1rem',
+          textAlign: 'center',
+          fontSize: '0.8rem',
+          color: '#ffc107',
+          fontWeight: 600,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '0.5rem',
+        }}>
+          <Clock size={13} /> Session expires soon due to inactivity.
+          <button onClick={resetActivity} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ffc107', fontWeight: 700, textDecoration: 'underline', fontSize: '0.8rem', fontFamily: 'inherit', padding: 0 }}>
+            Stay signed in
+          </button>
+        </div>
+      )}
+
       {!isOnline && (
         <div className="offline-banner">
           <WifiOff size={13} /> Offline mode — scans saved locally, will sync when internet returns
+          <span style={{ marginLeft: 'auto', fontSize: '0.72rem', opacity: 0.7 }}>
+            Realtime: {realtimeStatus === 'connected' ? '✓ connected' : '✕ disconnected'}
+          </span>
+        </div>
+      )}
+
+      {pwaUpdate && (
+        <div style={{
+          background: 'var(--gold-bg)',
+          borderBottom: '1px solid rgba(201,168,76,0.4)',
+          padding: '0.5rem 1rem',
+          textAlign: 'center',
+          fontSize: '0.8rem',
+          color: 'var(--gold)',
+          fontWeight: 600,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '0.5rem',
+        }}>
+          <RefreshCw size={13} />
+          A new version is available.
+          <button onClick={() => window.location.reload()} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--gold)', fontWeight: 700, textDecoration: 'underline', fontSize: '0.8rem', fontFamily: 'inherit', padding: 0 }}>
+            Reload to update
+          </button>
         </div>
       )}
 
@@ -164,9 +232,9 @@ function AppLayout() {
         <Routes>
           <Route path="/scan" element={<ScannerPage isOnline={isOnline} />} />
           <Route path="/records" element={<RecordsPage />} />
-          <Route path="/jatha" element={<JathaPage />} />
+          <Route path="/jatha" element={<JathaPage isOnline={isOnline} />} />
           <Route path="/flags" element={<FlagsPage />} />
-          <Route path="/super-admin" element={<SuperAdminPage />} />
+          <Route path="/super-admin" element={<SuperAdminPage isOnline={isOnline} />} />
           <Route path="/profile" element={<ProfilePage isOnline={isOnline} />} />
           <Route path="*" element={<Navigate to="/scan" replace />} />
         </Routes>

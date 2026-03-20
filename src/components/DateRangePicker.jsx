@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Calendar } from 'lucide-react'
 
 export default function DateRangePicker({ value, onChange, maxDays = 365 }) {

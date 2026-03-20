@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, FLAG_TYPES } from '../lib/supabase'
+import { todayDateStr } from '../lib/offline'
 import {
   Search, Download, Flag, X, RefreshCw,
   ChevronDown, Trash2, FileSpreadsheet, BarChart2,
-  Calendar, Users, Plane, FileText
+  Calendar, Users, Plane, FileText, Columns
 } from 'lucide-react'
 import DateRangePicker from '../components/DateRangePicker'
 import CentreComboBox from '../components/CentreComboBox'
@@ -13,6 +14,7 @@ import SkeletonRows from '../components/SkeletonRows'
 import QuickFilterChips from '../components/QuickFilterChips'
 import TablePagination from '../components/TablePagination'
 import EmptyState from '../components/EmptyState'
+import ConfirmModal from '../components/ConfirmModal'
 import { showSuccess, showError } from '../components/Toast'
 
 const PAGE_SIZE = 50
@@ -30,13 +32,6 @@ function formatTime(iso) {
     minute: '2-digit',
     timeZone: 'Asia/Kolkata'
   })
-}
-
-function todayDateStr() {
-  // Return today's date in IST as YYYY-MM-DD
-  const now = new Date()
-  const istDate = new Date(now.getTime() + IST_OFFSET * 60000)
-  return istDate.toISOString().split('T')[0]
 }
 
 // Convert a YYYY-MM-DD date string to UTC ISO string at IST start-of-day (00:00 IST = prev day 18:30 UTC)
@@ -70,6 +65,15 @@ function formatDateStr(dateStr) {
   })
 }
 
+function csvEscape(val) {
+  if (val === null || val === undefined) return ''
+  const str = String(val)
+  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    return '"' + str.replace(/"/g, '""') + '"'
+  }
+  return str
+}
+
 // ─────────────────────────────────────────────
 //  ATTENDANCE TAB — Paginated, server-searched
 // ─────────────────────────────────────────────
@@ -100,29 +104,59 @@ function AttendanceTab() {
   const [flagSubmitting, setFlagSubmitting] = useState(false)
   const [flagSuccess, setFlagSuccess] = useState(false)
   const [deleteMsg, setDeleteMsg] = useState('')
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const [showColMenu, setShowColMenu] = useState(false)
+  const colMenuRef = useRef(null)
+  const [colToggle, setColToggle] = useState(() => {
+    const saved = localStorage.getItem('records_col_toggle')
+    if (saved) {
+      try { return JSON.parse(saved) } catch (e) { console.warn('Failed to parse saved column toggle, using defaults:', e) }
+    }
+    return { badge: true, name: true, centre: true, date: true, in: true, out: true, status: true }
+  })
 
   const searchTimerRef = useRef(null)
   const tableRef = useRef(null)
   const highlightedRowRef = useRef(-1)
+  const flagSuccessTimerRef = useRef(null)
 
   // Load centres + recent searches
   useEffect(() => {
     fetchCentres().catch(console.error)
     const saved = localStorage.getItem('records_recent_searches')
-    if (saved) setRecentSearches(JSON.parse(saved))
+    if (saved) {
+      try { setRecentSearches(JSON.parse(saved)) }
+      catch (e) { console.warn('Failed to parse recent searches:', e) }
+    }
     const savedSettings = localStorage.getItem('records_settings')
     if (savedSettings) {
-      const s = JSON.parse(savedSettings)
-      if (s.sortCol) setSortCol(s.sortCol)
-      if (s.sortDir) setSortDir(s.sortDir)
-      if (s.page) setPage(s.page)
+      try {
+        const s = JSON.parse(savedSettings)
+        if (s.sortCol) setSortCol(s.sortCol)
+        if (s.sortDir) setSortDir(s.sortDir)
+      } catch (e) {
+        console.warn('Failed to parse records settings:', e)
+      }
     }
   }, [])
 
-  // Save settings
+  // Save column toggle
   useEffect(() => {
-    localStorage.setItem('records_settings', JSON.stringify({ sortCol, sortDir, page }))
-  }, [sortCol, sortDir, page])
+    localStorage.setItem('records_col_toggle', JSON.stringify(colToggle))
+  }, [colToggle])
+
+  // Close col menu on outside click
+  useEffect(() => {
+    if (!showColMenu) return
+    function handler(e) {
+      if (colMenuRef.current && !colMenuRef.current.contains(e.target)) setShowColMenu(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showColMenu])
+  useEffect(() => {
+    localStorage.setItem('records_settings', JSON.stringify({ sortCol, sortDir }))
+  }, [sortCol, sortDir])
 
   // Debounced search
   useEffect(() => {
@@ -134,10 +168,15 @@ function AttendanceTab() {
     return () => clearTimeout(searchTimerRef.current)
   }, [searchInput])
 
+  // Cleanup flag success timer on unmount
+  useEffect(() => {
+    return () => clearTimeout(flagSuccessTimerRef.current)
+  }, [])
+
   // Fetch records
   useEffect(() => {
     fetchRecords().catch(console.error)
-  }, [page, sortCol, sortDir, searchTerm, dateRange, centreFilter, quickFilter, profile, centres])
+  }, [page, sortCol, sortDir, searchTerm, dateRange, centreFilter, quickFilter, profile])
 
   async function fetchCentres() {
     let q = supabase.from('centres').select('centre_name, parent_centre').order('centre_name')
@@ -169,24 +208,53 @@ function AttendanceTab() {
       centreScope = [centreFilter]
     }
 
-    // ── Single RPC call — grouping + IST dates + cross-day pairing all done in Postgres ──
-    const { data, error } = await supabase.rpc('get_attendance_grouped', {
-      p_start:   start,
-      p_end:     end,
-      p_centres: centreScope,
-      p_search:  searchTerm.trim() || null,
-    })
+    // ── Direct query with client-side grouping ──
+    let q = supabase
+      .from('attendance')
+      .select('id, badge_number, sewadar_name, centre, department, scan_time, type, scanner_name, manual_entry')
+      .gte('scan_time', start)
+      .lte('scan_time', end)
+      .order('scan_time', { ascending: false })
+
+    if (centreScope?.length) q = q.in('centre', centreScope)
+    if (searchTerm.trim()) q = q.or(`badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`)
+
+    const { data, error } = await q.limit(5000)
 
     setLoading(false)
-    if (error) { console.error('[Records] RPC error:', error); return }
+    if (error) {
+      console.warn('[Records] Query error:', error?.message || error?.code || error)
+      return
+    }
 
-    // ── Normalise: RPC returns grouped rows, attach raw_in/raw_out stubs for flag lookups ──
-    let rows = (data || []).map(r => ({
+    // ── Group by badge_number + IST date, pair IN/OUT ──
+    const groupedMap = {}
+    const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000
+    for (const r of (data || [])) {
+      const istDate = new Date(new Date(r.scan_time).getTime() + IST_OFFSET_MS).toISOString().split('T')[0]
+      const key = `${r.badge_number}::${istDate}`
+      if (!groupedMap[key]) {
+        groupedMap[key] = { badge_number: r.badge_number, sewadar_name: r.sewadar_name, centre: r.centre, department: r.department, date: istDate, in_time: null, out_time: null, in_scanner: null, out_scanner: null, in_id: null, out_id: null, manual_entry: false }
+      }
+      const g = groupedMap[key]
+      if (r.type === 'IN' && (!g.in_time || r.scan_time < g.in_time)) {
+        g.in_time = r.scan_time; g.in_scanner = r.scanner_name; g.in_id = r.id
+        if (r.manual_entry) g.manual_entry = true
+      }
+      if (r.type === 'OUT' && (!g.out_time || r.scan_time > g.out_time)) {
+        g.out_time = r.scan_time; g.out_scanner = r.scanner_name; g.out_id = r.id
+        if (r.manual_entry) g.manual_entry = true
+      }
+    }
+    const rpcData = Object.values(groupedMap)
+
+    // ── Normalise: attach raw_in/raw_out stubs for flag lookups ──
+    let rows = rpcData.map(r => ({
       badge_number: r.badge_number,
       sewadar_name: r.sewadar_name,
       centre:       r.centre,
       department:   r.department,
-      date:         r.ist_date,
+      date:         r.date,
       in_time:      r.in_time  || null,
       out_time:     r.out_time || null,
       in_scanner:   r.in_scanner  || null,
@@ -199,18 +267,9 @@ function AttendanceTab() {
     }))
 
     // ───── FETCH FLAGS FOR CURRENT PAGE ─────
-    const { flaggedCount } = await fetchFlagsForCurrentPage(rows)
+    const { flaggedCount, flagMap } = await fetchFlagsForCurrentPage(rows)
 
-    // ───── QUICK FILTER COUNTS ─────
-    setQuickFilterCounts({
-      all: rows.length,
-      in: rows.filter(r => r.in_time && !r.out_time).length,
-      out: rows.filter(r => r.out_time && !r.in_time).length,
-      manual: rows.filter(r => r.manual_entry).length,
-      flagged: flaggedCount,
-    })
-
-    // ───── APPLY QUICK FILTERS ─────
+    // ───── APPLY QUICK FILTERS (done before counts so chips match table) ─────
     if (quickFilter === 'in') {
       rows = rows.filter(r => r.in_time && !r.out_time)
     } else if (quickFilter === 'out') {
@@ -218,12 +277,37 @@ function AttendanceTab() {
     } else if (quickFilter === 'manual') {
       rows = rows.filter(r => r.manual_entry)
     } else if (quickFilter === 'flagged') {
-      // Use freshly-built flagDetails from the state (updated by fetchFlagsForCurrentPage)
       rows = rows.filter(r =>
-        (r.raw_in?.id && flagDetails[r.raw_in.id]) ||
-        (r.raw_out?.id && flagDetails[r.raw_out.id])
+        (r.raw_in?.id && flagMap[r.raw_in.id]) ||
+        (r.raw_out?.id && flagMap[r.raw_out.id])
       )
     }
+
+    // ───── QUICK FILTER COUNTS — server-side RPC scoped to centres + search ─────
+    let serverCounts = {}
+    try {
+      const { data: countData } = await supabase.rpc('get_attendance_counts', {
+        p_start: start,
+        p_end: end,
+        p_centres: centreScope,
+        p_search: searchTerm.trim() || null,
+      })
+      serverCounts = countData?.[0] || {}
+    } catch (e) {
+      console.warn('[Records] Counts RPC failed, computing locally:', e)
+      const unfilteredRows = rpcData
+      const inOnly = unfilteredRows.filter(r => r.in_time && !r.out_time).length
+      const outOnly = unfilteredRows.filter(r => r.out_time && !r.in_time).length
+      const manual = unfilteredRows.filter(r => r.manual_entry).length
+      serverCounts = { total: unfilteredRows.length, in_only: inOnly, out_only: outOnly, manual }
+    }
+    setQuickFilterCounts({
+      all: serverCounts.total || rows.length,
+      in: serverCounts.in_only || 0,
+      out: serverCounts.out_only || 0,
+      manual: serverCounts.manual || 0,
+      flagged: flaggedCount,
+    })
 
     // ───── PAGINATION ─────
     setTotalCount(rows.length)
@@ -267,13 +351,13 @@ function AttendanceTab() {
     const { data, error } = await q
 
     if (error) {
-      console.error(error)
+      console.warn('[Records] Flag fetch failed:', error)
       return { flagMap: {}, flaggedCount: 0 }
     }
 
-    const newMap = {}
+    const flagMap = {}
     ;(data || []).forEach(q => {
-      newMap[q.attendance_id] = {
+      flagMap[q.attendance_id] = {
         flag_type: q.flag_type,
         issue_description: q.issue_description,
         raised_by_name: q.raised_by_name,
@@ -284,12 +368,12 @@ function AttendanceTab() {
     })
 
     const flaggedCount = rows.filter(r =>
-      (r.raw_in && newMap[r.raw_in.id]) ||
-      (r.raw_out && newMap[r.raw_out.id])
+      (r.raw_in && flagMap[r.raw_in.id]) ||
+      (r.raw_out && flagMap[r.raw_out.id])
     ).length
 
-    setFlagDetails(prev => ({ ...prev, ...newMap }))
-    return { flagMap: newMap, flaggedCount }
+    setFlagDetails(flagMap)
+    return { flagMap, flaggedCount }
   }
 
   const handleSort = (col) => {
@@ -343,7 +427,8 @@ function AttendanceTab() {
     }
     setFlagSubmitting(false)
     setFlagSuccess(true)
-    setTimeout(() => {
+    clearTimeout(flagSuccessTimerRef.current)
+    flagSuccessTimerRef.current = setTimeout(() => {
       setFlagModal(null); setFlagSuccess(false)
       setFlagType('error_entry'); setFlagNote('')
     }, 1500)
@@ -351,7 +436,13 @@ function AttendanceTab() {
 
   async function deleteRecord(id, badge, type) {
     if (!id) return
-    if (!confirm(`Delete ${type} record for ${badge}?\n\nThis cannot be undone.`)) return
+    setDeleteConfirm({ id, badge, type })
+  }
+
+  async function doDelete() {
+    const { id, badge, type } = deleteConfirm
+    if (!id) return
+    setDeleteConfirm(null)
     const { error } = await supabase.from('attendance').delete().eq('id', id)
     if (error) { showError('Delete failed: ' + error.message); return }
     await supabase.from('logs').insert({
@@ -441,16 +532,47 @@ function AttendanceTab() {
         />
       </div>
 
-      {/* Quick filter chips + Refresh */}
+      {/* Quick filter chips + Refresh + Column toggle */}
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center' }}>
         <QuickFilterChips
           value={quickFilter}
           onChange={val => { setQuickFilter(val); setPage(1) }}
           counts={quickFilterCounts}
         />
-        <button className="btn btn-ghost" onClick={fetchRecords} style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}>
-          <RefreshCw size={13} /> Refresh
-        </button>
+        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+          {/* Column toggle — mobile only */}
+          <div style={{ position: 'relative' }} ref={colMenuRef}>
+              <button className="btn btn-ghost rec-col-toggle" onClick={() => setShowColMenu(v => !v)} style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}>
+              <Columns size={13} /> Columns
+            </button>
+            {showColMenu && (
+              <div style={{
+                position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 50,
+                background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+                borderRadius: 10, padding: '0.5rem', minWidth: 160,
+                boxShadow: '0 4px 12px rgba(0,0,0,0.12)'
+              }}>
+                {[
+                  { key: 'badge', label: 'Badge' },
+                  { key: 'name', label: 'Name' },
+                  ...(isAdmin ? [{ key: 'centre', label: 'Centre' }] : []),
+                  { key: 'date', label: 'Date' },
+                  { key: 'in', label: 'IN Time' },
+                  { key: 'out', label: 'OUT Time' },
+                  { key: 'status', label: 'Status' },
+                ].map(c => (
+                  <label key={c.key} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.35rem 0.25rem', cursor: 'pointer', fontSize: '0.8rem', color: 'var(--text-primary)', borderRadius: 6 }}>
+                    <input type="checkbox" checked={!!colToggle[c.key]} onChange={() => setColToggle(t => ({ ...t, [c.key]: !t[c.key] }))} style={{ accentColor: 'var(--gold)' }} />
+                    {c.label}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          <button className="btn btn-ghost" onClick={fetchRecords} style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}>
+            <RefreshCw size={13} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* Recent searches */}
@@ -531,7 +653,7 @@ function AttendanceTab() {
               <tbody>
                 {records.map((r, i) => (
                   <tr
-                    key={`${r.badge_number}-${r.date}`}
+                    key={`${r.badge_number}-${r.date}-${r.in_id || r.out_id || 'x'}`}
                     ref={highlightedRowRef.current === i ? tableRef : null}
                     style={{
                       background: highlightedRowRef.current === i
@@ -619,13 +741,13 @@ function AttendanceTab() {
                         </button>
                         {isAso && r.in_id && (
                           <button className="records-delete-btn" title="Delete IN"
-                            onClick={() => deleteRecord(r.in_id, r.badge_number, 'IN')}>
+                            onClick={() => setDeleteConfirm({ id: r.in_id, badge: r.badge_number, type: 'IN' })}>
                             <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>IN</span>
                           </button>
                         )}
                         {isAso && r.out_id && (
                           <button className="records-delete-btn" title="Delete OUT"
-                            onClick={() => deleteRecord(r.out_id, r.badge_number, 'OUT')}>
+                            onClick={() => setDeleteConfirm({ id: r.out_id, badge: r.badge_number, type: 'OUT' })}>
                             <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>OUT</span>
                           </button>
                         )}
@@ -637,6 +759,107 @@ function AttendanceTab() {
             </table>
           )}
         </div>
+
+        {/* Mobile card view — uses colToggle */}
+        {!loading && records.length > 0 && (
+          <div className="rec-mobile-cards">
+            {records.map((r, i) => {
+              const inFlag = r.raw_in ? flagDetails[r.raw_in.id] : null
+              const outFlag = r.raw_out ? flagDetails[r.raw_out.id] : null
+              const flagInfo = inFlag || outFlag
+              return (
+                <div key={`${r.badge_number}-${r.date}-${i}`} className="rec-mobile-card" style={{
+                  background: flagInfo ? 'rgba(220,38,38,0.04)' : 'var(--bg-elevated)',
+                  border: `1px solid ${flagInfo ? 'rgba(220,38,38,0.2)' : 'var(--border)'}`,
+                }}>
+                  {/* Header: badge + name */}
+                  {(colToggle.badge || colToggle.name) && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+                      <div>
+                        {colToggle.badge && <div style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.82rem', fontWeight: 700 }}>{r.badge_number}</div>}
+                        {colToggle.name && <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{r.sewadar_name}</div>}
+                      </div>
+                      {r.manual_entry && <span style={{ fontSize: '0.62rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 6px', fontWeight: 700 }}>MANUAL</span>}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem 0.75rem', fontSize: '0.78rem' }}>
+                    {colToggle.date && (
+                      <div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700 }}>Date</div>
+                        <div style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{formatDateStr(r.date)}</div>
+                      </div>
+                    )}
+                    {colToggle.centre && isAdmin && (
+                      <div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700 }}>Centre</div>
+                        <div style={{ color: 'var(--text-secondary)' }}>{r.centre}</div>
+                      </div>
+                    )}
+                    {colToggle.in && (
+                      <div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700 }}>IN</div>
+                        <div>
+                          <span className={`time-cell ${r.in_time ? 'has-time' : ''}`} style={{ fontSize: '0.75rem' }}>{formatTime(r.in_time)}</span>
+                          {r.in_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.in_scanner}</div>}
+                        </div>
+                      </div>
+                    )}
+                    {colToggle.out && (
+                      <div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700 }}>OUT</div>
+                        <div>
+                          <span className={`time-cell ${r.out_time ? 'out-time' : ''}`} style={{ fontSize: '0.75rem' }}>{formatTime(r.out_time)}</span>
+                          {r.out_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.out_scanner}</div>}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {colToggle.status && (
+                    <div style={{ marginTop: '0.5rem' }}>
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 700 }}>Status</div>
+                      {flagInfo ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '2px' }}>
+                          <span className={`status-${r.in_time && r.out_time ? 'complete' : r.in_time ? 'in-only' : r.out_time ? 'out-only' : 'none'}`}>
+                            {r.in_time && r.out_time ? 'Complete' : r.in_time ? 'IN only' : r.out_time ? 'OUT only' : '—'}
+                          </span>
+                          <span style={{ fontSize: '0.68rem', color: 'var(--red)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '3px' }}>
+                            <Flag size={10} /> {FLAG_TYPES.find(f => f.value === flagInfo?.flag_type)?.label || flagInfo?.flag_type || 'Flag'}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className={`status-${r.in_time && r.out_time ? 'complete' : r.in_time ? 'in-only' : r.out_time ? 'out-only' : 'none'}`}>
+                          {r.in_time && r.out_time ? 'Complete' : r.in_time ? 'IN only' : r.out_time ? 'OUT only' : '—'}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.6rem', borderTop: '1px solid var(--border)', paddingTop: '0.5rem' }}>
+                    <button className="records-flag-btn" title="Raise flag" style={{ fontSize: '0.72rem', padding: '0.3rem 0.6rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                      onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}>
+                      <Flag size={12} /> Flag
+                    </button>
+                    {isAso && r.in_id && (
+                      <button className="records-delete-btn" title="Delete IN" style={{ fontSize: '0.72rem', padding: '0.3rem 0.6rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                        onClick={() => setDeleteConfirm({ id: r.in_id, badge: r.badge_number, type: 'IN' })}>
+                        <Trash2 size={11} /> IN
+                      </button>
+                    )}
+                    {isAso && r.out_id && (
+                      <button className="records-delete-btn" title="Delete OUT" style={{ fontSize: '0.72rem', padding: '0.3rem 0.6rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                        onClick={() => setDeleteConfirm({ id: r.out_id, badge: r.badge_number, type: 'OUT' })}>
+                        <Trash2 size={11} /> OUT
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
 
         {/* Pagination */}
         {!loading && (
@@ -652,10 +875,13 @@ function AttendanceTab() {
         {!loading && records.length > 0 && (
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
             <button className="btn btn-ghost" onClick={() => {
+              if (page > 1) { showInfo('Exporting current page only. Clear filters for full export.'); }
+              const from = dateRange.from || todayDateStr()
+              const to = dateRange.to || todayDateStr()
               const csv = [
                 ['Badge Number', 'Name', 'Centre', 'Department', 'Date', 'IN Time', 'OUT Time', 'Status', 'Manual Entry'].join(','),
                 ...records.map(r => [
-                  r.badge_number, `"${r.sewadar_name}"`, r.centre, r.department || '',
+                  r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
                   r.date,
                   r.in_time ? formatTime(r.in_time) : '',
                   r.out_time ? formatTime(r.out_time) : '',
@@ -665,7 +891,7 @@ function AttendanceTab() {
               ].join('\n')
               const a = document.createElement('a')
               a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-              a.download = `attendance_${dateRange.from}_to_${dateRange.to}.csv`
+              a.download = `attendance_${from}_to_${to}.csv`
               a.click()
             }} style={{ fontSize: '0.82rem' }}>
               <Download size={14} /> Export CSV
@@ -729,6 +955,16 @@ function AttendanceTab() {
           </div>
         </div>
       )}
+
+      <ConfirmModal
+        open={!!deleteConfirm}
+        onConfirm={doDelete}
+        onCancel={() => setDeleteConfirm(null)}
+        title={`Delete ${deleteConfirm?.type} Record?`}
+        message={`Delete ${deleteConfirm?.type} record for ${deleteConfirm?.badge}?\nThis cannot be undone.`}
+        confirmLabel="Delete"
+        danger
+      />
     </div>
   )
 }
@@ -751,6 +987,8 @@ function ReportsTab() {
   const [centreFilter, setCentreFilter] = useState('')
   const [centres, setCentres] = useState([])
   const [centresLoaded, setCentresLoaded] = useState(false)
+
+  useEffect(() => { ensureCentres() }, [])
 
   if (!isAdmin) return (
     <div style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-muted)' }}>
@@ -886,16 +1124,16 @@ function ReportsTab() {
     if (!reportData) return
     if (reportData.type === 'centrewise') {
       const h = ['Centre', 'Total Scans', 'IN Count', 'OUT Count', 'Unique Sewadars']
-      dlCSV([h, ...reportData.rows.map(r => [r.centre, r.totalScans, r.ins, r.outs, r.uniqueCount])].map(r => r.join(',')).join('\n'), `centre_wise_${yearFilter}.csv`)
+      dlCSV([h, ...reportData.rows.map(r => [csvEscape(r.centre), r.totalScans, r.ins, r.outs, r.uniqueCount]).map(r => r.join(','))].join('\n'), `centre_wise_${yearFilter}.csv`)
     } else if (reportData.type === 'satsang') {
       const h = ['Badge', 'Name', 'Centre', 'Department', 'Duty Days', 'Satsang Days (Daily)', 'Jathas', 'Satsang Days (Jatha)', 'Total Satsang Days']
-      dlCSV([h, ...reportData.rows.map(r => [r.badge, `"${r.name}"`, r.centre, r.dept || '', r.dutyDays, r.satsangDaysAtt, r.jathaCount, r.jathaSatsangDays, r.totalSatsangDays])].map(r => r.join(',')).join('\n'), `yearly_satsang_${reportData.year}.csv`)
+      dlCSV([h, ...reportData.rows.map(r => [r.badge, csvEscape(r.name), csvEscape(r.centre), csvEscape(r.dept || ''), r.dutyDays, r.satsangDaysAtt, r.jathaCount, r.jathaSatsangDays, r.totalSatsangDays]).map(r => r.join(','))].join('\n'), `yearly_satsang_${reportData.year}.csv`)
     } else if (reportData.type === 'jatha') {
       const h = ['Badge', 'Name', 'Centre', 'Jatha Type', 'Destination', 'Department', 'From', 'To', 'Satsang Days', 'Flagged', 'Remarks']
-      dlCSV([h, ...reportData.rows.map(r => [r.badge_number, `"${r.sewadar_name}"`, r.centre, r.jatha_type, r.jatha_centre, r.jatha_dept, r.date_from, r.date_to, r.satsang_days, r.flag ? 'Yes' : 'No', `"${r.remarks || ''}"`])].map(r => r.join(',')).join('\n'), `jatha_${reportData.year}.csv`)
+      dlCSV([h, ...reportData.rows.map(r => [r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), r.jatha_type, csvEscape(r.jatha_centre), csvEscape(r.jatha_dept), r.date_from, r.date_to, r.satsang_days, r.flag ? 'Yes' : 'No', csvEscape(r.remarks || '')]).map(r => r.join(','))].join('\n'), `jatha_${reportData.year}.csv`)
     } else if (reportData.type === 'sewadarcount') {
       const h = ['Badge', 'Name', 'Centre', 'Department', 'IN Scans', 'OUT Scans', 'Days Present']
-      dlCSV([h, ...reportData.rows.map(r => [r.badge, `"${r.name}"`, r.centre, r.dept || '', r.ins, r.outs, r.totalDays])].map(r => r.join(',')).join('\n'), `sewadar_count_${yearFilter}.csv`)
+      dlCSV([h, ...reportData.rows.map(r => [r.badge, csvEscape(r.name), csvEscape(r.centre), csvEscape(r.dept || ''), r.ins, r.outs, r.totalDays]).map(r => r.join(','))].join('\n'), `sewadar_count_${yearFilter}.csv`)
     }
   }
 
@@ -919,7 +1157,6 @@ function ReportsTab() {
           <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>→</span>
           <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} style={{ border: 'none', background: 'none', color: 'var(--text-primary)', fontSize: '0.82rem', outline: 'none' }} />
         </div>
-        <button onClick={ensureCentres} style={{ display: 'none' }} />
         {centresLoaded && centres.length > 1 && (
           <select value={centreFilter} onChange={e => setCentreFilter(e.target.value)}
             style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.75rem', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem' }}>
@@ -931,7 +1168,7 @@ function ReportsTab() {
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem', marginBottom: '1.25rem' }}>
         {reportCards.map(({ id, label, desc, icon: Icon, action }) => (
-          <button key={id} onClick={() => { ensureCentres(); action() }}
+          <button key={id} onClick={action}
             style={{
               display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.3rem',
               padding: '0.85rem', border: `1.5px solid ${activeReport === id ? 'var(--gold)' : 'var(--border)'}`,

@@ -26,7 +26,8 @@ async function hasLinearBarcodeSupport() {
   try {
     const formats = await window.BarcodeDetector.getSupportedFormats()
     return formats.includes('code_39') || formats.includes('code_128')
-  } catch {
+  } catch (e) {
+    console.warn('BarcodeDetector.getSupportedFormats failed:', e)
     return false
   }
 }
@@ -55,6 +56,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const [engineLabel, setEngineLabel] = useState('')
   const fpsRef = useRef({ frames: 0, last: Date.now() })
   const [fps, setFps] = useState(0)
+  const scanTimerRef = useRef(null)
 
   const stopScanner = () => {
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
@@ -151,12 +153,13 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             if (text === lastScanRef.current.badge && t - lastScanRef.current.time < 2000) continue
             lastScanRef.current = { badge: text, time: t }
             setLastScanned(text)
-            setTimeout(() => { if (mountedRef.current) setLastScanned('') }, 1500)
+            clearTimeout(scanTimerRef.current)
+            scanTimerRef.current = setTimeout(() => { if (mountedRef.current) setLastScanned('') }, 1500)
             onScan(text)
             break
           }
-        } catch {}
-        isDetectingRef.current = false
+          } catch (e) { console.warn('Barcode detection failed:', e) }
+          isDetectingRef.current = false
       }
 
       rafRef.current = requestAnimationFrame(detect)
@@ -168,7 +171,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   useEffect(() => {
     mountedRef.current = true
     startScanner()
-    return () => { mountedRef.current = false; stopScanner() }
+    return () => { mountedRef.current = false; clearTimeout(scanTimerRef.current); stopScanner() }
   }, [])
 
   useImperativeHandle(ref, () => ({

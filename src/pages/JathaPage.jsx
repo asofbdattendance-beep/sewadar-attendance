@@ -5,8 +5,10 @@ import { useAuth } from '../context/AuthContext'
 import { ROLES, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
 import {
   Search, Calendar, CheckCircle, ChevronDown, MapPin, AlertTriangle,
-  X, RefreshCw, Plane, Download, Flag, Pencil, Trash2, FileText
+  X, RefreshCw, Plane, Download, Flag, Pencil, Trash2, FileText, WifiOff
 } from 'lucide-react'
+import ConfirmModal from '../components/ConfirmModal'
+import { showError, showSuccess } from '../components/Toast'
 
 // ── All supported jatha types including jatha_home ──
 const ALL_JATHA_TYPES = [
@@ -74,7 +76,7 @@ async function checkConflicts(badgeNumber, dateFrom, dateTo) {
 // ─────────────────────────────────────────────
 //  TAB 1 — MARK JATHA ATTENDANCE
 // ─────────────────────────────────────────────
-function MarkJathaTab() {
+function MarkJathaTab({ isOnline }) {
   const { profile } = useAuth()
 
   const [badgeInput, setBadgeInput]             = useState('')
@@ -212,7 +214,7 @@ function MarkJathaTab() {
   ))]
 
   return (
-    <div>
+    <div style={{ overflowX: 'hidden', minWidth: 0 }}>
       {/* Step 1 */}
       <div className="card mb-3" style={{ padding: '1rem' }}>
         <div style={{ fontWeight: 700, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>1 · Find Sewadar</div>
@@ -264,14 +266,14 @@ function MarkJathaTab() {
       {/* Step 2 */}
       <div className="card mb-3" style={{ padding: '1rem' }}>
         <div style={{ fontWeight: 700, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>2 · Jatha Dates</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.6rem' }}>
+        <div className="jatha-date-grid">
           <div>
             <label className="label">From</label>
-            <input type="date" className="input" value={dateFrom} onChange={e => handleDateFromChange(e.target.value)} />
+            <input type="date" className="input" value={dateFrom} onChange={e => handleDateFromChange(e.target.value)} style={{ width: '100%', boxSizing: 'border-box' }} />
           </div>
           <div>
             <label className="label">To</label>
-            <input type="date" className="input" value={dateTo} min={dateFrom || undefined} onChange={e => setDateTo(e.target.value)} />
+            <input type="date" className="input" value={dateTo} min={dateFrom || undefined} onChange={e => setDateTo(e.target.value)} style={{ width: '100%', boxSizing: 'border-box' }} />
           </div>
         </div>
 
@@ -362,10 +364,10 @@ function MarkJathaTab() {
       <div className="card mb-3" style={{ padding: '1rem' }}>
         <div style={{ fontWeight: 700, fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>3 · Jatha Destination</div>
         <label className="label">Type</label>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.6rem', marginBottom: '0.85rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.6rem', marginBottom: '0.85rem', minWidth: 0 }}>
           {ALL_JATHA_TYPES.map(t => (
             <button key={t.value} onClick={() => setJathaType(t.value)}
-              style={{ padding: '0.6rem 0.3rem', border: `2px solid ${jathaType === t.value ? 'var(--gold)' : 'var(--border)'}`, borderRadius: 8, background: jathaType === t.value ? 'var(--gold-bg)' : 'var(--bg)', color: jathaType === t.value ? 'var(--gold)' : 'var(--text-secondary)', fontWeight: 700, fontSize: '0.78rem', cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.12s' }}>
+              style={{ padding: '0.6rem 0.2rem', border: `2px solid ${jathaType === t.value ? 'var(--gold)' : 'var(--border)'}`, borderRadius: 8, background: jathaType === t.value ? 'var(--gold-bg)' : 'var(--bg)', color: jathaType === t.value ? 'var(--gold)' : 'var(--text-secondary)', fontWeight: 700, fontSize: '0.78rem', cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.12s', overflowWrap: 'break-word', wordBreak: 'break-word', minWidth: 0 }}>
               {t.label}
             </button>
           ))}
@@ -414,21 +416,30 @@ function MarkJathaTab() {
       </div>
 
       {error && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(198,40,40,0.08)', border: '1px solid rgba(198,40,40,0.25)', borderRadius: 8, padding: '0.7rem 0.85rem', marginBottom: '0.85rem', color: 'var(--red)', fontSize: '0.85rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(198,40,40,0.08)', border: '1px solid rgba(198,40,40,0.25)', borderRadius: 8, padding: '0.7rem 0.85rem', color: 'var(--red)', fontSize: '0.85rem' }}>
           <AlertTriangle size={15} /> {error}
         </div>
       )}
       {success && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(22,163,74,0.08)', border: '1px solid rgba(22,163,74,0.25)', borderRadius: 8, padding: '0.7rem 0.85rem', marginBottom: '0.85rem', color: 'var(--green)', fontSize: '0.85rem', fontWeight: 600 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(22,163,74,0.08)', border: '1px solid rgba(22,163,74,0.25)', borderRadius: 8, padding: '0.7rem 0.85rem', color: 'var(--green)', fontSize: '0.85rem', fontWeight: 600 }}>
           <CheckCircle size={15} /> Jatha attendance recorded successfully!
         </div>
       )}
 
-      <button className="btn btn-gold btn-full" onClick={submitJatha}
-        disabled={submitting || !canSubmit}
-        style={{ padding: '0.85rem', fontSize: '0.95rem', fontWeight: 700 }}>
-        {submitting ? 'Saving…' : hasConflict ? 'Cannot Submit — Conflict Exists' : 'Submit Jatha Attendance'}
-      </button>
+      <div style={{ height: '0.5rem' }} />
+
+      <div className="jatha-sticky-footer">
+        {!isOnline && (
+          <div style={{ fontSize: '0.72rem', color: 'rgba(255,213,79,0.7)', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+            <WifiOff size={11} /> Offline — will sync when internet returns
+          </div>
+        )}
+        <button className="btn btn-gold btn-full" onClick={submitJatha}
+          disabled={submitting || !canSubmit}
+          style={{ padding: '0.85rem', fontSize: '0.95rem', fontWeight: 700 }}>
+          {submitting ? 'Saving…' : hasConflict ? 'Cannot Submit — Conflict Exists' : 'Submit Jatha Attendance'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -440,6 +451,9 @@ function ViewJathaTab() {
   const { profile } = useAuth()
   const [records, setRecords]       = useState([])
   const [loading, setLoading]       = useState(true)
+  const [totalCount, setTotalCount] = useState(0)
+  const [page, setPage]           = useState(1)
+  const PAGE_SIZE = 50
   const [searchTerm, setSearchTerm] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
   const [monthFilter, setMonthFilter] = useState('')
@@ -449,15 +463,21 @@ function ViewJathaTab() {
   const [flagSuccess, setFlagSuccess] = useState(false)
   const [editModal, setEditModal]   = useState(null)
   const [editSaving, setEditSaving] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+  const flagTimerRef = useRef(null)
 
   const isAdmin = [ROLES.ASO, ROLES.CENTRE_USER].includes(profile?.role)
   const isAso   = profile?.role === ROLES.ASO
 
-  useEffect(() => { fetchRecords().catch(console.error) }, [typeFilter, monthFilter])
+  useEffect(() => { fetchRecords().catch(console.error) }, [typeFilter, monthFilter, page])
 
   async function fetchRecords() {
     setLoading(true)
-    let q = supabase.from('jatha_attendance').select('*').order('created_at', { ascending: false }).limit(500)
+    const offset = (page - 1) * PAGE_SIZE
+    let q = supabase.from('jatha_attendance')
+      .select('*', { count: 'exact', head: false })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + PAGE_SIZE - 1)
     if (typeFilter) q = q.eq('jatha_type', typeFilter)
     if (monthFilter) {
       const [year, month] = monthFilter.split('-')
@@ -472,8 +492,8 @@ function ViewJathaTab() {
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       q = q.in('centre', cd?.map(c => c.centre_name) || [profile.centre])
     }
-    const { data } = await q
-    setRecords(data || [])
+    const { data, count, error } = await q
+    if (!error) { setRecords(data || []); setTotalCount(count || 0) }
     setLoading(false)
   }
 
@@ -486,14 +506,23 @@ function ViewJathaTab() {
   const totalDays    = filtered.reduce((acc, r) => acc + (r.satsang_days || 0), 0)
   const flaggedCount = filtered.filter(r => r.flag).length
 
+  function csvEscape(val) {
+    if (val === null || val === undefined) return ''
+    const str = String(val)
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return '"' + str.replace(/"/g, '""') + '"'
+    }
+    return str
+  }
+
   function exportCSV() {
     const header = ['Badge','Name','Centre','Department','Jatha Type','Destination','Dept at Jatha','From','To','Days','Remarks','Flagged','Flag Reason','Submitted By','Submitted Centre','Submitted On']
     const rows = filtered.map(r => [
-      r.badge_number, `"${r.sewadar_name}"`, r.centre, r.department || '',
-      getJathaLabel(r.jatha_type), r.jatha_centre, r.jatha_dept,
-      r.date_from, r.date_to, r.satsang_days, `"${r.remarks || ''}"`,
-      r.flag ? 'Yes' : 'No', `"${r.flag_reason || ''}"`,
-      r.submitted_name || r.submitted_by, r.submitted_centre,
+      r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
+      getJathaLabel(r.jatha_type), csvEscape(r.jatha_centre), csvEscape(r.jatha_dept),
+      r.date_from, r.date_to, r.satsang_days, csvEscape(r.remarks || ''),
+      r.flag ? 'Yes' : 'No', csvEscape(r.flag_reason || ''),
+      csvEscape(r.submitted_name || r.submitted_by), csvEscape(r.submitted_centre),
       r.created_at ? new Date(r.created_at).toLocaleDateString('en-IN') : ''
     ])
     const csv = [header, ...rows].map(r => r.join(',')).join('\n')
@@ -512,16 +541,15 @@ function ViewJathaTab() {
     }).eq('id', updated.id)
     setEditSaving(false)
     if (!error) { setEditModal(null); fetchRecords() }
-    else alert('Save failed: ' + error.message)
+    else showError('Save failed: ' + error.message)
   }
 
-  async function deleteRecord(record) {
-    if (!confirm(`Delete jatha record for ${record.sewadar_name} (${record.date_from} → ${record.date_to})?\nThis cannot be undone.`)) return
+  async function doDeleteRecord(record) {
     const { error } = await supabase.from('jatha_attendance').delete().eq('id', record.id)
     if (!error) {
       await supabase.from('logs').insert({ user_badge: profile.badge_number, action: 'DELETE_JATHA', details: `Deleted jatha id=${record.id} for ${record.badge_number}`, timestamp: new Date().toISOString() })
       fetchRecords()
-    } else alert('Delete failed: ' + error.message)
+    } else showError('Delete failed: ' + error.message)
   }
 
   async function submitFlag() {
@@ -530,20 +558,21 @@ function ViewJathaTab() {
     await supabase.from('jatha_attendance').update({ flag: true, flag_reason: flagReason.trim() }).eq('id', flagModal.id)
     await supabase.from('logs').insert({ user_badge: profile.badge_number, action: 'FLAG_JATHA', details: `Flagged jatha id=${flagModal.id}: ${flagReason.trim()}`, timestamp: new Date().toISOString() })
     setFlagSubmitting(false); setFlagSuccess(true)
-    setTimeout(() => { setFlagModal(null); setFlagReason(''); setFlagSuccess(false); fetchRecords() }, 1200)
+    clearTimeout(flagTimerRef.current)
+    flagTimerRef.current = setTimeout(() => { setFlagModal(null); setFlagReason(''); setFlagSuccess(false); fetchRecords() }, 1200)
   }
 
   async function removeFlag(record) {
-    if (!isAdmin || !confirm('Remove flag?')) return
+    if (!isAdmin) return
     await supabase.from('jatha_attendance').update({ flag: false, flag_reason: null }).eq('id', record.id)
     fetchRecords()
   }
 
   return (
-    <div>
+    <div style={{ overflowX: 'hidden', minWidth: 0 }}>
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
         <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem' }}>
-          <span style={{ color: 'var(--text-muted)' }}>Showing </span><strong>{filtered.length}</strong><span style={{ color: 'var(--text-muted)' }}> records</span>
+          <span style={{ color: 'var(--text-muted)' }}>Showing </span><strong>{filtered.length}</strong><span style={{ color: 'var(--text-muted)' }}> of </span><strong>{totalCount.toLocaleString()}</strong><span style={{ color: 'var(--text-muted)' }}> records</span>
         </div>
         <div style={{ background: 'var(--gold-bg)', border: '1px solid rgba(201,168,76,0.25)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem', color: 'var(--gold)' }}>
           <strong>{totalDays}</strong> total days
@@ -555,22 +584,22 @@ function ViewJathaTab() {
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-        <div className="search-box" style={{ flex: 1, minWidth: 160 }}>
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap', overflowX: 'auto', paddingBottom: '2px' }}>
+        <div className="search-box" style={{ flex: '1 1 160px', minWidth: 0 }}>
           <Search size={14} />
-          <input type="text" placeholder="Search name or badge…" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
-          {searchTerm && <button onClick={() => setSearchTerm('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}><X size={13} /></button>}
+          <input type="text" placeholder="Search name or badge…" value={searchTerm} onChange={e => { setSearchTerm(e.target.value); setPage(1) }} style={{ minWidth: 0, flex: 1 }} />
+          {searchTerm && <button onClick={() => setSearchTerm('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', flexShrink: 0 }}><X size={13} /></button>}
         </div>
-        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
-          style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.65rem', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem' }}>
+        <select value={typeFilter} onChange={e => { setTypeFilter(e.target.value); setPage(1) }}
+          style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.65rem', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem', flexShrink: 0 }}>
           <option value="">All types</option>
           {ALL_JATHA_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
-        <input type="month" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}
-          style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.65rem', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem' }} />
-        {monthFilter && <button onClick={() => setMonthFilter('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}><X size={14} /></button>}
-        <button className="btn btn-ghost" onClick={fetchRecords} style={{ padding: '0.4rem 0.6rem' }}><RefreshCw size={15} /></button>
-        <button className="btn btn-ghost" onClick={exportCSV} disabled={filtered.length === 0} style={{ padding: '0.4rem 0.75rem', fontSize: '0.82rem' }}><Download size={14} /> Export</button>
+        <input type="month" value={monthFilter} onChange={e => { setMonthFilter(e.target.value); setPage(1) }}
+          style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.65rem', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem', flexShrink: 0 }} />
+        {monthFilter && <button onClick={() => setMonthFilter('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', flexShrink: 0 }}><X size={14} /></button>}
+        <button className="btn btn-ghost" onClick={fetchRecords} style={{ padding: '0.4rem 0.6rem', flexShrink: 0 }}><RefreshCw size={15} /></button>
+        <button className="btn btn-ghost" onClick={exportCSV} disabled={filtered.length === 0} style={{ padding: '0.4rem 0.75rem', fontSize: '0.82rem', flexShrink: 0 }}><Download size={14} /> Export</button>
       </div>
 
       {loading ? (
@@ -580,47 +609,47 @@ function ViewJathaTab() {
           <Plane size={36} style={{ margin: '0 auto 0.75rem', opacity: 0.25, display: 'block' }} /><p>No jatha records found</p>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+        <div className="jatha-records-wrap">
           {filtered.map(r => (
-            <div key={r.id} className="card" style={{ padding: '0.85rem 1rem', borderLeft: r.flag ? '3px solid var(--red)' : '3px solid var(--gold)' }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.5rem' }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem', flexWrap: 'wrap' }}>
-                    <span style={{ fontWeight: 700, fontSize: '0.92rem' }}>{r.sewadar_name}</span>
-                    <span style={{ fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--gold)' }}>{r.badge_number}</span>
+            <div key={r.id} className={`jatha-card${r.flag ? ' jatha-card-flagged' : ''}`}>
+              <div className="jatha-card-header">
+                <div className="jatha-card-info">
+                  <div className="jatha-card-name">
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', overflowWrap: 'break-word', wordBreak: 'break-word' }}>{r.sewadar_name}</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--gold)', flexShrink: 0 }}>{r.badge_number}</span>
                     {r.flag && (
                       <span style={{ fontSize: '0.68rem', background: 'rgba(198,40,40,0.08)', color: 'var(--red)', border: '1px solid rgba(198,40,40,0.25)', borderRadius: 999, padding: '1px 6px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3 }}>
                         <Flag size={9} /> Flagged
                       </span>
                     )}
                   </div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>{r.centre} · {r.department || '—'}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  <div className="jatha-meta">{r.centre} · {r.department || '—'}</div>
+                  <div className="jatha-card-meta-row">
                     <span style={{ fontSize: '0.7rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 7px', fontWeight: 700 }}>
                       {getJathaLabel(r.jatha_type)}
                     </span>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 600, overflowWrap: 'break-word', wordBreak: 'break-word' }}>
                       <MapPin size={11} style={{ display: 'inline', marginRight: 2 }} />{r.jatha_centre}
                     </span>
-                    <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{r.jatha_dept}</span>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', overflowWrap: 'break-word', wordBreak: 'break-word' }}>{r.jatha_dept}</span>
                   </div>
                 </div>
-                <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                  <div style={{ fontSize: '0.82rem', fontWeight: 600, whiteSpace: 'nowrap' }}>{fmtDate(r.date_from)} → {fmtDate(r.date_to)}</div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--green)', fontWeight: 700, marginTop: '0.2rem' }}>{r.satsang_days} {r.satsang_days === 1 ? 'day' : 'days'}</div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>by {r.submitted_name || r.submitted_by}</div>
+                <div className="jatha-right">
+                  <div className="jatha-right-date">{fmtDate(r.date_from)} → {fmtDate(r.date_to)}</div>
+                  <div className="jatha-right-days">{r.satsang_days} {r.satsang_days === 1 ? 'day' : 'days'}</div>
+                  <div className="jatha-right-by">by {r.submitted_name || r.submitted_by}</div>
                 </div>
               </div>
 
               {r.remarks && (
-                <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '0.35rem 0.6rem', marginTop: '0.5rem' }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: '0.35rem 0.6rem', marginTop: '0.5rem', overflowWrap: 'break-word', wordBreak: 'break-word' }}>
                   {r.remarks}
                 </div>
               )}
 
               {r.flag && r.flag_reason && (
-                <div style={{ fontSize: '0.78rem', color: 'var(--red)', background: 'rgba(198,40,40,0.05)', border: '1px solid rgba(198,40,40,0.2)', borderRadius: 6, padding: '0.35rem 0.6rem', marginTop: '0.4rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
-                  <span style={{ display: 'flex', gap: '0.35rem', alignItems: 'flex-start' }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--red)', background: 'rgba(198,40,40,0.05)', border: '1px solid rgba(198,40,40,0.2)', borderRadius: 6, padding: '0.35rem 0.6rem', marginTop: '0.4rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem', overflowWrap: 'break-word', wordBreak: 'break-word' }}>
+                  <span style={{ display: 'flex', gap: '0.35rem', alignItems: 'flex-start', flex: 1 }}>
                     <Flag size={11} style={{ marginTop: 2, flexShrink: 0 }} /> {r.flag_reason}
                   </span>
                   {isAdmin && (
@@ -631,18 +660,18 @@ function ViewJathaTab() {
                 </div>
               )}
 
-              <div style={{ marginTop: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', gap: '0.4rem' }}>
+              <div className="jatha-actions">
+                <div className="jatha-action-group">
                   {isAso && (
                     <button onClick={() => setEditModal({ ...r })}
                       style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '0.25rem 0.65rem', fontSize: '0.75rem', color: 'var(--blue)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
-                      <Pencil size={11} /> Edit
+                        <Pencil size={11} /> Edit
                     </button>
                   )}
                   {isAso && (
-                    <button onClick={() => deleteRecord(r)}
+                    <button onClick={() => setDeleteConfirm(r)}
                       style={{ background: 'none', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 6, padding: '0.25rem 0.65rem', fontSize: '0.75rem', color: 'var(--red)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
-                      <Trash2 size={11} /> Delete
+                        <Trash2 size={11} /> Delete
                     </button>
                   )}
                 </div>
@@ -659,6 +688,27 @@ function ViewJathaTab() {
       )}
 
       {editModal && <EditJathaModal record={editModal} saving={editSaving} onSave={saveEdit} onClose={() => setEditModal(null)} />}
+
+      <ConfirmModal
+        open={!!deleteConfirm}
+        onConfirm={() => { const r = deleteConfirm; setDeleteConfirm(null); doDeleteRecord(r) }}
+        onCancel={() => setDeleteConfirm(null)}
+        title="Delete Jatha Record?"
+        message={deleteConfirm ? `Delete jatha record for ${deleteConfirm.sewadar_name} (${deleteConfirm.date_from} → ${deleteConfirm.date_to})?\nThis cannot be undone.` : ''}
+        confirmLabel="Delete"
+        danger
+      />
+
+      {/* Pagination */}
+      {!loading && totalCount > PAGE_SIZE && (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem', marginTop: '1rem', flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost" onClick={() => setPage(1)} disabled={page === 1} style={{ padding: '0.35rem 0.6rem', fontSize: '0.78rem' }}>«</button>
+          <button className="btn btn-ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} style={{ padding: '0.35rem 0.6rem', fontSize: '0.78rem' }}>‹</button>
+          <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>Page {page} of {Math.ceil(totalCount / PAGE_SIZE)}</span>
+          <button className="btn btn-ghost" onClick={() => setPage(p => Math.min(Math.ceil(totalCount / PAGE_SIZE), p + 1))} disabled={page >= Math.ceil(totalCount / PAGE_SIZE)} style={{ padding: '0.35rem 0.6rem', fontSize: '0.78rem' }}>›</button>
+          <button className="btn btn-ghost" onClick={() => setPage(Math.ceil(totalCount / PAGE_SIZE))} disabled={page >= Math.ceil(totalCount / PAGE_SIZE)} style={{ padding: '0.35rem 0.6rem', fontSize: '0.78rem' }}>»</button>
+        </div>
+      )}
 
       {flagModal && (
         <div className="overlay" onClick={() => { setFlagModal(null); setFlagReason('') }}>
@@ -689,7 +739,7 @@ function ViewJathaTab() {
                 <textarea className="input" rows={3} placeholder="Describe the error or issue…"
                   value={flagReason} onChange={e => setFlagReason(e.target.value)}
                   style={{ resize: 'none', marginBottom: '1rem', borderColor: 'rgba(198,40,40,0.35)' }} autoFocus />
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', minWidth: 0 }}>
                   <button className="btn btn-outline btn-full" onClick={() => setFlagModal(null)}>Cancel</button>
                   <button onClick={submitFlag} disabled={flagSubmitting || !flagReason.trim()}
                     style={{ padding: '0.6rem', border: 'none', borderRadius: 8, background: '#dc2626', color: 'white', fontWeight: 700, fontSize: '0.88rem', cursor: 'pointer', fontFamily: 'inherit', opacity: (!flagReason.trim() || flagSubmitting) ? 0.5 : 1 }}>
@@ -760,7 +810,7 @@ function JathaTableTab() {
       .order(sortCol, { ascending: sortDir === 'asc' })
 
     if (dateRange.from) q = q.gte('date_from', dateRange.from)
-    if (dateRange.to)   q = q.lte('date_from', dateRange.to)
+    if (dateRange.to)   q = q.lte('date_to', dateRange.to)
     if (typeFilter)     q = q.eq('jatha_type', typeFilter)
 
     if (profile?.role === ROLES.SC_SP_USER) {
@@ -778,7 +828,7 @@ function JathaTableTab() {
 
     const { data, count, error } = await q.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
     setLoading(false)
-    if (error) { console.error(error); return }
+    if (error) { console.warn('[JathaPage] fetchRecords failed:', error); return }
     setRecords(data || [])
     setTotalCount(count || 0)
   }
@@ -801,12 +851,21 @@ function JathaTableTab() {
     )
   }
 
+  function csvEscape(val) {
+    if (val === null || val === undefined) return ''
+    const str = String(val)
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return '"' + str.replace(/"/g, '""') + '"'
+    }
+    return str
+  }
+
   function exportCSV() {
     const header = ['Badge','Name','Centre','Dept','Jatha Type','Destination','Dept at Jatha','From','To','Days','Remarks','Flagged']
     const rows = records.map(r => [
-      r.badge_number, `"${r.sewadar_name}"`, r.centre, r.department || '',
-      getJathaLabel(r.jatha_type), r.jatha_centre, r.jatha_dept,
-      r.date_from, r.date_to, r.satsang_days, `"${r.remarks || ''}"`, r.flag ? 'Yes' : 'No'
+      r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
+      getJathaLabel(r.jatha_type), csvEscape(r.jatha_centre), csvEscape(r.jatha_dept),
+      r.date_from, r.date_to, r.satsang_days, csvEscape(r.remarks || ''), r.flag ? 'Yes' : 'No'
     ])
     const csv = [header, ...rows].map(r => r.join(',')).join('\n')
     const a = document.createElement('a')
@@ -1023,20 +1082,38 @@ function EditJathaModal({ record, saving, onSave, onClose }) {
 
   useEffect(() => {
     if (!form.jatha_type) return
+    const jathaType = form.jatha_type
+    const jathaCentre = form.jatha_centre
     supabase.from('jatha_centres').select('centre_name, department')
-      .eq('jatha_type', form.jatha_type).eq('is_active', true)
+      .eq('jatha_type', jathaType).eq('is_active', true)
       .order('centre_name').order('department')
       .then(({ data }) => {
-        setCentreOptions([...new Set((data || []).map(r => r.centre_name))])
-        setDeptOptions((data || []).filter(r => r.centre_name === form.jatha_centre).map(r => r.department))
+        const centres = [...new Set((data || []).map(r => r.centre_name))]
+        setCentreOptions(centres)
+        if (jathaCentre) {
+          setDeptOptions((data || []).filter(r => r.centre_name === jathaCentre).map(r => r.department))
+        }
+      })
+  }, [form.jatha_type])
+
+  useEffect(() => {
+    if (!form.jatha_type || !form.jatha_centre) return
+    const jathaType = form.jatha_type
+    const jathaCentre = form.jatha_centre
+    supabase.from('jatha_centres').select('centre_name, department')
+      .eq('jatha_type', jathaType).eq('is_active', true)
+      .eq('centre_name', jathaCentre)
+      .order('department')
+      .then(({ data }) => {
+        setDeptOptions((data || []).map(r => r.department))
       })
   }, [form.jatha_type, form.jatha_centre])
 
   function set(key, val) { setForm(prev => ({ ...prev, [key]: val })) }
 
   function handleSubmit() {
-    if (!form.date_from || !form.date_to) return alert('Both dates required')
-    if (form.date_to < form.date_from)    return alert('End date must be after start date')
+    if (!form.date_from || !form.date_to) { showError('Both dates required'); return }
+    if (form.date_to < form.date_from)    { showError('End date must be after start date'); return }
     onSave({ ...form, satsang_days: satsangDays })
   }
 
@@ -1044,8 +1121,8 @@ function EditJathaModal({ record, saving, onSave, onClose }) {
   const labelStyle = { fontWeight: 700, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', marginBottom: '0.3rem', display: 'block' }
 
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: 480, maxHeight: '90vh', overflowY: 'auto' }}>
+      <div className="overlay" onClick={onClose}>
+      <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: 480, width: '100%', maxHeight: '90vh', overflowY: 'auto', overflowX: 'hidden', boxSizing: 'border-box', padding: '1.25rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Pencil size={17} color="var(--gold)" />
@@ -1061,10 +1138,10 @@ function EditJathaModal({ record, saving, onSave, onClose }) {
 
         <div style={{ marginBottom: '0.85rem' }}>
           <label style={labelStyle}>Jatha Type</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', minWidth: 0 }}>
             {ALL_JATHA_TYPES.map(t => (
               <button key={t.value} onClick={() => { set('jatha_type', t.value); set('jatha_centre', ''); set('jatha_dept', '') }}
-                style={{ padding: '0.5rem 0.3rem', border: `2px solid ${form.jatha_type === t.value ? 'var(--gold)' : 'var(--border)'}`, borderRadius: 8, background: form.jatha_type === t.value ? 'var(--gold-bg)' : 'var(--bg)', color: form.jatha_type === t.value ? 'var(--gold)' : 'var(--text-secondary)', fontWeight: 700, fontSize: '0.75rem', cursor: 'pointer', fontFamily: 'inherit' }}>
+                style={{ padding: '0.5rem 0.2rem', border: `2px solid ${form.jatha_type === t.value ? 'var(--gold)' : 'var(--border)'}`, borderRadius: 8, background: form.jatha_type === t.value ? 'var(--gold-bg)' : 'var(--bg)', color: form.jatha_type === t.value ? 'var(--gold)' : 'var(--text-secondary)', fontWeight: 700, fontSize: '0.75rem', cursor: 'pointer', fontFamily: 'inherit', overflowWrap: 'break-word', wordBreak: 'break-word', minWidth: 0 }}>
                 {t.label}
               </button>
             ))}
@@ -1099,15 +1176,15 @@ function EditJathaModal({ record, saving, onSave, onClose }) {
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.85rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.85rem', minWidth: 0 }}>
           <div>
             <label style={labelStyle}>From</label>
-            <input type="date" style={inputStyle} value={form.date_from}
+            <input type="date" style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }} value={form.date_from}
               onChange={e => { set('date_from', e.target.value); if (form.date_to < e.target.value) set('date_to', '') }} />
           </div>
           <div>
             <label style={labelStyle}>To</label>
-            <input type="date" style={inputStyle} value={form.date_to}
+            <input type="date" style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }} value={form.date_to}
               min={form.date_from || undefined} onChange={e => set('date_to', e.target.value)} />
           </div>
         </div>
@@ -1124,7 +1201,7 @@ function EditJathaModal({ record, saving, onSave, onClose }) {
             value={form.remarks || ''} onChange={e => set('remarks', e.target.value)} placeholder="Optional notes…" />
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', minWidth: 0 }}>
           <button onClick={onClose} className="btn btn-outline btn-full">Cancel</button>
           <button onClick={handleSubmit} disabled={saving} className="btn btn-gold btn-full" style={{ fontWeight: 700 }}>
             {saving ? 'Saving…' : 'Save Changes'}
@@ -1138,10 +1215,7 @@ function EditJathaModal({ record, saving, onSave, onClose }) {
 // ─────────────────────────────────────────────
 //  MAIN PAGE
 // ─────────────────────────────────────────────
-// ─────────────────────────────────────────────
-//  MAIN PAGE
-// ─────────────────────────────────────────────
-export default function JathaPage() {
+export default function JathaPage({ isOnline }) {
   const [tab, setTab] = useState('mark')
 
   const TABS = [
@@ -1154,11 +1228,7 @@ export default function JathaPage() {
   const isTableTab = tab === 'table'
 
   return (
-    <div className="page pb-nav" style={{
-      maxWidth: isTableTab ? '100%' : 600,
-      padding: '0 1rem',
-      margin: '0 auto',
-    }}>
+    <div className={`page pb-nav jatha-page${isTableTab ? ' table-full' : ''}`} style={{ padding: '0 1rem' }}>
       <div className="mt-2 mb-3">
         <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>Jatha Attendance</h2>
       </div>
@@ -1180,7 +1250,7 @@ export default function JathaPage() {
         ))}
       </div>
 
-      {tab === 'mark'  && <MarkJathaTab />}
+      {tab === 'mark'  && <MarkJathaTab isOnline={isOnline} />}
       {tab === 'view'  && <ViewJathaTab />}
       {tab === 'table' && <JathaTableTab />}
     </div>

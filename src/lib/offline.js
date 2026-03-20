@@ -1,9 +1,30 @@
 const QUEUE_KEY = 'attendance_offline_queue'
 const MAX_QUEUE_SIZE = 1000
 
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000
+
+export function todayDateStr() {
+  const now = new Date()
+  const ist = new Date(now.getTime() + IST_OFFSET_MS)
+  return ist.toISOString().split('T')[0]
+}
+
 export function getOfflineQueue() {
-  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]') }
-  catch { return [] }
+  try {
+    const raw = localStorage.getItem(QUEUE_KEY)
+    const parsed = JSON.parse(raw || '[]')
+    if (!Array.isArray(parsed)) {
+      console.warn('[OfflineQueue] Corrupted queue data, resetting:', raw)
+      localStorage.removeItem(QUEUE_KEY)
+      return []
+    }
+    return parsed
+  }
+  catch (e) {
+    console.warn('[OfflineQueue] Failed to parse queue, resetting:', e)
+    localStorage.removeItem(QUEUE_KEY)
+    return []
+  }
 }
 
 export function addToOfflineQueue(record) {
@@ -31,31 +52,34 @@ export async function syncOfflineQueue(supabase) {
       const { offline, queued_at, ...data } = record
       const { error } = await supabase.from('attendance').insert(data)
       if (error) {
-        remaining.push(record)
-        failed++
+        if (error.code === '23505' || (error.message && error.message.includes('duplicate'))) {
+          synced++
+        } else {
+          remaining.push(record)
+          failed++
+        }
       } else {
         synced++
       }
-    } catch {
+    } catch (err) {
       remaining.push(record)
       failed++
     }
   }
 
-  localStorage.setItem(QUEUE_KEY, JSON.stringify(remaining))
+  localStorage.setItem(QUEUE_KEY, JSON.stringify(remaining.slice(-MAX_QUEUE_SIZE)))
   return { synced, failed }
 }
 
-// ── Helpers ──
-function getLocalTodayBoundary() {
-  // Use UTC date for consistency with DB timestamps
-  const d = new Date()
-  return d.toISOString().split('T')[0] + 'T00:00:00Z'
+function getISTTodayBoundary() {
+  const now = new Date()
+  const ist = new Date(now.getTime() + IST_OFFSET_MS)
+  return ist.toISOString().split('T')[0] + 'T00:00:00+05:30'
 }
 
 export function checkDuplicateInOfflineQueue(badgeNumber, type) {
   const queue = getOfflineQueue()
-  const todayBoundary = getLocalTodayBoundary()
+  const todayBoundary = getISTTodayBoundary()
   return queue.some(r =>
     r.badge_number === badgeNumber &&
     r.type === type &&
@@ -63,31 +87,28 @@ export function checkDuplicateInOfflineQueue(badgeNumber, type) {
   )
 }
 
-// Check if a record already exists in DB (dedup before sync)
 export async function checkDuplicateOffline(supabase, record) {
   if (!record.badge_number || !record.type) return false
-  
-  // Check local offline queue first (most likely source of duplicates when offline)
+
   if (checkDuplicateInOfflineQueue(record.badge_number, record.type)) {
     return true
   }
-  
-  // Then check database if online
+
+  const todayBoundary = getISTTodayBoundary()
   const { data } = await supabase
     .from('attendance')
     .select('id')
     .eq('badge_number', record.badge_number)
     .eq('type', record.type)
-    .gte('scan_time', getLocalTodayBoundary())
+    .gte('scan_time', todayBoundary)
     .limit(1)
     .maybeSingle()
   return !!data
 }
 
-// Check duplicate from local cache (offline-first duplicate prevention)
 export function checkDuplicateInCache(badgeNumber, type) {
   const cache = getAttendanceCache()
-  const todayBoundary = getLocalTodayBoundary()
+  const todayBoundary = getISTTodayBoundary()
   return cache.some(r =>
     r.badge_number === badgeNumber &&
     r.type === type &&
@@ -95,7 +116,6 @@ export function checkDuplicateInCache(badgeNumber, type) {
   )
 }
 
-// ── Sewadar cache ──
 const CACHE_KEY = 'sewadars_cache'
 const CACHE_TIME_KEY = 'sewadars_cache_time'
 const CACHE_TTL = 1000 * 60 * 60
@@ -139,7 +159,6 @@ export async function populateOfflineCache(supabase) {
   } catch (e) { console.warn('Failed to populate offline cache:', e) }
 }
 
-// ── Attendance cache ──
 const ATTENDANCE_KEY = 'attendance_cache'
 const ATTENDANCE_CACHE_SIZE = 500
 
@@ -150,21 +169,18 @@ export function getAttendanceCache() {
 
 export function setAttendanceCache(records) {
   try {
-    // Keep newest 500 (records come in newest-first from DB)
-    const trimmed = records.slice(-ATTENDANCE_CACHE_SIZE)
+    const trimmed = records.slice(0, ATTENDANCE_CACHE_SIZE)
     localStorage.setItem(ATTENDANCE_KEY, JSON.stringify(trimmed))
   } catch (e) { console.warn('Failed to save attendance cache:', e) }
 }
 
 export async function populateAttendanceCache(supabase) {
   try {
-    // Use UTC start of today for consistency with DB timestamps
-    const today = new Date()
-    const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0, 0))
+    const todayBoundary = getISTTodayBoundary()
     const { data } = await supabase
       .from('attendance')
       .select('id,badge_number,type,scan_time,centre,sewadar_name,department,scanner_name,manual_entry,submitted_by,scanner_badge')
-      .gte('scan_time', todayUTC.toISOString())
+      .gte('scan_time', todayBoundary)
       .order('scan_time', { ascending: false })
       .limit(ATTENDANCE_CACHE_SIZE)
     if (data && data.length > 0) setAttendanceCache(data)
@@ -173,11 +189,16 @@ export async function populateAttendanceCache(supabase) {
 
 export function addToAttendanceCache(record) {
   try {
-    const cache = [...getAttendanceCache()]
-    cache.unshift(record)
-    // Keep only today's records + cap at 500
-    const todayBoundary = getLocalTodayBoundary()
-    const filtered = cache
+    const cache = getAttendanceCache()
+    const alreadyExists = cache.some(r =>
+      r.badge_number === record.badge_number &&
+      r.type === record.type &&
+      r.scan_time === record.scan_time
+    )
+    if (alreadyExists) return
+    const updated = [record, ...cache]
+    const todayBoundary = getISTTodayBoundary()
+    const filtered = updated
       .filter(r => r.scan_time >= todayBoundary)
       .slice(0, ATTENDANCE_CACHE_SIZE)
     localStorage.setItem(ATTENDANCE_KEY, JSON.stringify(filtered))
@@ -185,16 +206,21 @@ export function addToAttendanceCache(record) {
 }
 
 export function getLastAttendance(badge) {
-  const cache = [...getAttendanceCache()]
+  const cache = getAttendanceCache()
   const filtered = cache.filter(r => r.badge_number === badge)
   if (filtered.length === 0) return null
   return filtered.sort((a, b) => new Date(b.scan_time) - new Date(a.scan_time))[0]
 }
 
 export function getTodayEntriesForBadge(badgeNumber) {
-  const cache = [...getAttendanceCache()]
-  const todayBoundary = getLocalTodayBoundary()
+  const cache = getAttendanceCache()
+  const todayBoundary = getISTTodayBoundary()
   return cache
     .filter(r => r.badge_number === badgeNumber && r.scan_time >= todayBoundary)
     .sort((a, b) => new Date(a.scan_time) - new Date(b.scan_time))
+}
+
+export function getLastEntryForBadge(badgeNumber) {
+  const entries = getTodayEntriesForBadge(badgeNumber)
+  return entries.length > 0 ? entries[entries.length - 1] : null
 }

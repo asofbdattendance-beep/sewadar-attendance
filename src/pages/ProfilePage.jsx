@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { syncOfflineQueue, getOfflineQueueCount, setCachedSewadars, getCachedSewadars } from '../lib/offline'
+import { syncOfflineQueue, getOfflineQueueCount, setCachedSewadars, getCachedSewadars, clearOfflineQueue } from '../lib/offline'
 import { supabase } from '../lib/supabase'
-import { LogOut, RefreshCw, Wifi, WifiOff, User, Database, Shield, Volume2, VolumeX } from 'lucide-react'
+import { LogOut, RefreshCw, Wifi, WifiOff, User, Database, Shield, Volume2, VolumeX, Trash2 } from 'lucide-react'
+import ConfirmModal from '../components/ConfirmModal'
+import { showSuccess, showInfo } from '../components/Toast'
 
 export default function ProfilePage({ isOnline }) {
   const { profile, signOut } = useAuth()
@@ -11,6 +13,8 @@ export default function ProfilePage({ isOnline }) {
   const [soundEnabled, setSoundEnabled] = useState(localStorage.getItem('sa_sound') !== 'false')
   const [cacheInfo, setCacheInfo] = useState(null)
   const [syncMsg, setSyncMsg] = useState('')
+  const [signOutConfirm, setSignOutConfirm] = useState(false)
+  const [clearCacheConfirm, setClearCacheConfirm] = useState(false)
 
   useEffect(() => {
     setPendingCount(getOfflineQueueCount())
@@ -34,18 +38,23 @@ export default function ProfilePage({ isOnline }) {
   }
 
   async function refreshCache() {
+    if (syncing) return
     setSyncing(true)
-    let query = supabase.from('sewadars').select('*')
-    if (profile.role === 'sc_sp_user') {
-      query = query.eq('centre', profile.centre)
-    }
-    const { data } = await query
+    const { data } = await supabase.from('sewadars').select('badge_number,sewadar_name,centre,department,badge_status,gender,geo_required')
     if (data) {
       setCachedSewadars(data)
       setCacheInfo({ count: data.length, note: 'Just refreshed' })
       setSyncMsg(`✓ Cached ${data.length} sewadars for offline use.`)
     }
     setSyncing(false)
+  }
+
+  function doClearCache() {
+    setClearCacheConfirm(false)
+    localStorage.removeItem('sewadars_cache')
+    localStorage.removeItem('sewadars_cache_time')
+    setCacheInfo(null)
+    showSuccess('Cache cleared')
   }
 
   const roleColor = { aso: 'var(--gold)', centre_user: 'var(--blue)', sc_sp_user: 'var(--green)' }
@@ -117,9 +126,16 @@ export default function ProfilePage({ isOnline }) {
             <Database size={16} color="var(--text-muted)" />
             <span style={{ fontWeight: 500 }}>Offline Cache</span>
           </div>
-          <button className="btn btn-ghost" onClick={refreshCache} disabled={!isOnline || syncing} style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}>
-            <RefreshCw size={14} /> Refresh
-          </button>
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            {cacheInfo && (
+              <button className="btn btn-ghost" onClick={() => setClearCacheConfirm(true)} disabled={!isOnline || syncing} style={{ padding: '0.4rem 0.6rem', fontSize: '0.8rem', color: 'var(--red)' }}>
+                <Trash2 size={14} />
+              </button>
+            )}
+            <button className="btn btn-ghost" onClick={refreshCache} disabled={!isOnline || syncing} style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem' }}>
+              <RefreshCw size={14} style={syncing ? { animation: 'spin 1s linear infinite' } : {}} /> {syncing ? '…' : 'Refresh'}
+            </button>
+          </div>
         </div>
         <p className="text-muted text-sm">
           {cacheInfo ? `${cacheInfo.count} sewadars cached · ${cacheInfo.note}` : 'No cache yet. Tap Refresh to download sewadar data for offline use.'}
@@ -137,7 +153,6 @@ export default function ProfilePage({ isOnline }) {
       )}
 
       {/* Sign out */}
-      {/* FIX #7: Sound toggle */}
       <div className="card mb-2" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div className="flex items-center gap-1">
           {soundEnabled ? <Volume2 size={16} color="var(--text-muted)" /> : <VolumeX size={16} color="var(--text-muted)" />}
@@ -149,10 +164,30 @@ export default function ProfilePage({ isOnline }) {
         </button>
       </div>
 
-      {/* FIX #11: Confirm before sign out */}
-      <button className="btn btn-outline btn-full" onClick={() => { if (confirm('Sign out of Sewadar Attendance?')) signOut() }} style={{ marginTop: '1rem', borderColor: 'rgba(224,92,92,0.3)', color: 'var(--red)' }}>
+      {/* Sign out — warns if pending scans exist */}
+      <button className="btn btn-outline btn-full" onClick={() => setSignOutConfirm(true)} style={{ marginTop: '1rem', borderColor: 'rgba(224,92,92,0.3)', color: 'var(--red)' }}>
         <LogOut size={16} /> Sign Out
       </button>
+
+      <ConfirmModal
+        open={signOutConfirm}
+        onConfirm={signOut}
+        onCancel={() => setSignOutConfirm(false)}
+        title="Sign out?"
+        message={pendingCount > 0 ? `${pendingCount} scan${pendingCount > 1 ? 's' : ''} are pending sync. They will be preserved and synced after you sign back in.` : 'Are you sure you want to sign out?'}
+        confirmLabel="Sign Out"
+        danger
+      />
+
+      <ConfirmModal
+        open={clearCacheConfirm}
+        onConfirm={doClearCache}
+        onCancel={() => setClearCacheConfirm(false)}
+        title="Clear cache?"
+        message="All cached sewadar data will be removed. You'll need to refresh to download it again."
+        confirmLabel="Clear"
+        danger
+      />
 
       <p className="text-center text-muted text-xs mt-3">Sewadar Attendance System v1.0</p>
     </div>

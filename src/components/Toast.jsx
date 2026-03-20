@@ -14,7 +14,10 @@ export default function ToastContainer() {
   const timeoutRefs = useRef({})
 
   const addToast = useCallback((toast) => {
-    setToasts(prev => [...prev, toast])
+    setToasts(prev => {
+      const next = [...prev, toast]
+      return next.length > 3 ? next.slice(next.length - 3) : next
+    })
     const tid = setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== toast.id))
       delete timeoutRefs.current[toast.id]
