@@ -15,7 +15,7 @@ import { CameraOff, RefreshCw, Zap } from 'lucide-react'
 
 // Matches: FB or BH + 4 digits + 1-2 uppercase letters + 4+ digits
 // e.g. FB5991GA0070, FB5991LA0028, BH1234GA0001
-const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{1,2}[0-9]{4,}$/
+const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{1,2}[0-9]{4}$/
 
 function clean(raw) {
   return raw.trim().toUpperCase().replace(/\s+/g, '')
@@ -148,6 +148,8 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
           const barcodes = await detectorRef.current.detect(videoRef.current)
           for (const b of barcodes) {
             const text = clean(b.rawValue)
+            // Reject anything that isn't exactly the badge length (12 chars: FB+4+2+4)
+            if (text.length !== 12) continue
             if (!BADGE_REGEX.test(text)) continue
 
             const t = Date.now()
