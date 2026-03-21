@@ -498,13 +498,14 @@ export default function ScannerPage({ isOnline }) {
                   <CheckCircle size={36} color={popupState.attendanceType === 'IN' ? '#16a34a' : '#dc2626'} />
                 </div>
                 <div className="success-title" style={{ color: popupState.attendanceType === 'IN' ? '#16a34a' : '#dc2626' }}>
-                  {popupState.attendanceType}
+                  {popupState.attendanceType} — Recorded
                 </div>
                 <div className="success-name">{popupState.sewadar.sewadar_name}</div>
-                <div style={{ fontSize: '0.72rem', color: 'var(--gold)', fontWeight: 700, marginTop: '0.25rem' }}>MANUAL ENTRY</div>
+                <div style={{ fontSize: '0.72rem', background: 'rgba(201,168,76,0.15)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 6, padding: '2px 10px', fontWeight: 700, marginTop: '0.35rem', display: 'inline-block' }}>MANUAL ENTRY</div>
                 <div className="success-type">
                   {new Date(popupState.time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
                 </div>
+                <button className="btn-cancel" onClick={closePopup} style={{ marginTop: '1rem' }}>Dismiss</button>
               </div>
             )}
           </div>
@@ -520,10 +521,12 @@ export default function ScannerPage({ isOnline }) {
           onClose={() => setManualModal(false)}
           onSuccess={(record) => {
             setManualModal(false)
+            playBeep(record.type)
             setPopupState({ type: 'manual_success', sewadar: { badge_number: record.badge_number, sewadar_name: record.sewadar_name }, attendanceType: record.type, time: record.scan_time })
-            setTimeout(closePopup, 1500)
             fetchTodayCount()
             setRecentScans(getAttendanceCache().slice(0, 5))
+            // Longer timeout for manual entries so user can clearly see confirmation
+            setTimeout(closePopup, 3000)
           }}
         />
       )}
@@ -686,20 +689,17 @@ function ManualEntryModal({ profile, isOnline, childCentres, onClose, onSuccess 
         timestamp: scanTimeISO,
         device_id: navigator.userAgent.slice(0, 50),
       }).catch(e => console.warn('Log insert failed:', e))
-
-      onSuccess(record)
     } else {
-      // FIX: Apply same remark validation for offline submissions
-      if (remark.trim().length < 3) {
-        setError('Remark must be at least 3 characters')
-        setSubmitting(false)
-        return
-      }
       addToOfflineQueue(record)
-      onSuccess(record)
     }
+
+    // Update local cache so recent scans list reflects manual entry immediately
+    addToAttendanceCache({ ...record, id: Date.now() })
+
     setSubmitting(false)
-    onClose()
+    // Call onSuccess — parent closes modal and shows confirmation popup
+    onSuccess(record)
+    // Do NOT call onClose() here — onSuccess already handles modal teardown
   }
 
   return (

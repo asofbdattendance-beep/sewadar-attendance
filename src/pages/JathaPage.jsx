@@ -168,15 +168,18 @@ function MarkJathaTab({ isOnline }) {
     if (!profile?.centre) return
     setSearching(true)
 
-    let scopeQ = supabase.from('centres').select('centre_name')
-      .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
-    const { data: cd } = await scopeQ
-    const scope = cd?.map(c => c.centre_name) || [profile.centre]
-
     let q = supabase.from('sewadars').select('*')
       .or(`badge_number.ilike.%${term.toUpperCase()}%,sewadar_name.ilike.%${term}%`)
-      .in('centre', scope)
       .limit(10)
+
+    // ASO can search all sewadars; centre users restricted to own centre + children
+    if (!isAso) {
+      let scopeQ = supabase.from('centres').select('centre_name')
+        .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
+      const { data: cd } = await scopeQ
+      const scope = cd?.map(c => c.centre_name) || [profile.centre]
+      q = q.in('centre', scope)
+    }
 
     const { data } = await q
     setSearchResults(data || [])
