@@ -230,14 +230,34 @@ export default function ScannerPage({ isOnline }) {
       setPopupState({ type: 'invalid_status', sewadar: found, badge: b }); setProcessing(false); return
     }
 
-    if (!isAso && !isCentreUser && !isSameCentre && !isException) {
+    // Authorization scope check
+    const scopeCentres = [profile?.centre, ...childCentres]
+    const inScope = scopeCentres.includes(found.centre)
+
+    // ASO can mark anyone
+    if (isAso) {
+      setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount })
+    }
+    // Exception dept sewadar - show confirmation but allow
+    else if (isException) {
+      setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount })
+    }
+    // Centre user - can only mark own centre + child centres
+    else if (isCentreUser) {
+      if (inScope) {
+        setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount })
+      } else {
+        setPopupState({ type: 'auth_fail', sewadar: found, badge: b, message: `${found.centre} — not in your scope` }); setProcessing(false); return
+      }
+    }
+    // SC_SP user - can only mark their own centre
+    else if (isSameCentre) {
+      setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount })
+    }
+    // Any other case (different centre) - not authorized
+    else {
       setPopupState({ type: 'auth_fail', sewadar: found, badge: b }); setProcessing(false); return
     }
-    if (!isAso && !isCentreUser && !isSameCentre && isException) {
-      setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount }); setProcessing(false); return
-    }
-
-    setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount })
     setProcessing(false)
   }
 
@@ -442,7 +462,7 @@ export default function ScannerPage({ isOnline }) {
                 <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
                 <div className="error-title">Not Authorised</div>
                 <div className="error-name">{popupState.sewadar.sewadar_name}</div>
-                <div className="error-msg">{popupState.sewadar.centre} — Different centre</div>
+                <div className="error-msg">{popupState.message || `${popupState.sewadar.centre} — Different centre`}</div>
                 <button className="btn-cancel" onClick={closePopup}>Try Another</button>
               </div>
             )}
@@ -471,6 +491,22 @@ export default function ScannerPage({ isOnline }) {
                 </div>
               </div>
             )}
+
+            {popupState.type === 'manual_success' && (
+              <div className="popup-success">
+                <div className={`success-icon-ring ${popupState.attendanceType === 'IN' ? 'ring-green' : 'ring-red'}`}>
+                  <CheckCircle size={36} color={popupState.attendanceType === 'IN' ? '#16a34a' : '#dc2626'} />
+                </div>
+                <div className="success-title" style={{ color: popupState.attendanceType === 'IN' ? '#16a34a' : '#dc2626' }}>
+                  {popupState.attendanceType}
+                </div>
+                <div className="success-name">{popupState.sewadar.sewadar_name}</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--gold)', fontWeight: 700, marginTop: '0.25rem' }}>MANUAL ENTRY</div>
+                <div className="success-type">
+                  {new Date(popupState.time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -482,7 +518,13 @@ export default function ScannerPage({ isOnline }) {
           isOnline={isOnline}
           childCentres={childCentres}
           onClose={() => setManualModal(false)}
-          onSuccess={() => { showSuccess('Manual entry recorded'); fetchTodayCount(); setRecentScans(getAttendanceCache().slice(0, 5)) }}
+          onSuccess={(record) => {
+            setManualModal(false)
+            setPopupState({ type: 'manual_success', sewadar: { badge_number: record.badge_number, sewadar_name: record.sewadar_name }, attendanceType: record.type, time: record.scan_time })
+            setTimeout(closePopup, 1500)
+            fetchTodayCount()
+            setRecentScans(getAttendanceCache().slice(0, 5))
+          }}
         />
       )}
     </div>
