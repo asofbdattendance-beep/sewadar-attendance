@@ -79,6 +79,17 @@ async function checkConflicts(badgeNumber, dateFrom, dateTo) {
 function MarkJathaTab({ isOnline }) {
   const { profile } = useAuth()
 
+  const isAso        = profile?.role === ROLES.ASO
+  const isCentreUser = profile?.role === ROLES.CENTRE_USER
+  const isScSpUser   = profile?.role === ROLES.SC_SP_USER
+  const [childCentres, setChildCentres] = useState([])
+
+  useEffect(() => {
+    if (!profile?.centre || !isCentreUser) return
+    supabase.from('centres').select('centre_name').eq('parent_centre', profile.centre)
+      .then(({ data }) => setChildCentres(data?.map(c => c.centre_name) || []))
+  }, [profile?.centre, isCentreUser])
+
   const [badgeInput, setBadgeInput]             = useState('')
   const [searching, setSearching]               = useState(false)
   const [searchResults, setSearchResults]       = useState([])
@@ -154,9 +165,20 @@ function MarkJathaTab({ isOnline }) {
   async function searchBadge() {
     const term = badgeInput.trim()
     if (!term) return
+    if (!profile?.centre) return
     setSearching(true)
-    const { data } = await supabase.from('sewadars').select('*')
-      .or(`badge_number.ilike.%${term.toUpperCase()}%,sewadar_name.ilike.%${term}%`).limit(10)
+
+    let scopeQ = supabase.from('centres').select('centre_name')
+      .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
+    const { data: cd } = await scopeQ
+    const scope = cd?.map(c => c.centre_name) || [profile.centre]
+
+    let q = supabase.from('sewadars').select('*')
+      .or(`badge_number.ilike.%${term.toUpperCase()}%,sewadar_name.ilike.%${term}%`)
+      .in('centre', scope)
+      .limit(10)
+
+    const { data } = await q
     setSearchResults(data || [])
     setSearching(false)
   }
@@ -169,6 +191,17 @@ function MarkJathaTab({ isOnline }) {
 
   async function submitJatha() {
     if (!selected)            { setError('Select a sewadar first'); return }
+    if (!profile?.centre)     { setError('User centre not set'); return }
+
+    // ASO can mark anyone, otherwise restrict to scope
+    if (!isAso) {
+      const scope = [profile.centre, ...childCentres]
+      if (!scope.includes(selected.centre)) {
+        setError(`Not authorised — ${selected.sewadar_name} is from ${selected.centre}, not your centre`)
+        return
+      }
+    }
+
     const err = validateRange(dateFrom, dateTo)
     if (err)                  { setError(err); return }
     if (!dateFrom || !dateTo) { setError('Both dates are required'); return }

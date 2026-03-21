@@ -687,7 +687,7 @@ function ManualEntryModal({ profile, isOnline, childCentres, onClose, onSuccess 
         device_id: navigator.userAgent.slice(0, 50),
       }).catch(e => console.warn('Log insert failed:', e))
 
-      onSuccess()
+      onSuccess(record)
     } else {
       // FIX: Apply same remark validation for offline submissions
       if (remark.trim().length < 3) {
@@ -696,7 +696,7 @@ function ManualEntryModal({ profile, isOnline, childCentres, onClose, onSuccess 
         return
       }
       addToOfflineQueue(record)
-      onSuccess()
+      onSuccess(record)
     }
     setSubmitting(false)
     onClose()
