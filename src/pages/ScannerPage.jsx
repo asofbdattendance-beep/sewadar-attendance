@@ -682,13 +682,17 @@ function ManualEntryModal({ profile, isOnline, childCentres, onClose, onSuccess 
       const { error: dbErr } = await supabase.from('attendance').insert(record)
       if (dbErr) { setError(dbErr.message); setSubmitting(false); return }
 
-      await supabase.from('logs').insert({
-        user_badge: profile.badge_number,
-        action: 'MANUAL_ENTRY',
-        details: `Manual ${attendanceType} for ${selected.badge_number} — "${remark.trim()}"`,
-        timestamp: scanTimeISO,
-        device_id: navigator.userAgent.slice(0, 50),
-      }).catch(e => console.warn('Log insert failed:', e))
+      try {
+        await supabase.from('logs').insert({
+          user_badge: profile.badge_number,
+          action: 'MANUAL_ENTRY',
+          details: `Manual ${attendanceType} for ${selected.badge_number} — "${remark.trim()}"`,
+          timestamp: scanTimeISO,
+          device_id: navigator.userAgent.slice(0, 50),
+        })
+      } catch (e) {
+        console.warn('Log insert failed:', e)
+      }
     } else {
       addToOfflineQueue(record)
     }
