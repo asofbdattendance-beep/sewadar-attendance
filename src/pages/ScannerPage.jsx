@@ -236,7 +236,7 @@ export default function ScannerPage({ isOnline }) {
 
     // 1. Exception dept sewadar — always show confirmation, even if in scope
     if (isException) {
-      setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount })
+      setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount, isSameCentre: inScope })
     }
     // 2. ASO — unrestricted
     else if (isAso) {
@@ -410,7 +410,9 @@ export default function ScannerPage({ isOnline }) {
 
             {popupState.type === 'exception_confirm' && (
               <div className="popup-exception">
-                <div className="popup-exception-banner"><AlertTriangle size={18} /><span>Sewadar from another centre</span></div>
+                {!popupState.isSameCentre && (
+                  <div className="popup-exception-banner"><AlertTriangle size={18} /><span>Sewadar from another centre</span></div>
+                )}
                 <div className="popup-exception-name">{popupState.sewadar.sewadar_name}</div>
                 <div className="popup-exception-badge">{popupState.sewadar.badge_number}</div>
                 <div className="popup-exception-detail"><span>Centre</span><strong>{popupState.sewadar.centre}</strong></div>
