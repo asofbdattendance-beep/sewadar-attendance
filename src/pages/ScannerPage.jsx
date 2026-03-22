@@ -234,15 +234,15 @@ export default function ScannerPage({ isOnline }) {
     const scopeCentres = [profile?.centre, ...childCentres]
     const inScope = scopeCentres.includes(found.centre)
 
-    // ASO can mark anyone
-    if (isAso) {
-      setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount })
-    }
-    // Exception dept sewadar - show confirmation but allow
-    else if (isException) {
+    // 1. Exception dept sewadar — always show confirmation, even if in scope
+    if (isException) {
       setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount })
     }
-    // Centre user - can only mark own centre + child centres
+    // 2. ASO — unrestricted
+    else if (isAso) {
+      setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount })
+    }
+    // 3. Centre User — scoped to own + child centres
     else if (isCentreUser) {
       if (inScope) {
         setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount })
@@ -250,11 +250,11 @@ export default function ScannerPage({ isOnline }) {
         setPopupState({ type: 'auth_fail', sewadar: found, badge: b, message: `${found.centre} — not in your scope` }); setProcessing(false); return
       }
     }
-    // SC_SP user - can only mark their own centre
+    // 4. SC_SP User — scoped to own centre only
     else if (isSameCentre) {
       setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount })
     }
-    // Any other case (different centre) - not authorized
+    // 5. Out of scope / not authorised
     else {
       setPopupState({ type: 'auth_fail', sewadar: found, badge: b }); setProcessing(false); return
     }
