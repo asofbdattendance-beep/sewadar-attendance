@@ -127,6 +127,9 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .btn-full { width:100%; justify-content:center; }
 .btn-lg { padding:0.85rem 1.5rem; font-size:1rem; }
 .btn-sm { padding:0.4rem 0.85rem; font-size:0.8rem; }
+.btn-excel { background:var(--excel-green); color:white; box-shadow:0 2px 6px rgba(33,115,70,0.25); }
+.btn-excel:hover { background:#1a5c38; }
+.btn-excel:disabled { opacity:0.6; cursor:not-allowed; }
 
 /* Touch-friendly input fields */
 .input {

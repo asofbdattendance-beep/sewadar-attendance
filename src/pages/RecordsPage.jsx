@@ -115,6 +115,7 @@ function AttendanceTab() {
     return { badge: true, name: true, centre: true, date: true, in: true, out: true, status: true }
   })
   const [expandedRows, setExpandedRows] = useState(() => new Set())
+  const [exporting, setExporting] = useState(false)
 
   const searchTimerRef = useRef(null)
   const tableRef = useRef(null)
@@ -510,6 +511,123 @@ function AttendanceTab() {
     fetchRecords()
   }
 
+  async function exportAllRecords() {
+    setExporting(true)
+    try {
+      const start = istDayStart(dateRange.from)
+      const end   = istDayEnd(dateRange.to)
+
+      let centreScope = null
+      if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
+        centreScope = [profile.centre]
+      } else if (isCentreUser) {
+        centreScope = [
+          profile.centre,
+          ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)
+        ]
+      } else if (centreFilter) {
+        centreScope = [centreFilter]
+      }
+
+      let q = supabase
+        .from('attendance')
+        .select('badge_number, sewadar_name, centre, department, scan_time, type, scanner_name, manual_entry')
+        .gte('scan_time', start)
+        .lte('scan_time', end)
+        .order('scan_time', { ascending: false })
+
+      if (centreScope?.length) q = q.in('centre', centreScope)
+      if (searchTerm.trim()) q = q.or(`badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`)
+
+      const { data } = await q.limit(50000)
+
+      const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000
+      const dayMap = {}
+      for (const r of (data || [])) {
+        const istDate = new Date(new Date(r.scan_time).getTime() + IST_OFFSET_MS).toISOString().split('T')[0]
+        const key = `${r.badge_number}::${istDate}`
+        if (!dayMap[key]) {
+          dayMap[key] = {
+            badge_number: r.badge_number, sewadar_name: r.sewadar_name,
+            centre: r.centre, department: r.department, date: istDate,
+            scans: []
+          }
+        }
+        dayMap[key].scans.push({ type: r.type, scan_time: r.scan_time })
+      }
+
+      function buildSessions(scans) {
+        const sorted = [...scans].sort((a, b) => new Date(a.scan_time) - new Date(b.scan_time))
+        const sessions = []
+        let current = null
+        for (const s of sorted) {
+          if (s.type === 'IN') {
+            if (current) sessions.push(current)
+            current = { in_time: s.scan_time, out_time: null, manual_entry: !!s.manual_entry }
+          } else {
+            if (current && !current.out_time) {
+              current.out_time = s.scan_time
+              if (s.manual_entry) current.manual_entry = true
+              sessions.push(current)
+              current = null
+            } else {
+              sessions.push({ in_time: null, out_time: s.scan_time, manual_entry: !!s.manual_entry })
+            }
+          }
+        }
+        if (current) sessions.push(current)
+        return sessions
+      }
+
+      let rows = Object.values(dayMap).map(g => {
+        const sessions = buildSessions(g.scans)
+        const firstIn  = sessions.find(s => s.in_time)
+        const lastOut  = [...sessions].reverse().find(s => s.out_time)
+        const anyManual = sessions.some(s => s.manual_entry)
+        return {
+          badge_number: g.badge_number, sewadar_name: g.sewadar_name,
+          centre: g.centre, department: g.department, date: g.date,
+          in_time:  firstIn?.in_time  || null,
+          out_time: lastOut?.out_time || null,
+          manual_entry: anyManual,
+        }
+      })
+
+      if (quickFilter === 'in') {
+        rows = rows.filter(r => r.in_time && !r.out_time)
+      } else if (quickFilter === 'out') {
+        rows = rows.filter(r => r.out_time && !r.in_time)
+      } else if (quickFilter === 'manual') {
+        rows = rows.filter(r => r.manual_entry)
+      }
+
+      const csv = [
+        ['Badge Number', 'Name', 'Centre', 'Department', 'Date', 'IN Time', 'OUT Time', 'Status', 'Manual Entry'].join(','),
+        ...rows.map(r => [
+          r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
+          r.date,
+          r.in_time ? formatTime(r.in_time) : '',
+          r.out_time ? formatTime(r.out_time) : '',
+          r.in_time && r.out_time ? 'Complete' : r.in_time ? 'IN only' : r.out_time ? 'OUT only' : '',
+          r.manual_entry ? 'Yes' : 'No'
+        ].join(','))
+      ].join('\n')
+
+      const from = dateRange.from || todayDateStr()
+      const to = dateRange.to || todayDateStr()
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+      a.download = `attendance_${from}_to_${to}.csv`
+      a.click()
+      showSuccess(`Exported ${rows.length} records`)
+    } catch (err) {
+      console.error('Export failed:', err)
+      showError('Export failed: ' + err.message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   function SortHeader({ col, label }) {
     return (
       <th
@@ -589,7 +707,7 @@ function AttendanceTab() {
         />
       </div>
 
-      {/* Quick filter chips + Refresh + Column toggle */}
+      {/* Quick filter chips + Export + Refresh + Column toggle */}
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center' }}>
         <QuickFilterChips
           value={quickFilter}
@@ -597,6 +715,10 @@ function AttendanceTab() {
           counts={quickFilterCounts}
         />
         <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+          <button className="btn btn-excel" onClick={exportAllRecords} disabled={exporting} style={{ padding: '0.4rem 0.75rem', fontSize: '0.78rem' }}>
+            {exporting ? <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> : <Download size={13} />} 
+            {exporting ? 'Exporting…' : 'Export Excel'}
+          </button>
           {/* Column toggle — mobile only */}
           <div style={{ position: 'relative' }} ref={colMenuRef}>
               <button className="btn btn-ghost rec-col-toggle" onClick={() => setShowColMenu(v => !v)} style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}>
@@ -1026,34 +1148,6 @@ function AttendanceTab() {
             total={totalCount}
             onPageChange={p => setPage(p)}
           />
-        )}
-
-        {/* Export */}
-        {!loading && records.length > 0 && (
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-            <button className="btn btn-ghost" onClick={() => {
-              if (page > 1) { showInfo('Exporting current page only. Clear filters for full export.'); }
-              const from = dateRange.from || todayDateStr()
-              const to = dateRange.to || todayDateStr()
-              const csv = [
-                ['Badge Number', 'Name', 'Centre', 'Department', 'Date', 'IN Time', 'OUT Time', 'Status', 'Manual Entry'].join(','),
-                ...records.map(r => [
-                  r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
-                  r.date,
-                  r.in_time ? formatTime(r.in_time) : '',
-                  r.out_time ? formatTime(r.out_time) : '',
-                  r.in_time && r.out_time ? 'Complete' : r.in_time ? 'IN only' : r.out_time ? 'OUT only' : '',
-                  r.manual_entry ? 'Yes' : 'No'
-                ].join(','))
-              ].join('\n')
-              const a = document.createElement('a')
-              a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-              a.download = `attendance_${from}_to_${to}.csv`
-              a.click()
-            }} style={{ fontSize: '0.82rem' }}>
-              <Download size={14} /> Export CSV
-            </button>
-          </div>
         )}
       </div>
 

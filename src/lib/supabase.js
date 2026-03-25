@@ -12,6 +12,12 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   realtime: { params: { eventsPerSecond: 10 } }
 })
 
+export const ROLES = {
+  ASO: 'aso',
+  CENTRE_USER: 'centre_user',
+  SC_SP_USER: 'sc_sp_user'
+}
+
 // Badge parser utility - supports both FB and BH badge formats
 export function parseBadge(badge) {
   if (!badge || badge.length < 12) return null
@@ -94,12 +100,6 @@ export function getDistanceMetres(lat1, lon1, lat2, lon2) {
     Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
     Math.sin(dLon / 2) ** 2
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-}
-
-export const ROLES = {
-  ASO: 'aso',
-  CENTRE_USER: 'centre_user',
-  SC_SP_USER: 'sc_sp_user'
 }
 
 export const FLAG_TYPES = [

@@ -291,13 +291,25 @@ export default function ScannerPage({ isOnline }) {
     const isChildCentre = isCentreUser && childCentres.includes(found.centre)
     const isException = isExceptionDept(found.department)
 
-    if (found.geo_required && userLocation && centreConfig?.geo_enabled) {
-      if (centreConfig.latitude && centreConfig.longitude) {
-        const dist = getDistanceMetres(userLocation.lat, userLocation.lng, centreConfig.latitude, centreConfig.longitude)
-        if (dist > (centreConfig.geo_radius || 200)) {
-          setPopupState({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away`, badge: b })
-          setProcessing(false); return
-        }
+    // Geo fencing check - ALWAYS run this when geo is enabled
+    const geoEnabled = centreConfig?.geo_enabled === true
+    const hasGeoCoords = centreConfig?.latitude != null && centreConfig?.longitude != null
+    console.log('[Geo] Check:', { 
+      userLocation: !!userLocation, 
+      geoEnabled, 
+      hasGeoCoords, 
+      centreConfig,
+      distance: userLocation && hasGeoCoords ? getDistanceMetres(userLocation.lat, userLocation.lng, centreConfig.latitude, centreConfig.longitude) : null
+    })
+    if (userLocation && geoEnabled && hasGeoCoords) {
+      const dist = getDistanceMetres(
+        userLocation.lat, userLocation.lng,
+        centreConfig.latitude, centreConfig.longitude
+      )
+      const radius = centreConfig.geo_radius || 200
+      if (dist > radius) {
+        setPopupState({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge: b })
+        setProcessing(false); return
       }
     }
 
@@ -476,7 +488,11 @@ export default function ScannerPage({ isOnline }) {
             style={gpsStatus === 'failed' ? { cursor: 'pointer' } : {}}
           >
             <MapPin size={11} />
-            GPS {gpsStatus === 'success' ? '✓' : gpsStatus === 'failed' ? '✗' : '…'}
+            GPS {gpsStatus === 'success' ? '✓' : gpsStatus === 'failed' ? '✕' : '…'}
+          </span>
+          <span className={`scanner-pill ${centreConfig?.geo_enabled ? 'pill-gps-ok' : 'pill-offline'}`} title={centreConfig?.geo_enabled ? `Geo fencing active (${centreConfig?.geo_radius || 200}m radius)` : 'Geo fencing not enabled for this centre'}>
+            <MapPin size={11} />
+            GEO {centreConfig?.geo_enabled ? 'ON' : 'OFF'}
           </span>
           {(() => { const age = getCacheAge(); return age !== null ? (
             <span className="scanner-pill pill-gps-ok" title="Sewadar data cache age">
@@ -653,6 +669,8 @@ export default function ScannerPage({ isOnline }) {
           profile={profile}
           isOnline={isOnline}
           childCentres={childCentres}
+          userLocation={userLocation}
+          centreConfig={centreConfig}
           onClose={() => setManualModal(false)}
           onSuccess={(record) => {
             setManualModal(false)
@@ -747,7 +765,7 @@ function RecentPopup({ popupState, onOverride, onClose, isAso }) {
 // ─────────────────────────────────────────────
 //  MANUAL ENTRY MODAL — Centre Admin + ASO
 // ─────────────────────────────────────────────
-function ManualEntryModal({ profile, isOnline, childCentres, onClose, onSuccess }) {
+function ManualEntryModal({ profile, isOnline, childCentres, userLocation, centreConfig, onClose, onSuccess }) {
   const [search, setSearch] = useState('')
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
@@ -796,6 +814,21 @@ function ManualEntryModal({ profile, isOnline, childCentres, onClose, onSuccess 
     if (!canSubmit) return
     setSubmitting(true)
     setError('')
+
+    // Geo check for Manual Entry
+    const geoEnabled = centreConfig?.geo_enabled === true
+    const hasGeoCoords = centreConfig?.latitude != null && centreConfig?.longitude != null
+    console.log('[Geo Manual] Check:', { userLocation: !!userLocation, geoEnabled, hasGeoCoords, centreConfig })
+    if (userLocation && geoEnabled && hasGeoCoords) {
+      const dist = getDistanceMetres(userLocation.lat, userLocation.lng, centreConfig.latitude, centreConfig.longitude)
+      const radius = centreConfig.geo_radius || 200
+      console.log('[Geo Manual] Distance:', dist, 'Radius:', radius)
+      if (dist > radius) {
+        setError(`Outside centre area: ${Math.round(dist)}m away (limit: ${radius}m). Move closer or disable geo fencing.`)
+        setSubmitting(false)
+        return
+      }
+    }
 
     const scanTimeISO = new Date(`${scanDate}T${scanTime}:00+05:30`).toISOString()
     const record = {
