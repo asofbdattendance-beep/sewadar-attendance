@@ -257,7 +257,7 @@ export default function ScannerPage({ isOnline }) {
 
     // 1. Exception dept sewadar — always show confirmation, even if in scope
     if (isException) {
-      setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount, todayEntries, isSameCentre: inScope })
+      setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount, todayEntries: todayEntries || [], isSameCentre: inScope })
     }
     // 2. ASO — unrestricted
     else if (isAso) {
@@ -283,79 +283,91 @@ export default function ScannerPage({ isOnline }) {
   }
 
   const markAttendance = async (type, overrideNote = null) => {
-    if (!popupState?.sewadar || !profile) return
-    if (busyRef.current) return
-    busyRef.current = true
-    
-    const scanTime = nowIST()
-    const record = {
-      badge_number: popupState.sewadar.badge_number,
-      sewadar_name: popupState.sewadar.sewadar_name,
-      centre: popupState.sewadar.centre,
-      department: popupState.sewadar.department,
-      type, scan_time: scanTime,
-      scanner_badge: profile.badge_number || 'UNKNOWN',
-      scanner_name: profile.name || 'Unknown',
-      scanner_centre: profile.centre || 'UNKNOWN',
-      latitude: userLocation?.lat || null,
-      longitude: userLocation?.lng || null,
-      device_id: navigator.userAgent.slice(0, 50),
-      manual_entry: false,
-      submitted_by: profile.badge_number || 'UNKNOWN',
-      submitted_at: scanTime,
-    }
-
-    if (isOnline) {
-      const isDuplicate = await checkDuplicateOffline(supabase, record)
-      if (isDuplicate && !overrideNote) {
-        showInfo('Duplicate scan already exists')
-        busyRef.current = false
+    try {
+      if (!popupState?.sewadar || !profile) {
+        console.warn('markAttendance: no sewadar or profile')
         return
       }
-    } else {
-      if (checkDuplicateInOfflineQueue(record.badge_number, record.type)) {
-        showInfo('Duplicate in offline queue')
-        busyRef.current = false
+      if (busyRef.current) {
+        console.warn('markAttendance: busy')
         return
       }
-    }
-
-    addToAttendanceCache({ ...record, id: Date.now() })
-    setRecentScans(getAttendanceCache().slice(0, 5))
-    playBeep(type)
-    setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
-    setTimeout(closePopup, 1200)
-
-    if (isOnline) {
-      const { error: insertError } = await supabase.from('attendance').insert(record)
+      busyRef.current = true
       
-      if (insertError) {
-        if (insertError.code === '23505') {
-          showInfo('Duplicate - already exists in database')
-        } else {
-          console.warn('Insert failed, saving offline:', insertError.message)
-          addToOfflineQueue(record)
-          setPendingSync(getOfflineQueueCount())
-          showInfo('Saved offline — will sync when connection returns')
+      const scanTime = nowIST()
+      const record = {
+        badge_number: popupState.sewadar.badge_number,
+        sewadar_name: popupState.sewadar.sewadar_name,
+        centre: popupState.sewadar.centre,
+        department: popupState.sewadar.department,
+        type, scan_time: scanTime,
+        scanner_badge: profile.badge_number || 'UNKNOWN',
+        scanner_name: profile.name || 'Unknown',
+        scanner_centre: profile.centre || 'UNKNOWN',
+        latitude: userLocation?.lat || null,
+        longitude: userLocation?.lng || null,
+        device_id: navigator.userAgent.slice(0, 50),
+        manual_entry: false,
+        submitted_by: profile.badge_number || 'UNKNOWN',
+        submitted_at: scanTime,
+      }
+
+      if (isOnline) {
+        const isDuplicate = await checkDuplicateOffline(supabase, record)
+        if (isDuplicate && !overrideNote) {
+          showInfo('Duplicate scan already exists')
+          busyRef.current = false
+          return
         }
       } else {
-        try {
-          await supabase.from('logs').insert({
-            user_badge: profile.badge_number,
-            action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
-            details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
-            timestamp: scanTime,
-            device_id: navigator.userAgent.slice(0, 50),
-          })
-        } catch (e) {
-          console.warn('Log insert failed:', e)
+        if (checkDuplicateInOfflineQueue(record.badge_number, record.type)) {
+          showInfo('Duplicate in offline queue')
+          busyRef.current = false
+          return
         }
-        fetchTodayCount()
       }
-    } else {
-      addToOfflineQueue(record)
-      setPendingSync(getOfflineQueueCount())
-      showInfo('Saved offline — will sync when connection returns')
+
+      addToAttendanceCache({ ...record, id: Date.now() })
+      setRecentScans(getAttendanceCache().slice(0, 5))
+      playBeep(type)
+      setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
+      setTimeout(closePopup, 1200)
+
+      if (isOnline) {
+        const { error: insertError } = await supabase.from('attendance').insert(record)
+        
+        if (insertError) {
+          if (insertError.code === '23505') {
+            showInfo('Duplicate - already exists in database')
+          } else {
+            console.warn('Insert failed, saving offline:', insertError.message)
+            addToOfflineQueue(record)
+            setPendingSync(getOfflineQueueCount())
+            showInfo('Saved offline — will sync when connection returns')
+          }
+        } else {
+          try {
+            await supabase.from('logs').insert({
+              user_badge: profile.badge_number,
+              action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
+              details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
+              timestamp: scanTime,
+              device_id: navigator.userAgent.slice(0, 50),
+            })
+          } catch (e) {
+            console.warn('Log insert failed:', e)
+          }
+          fetchTodayCount()
+        }
+      } else {
+        addToOfflineQueue(record)
+        setPendingSync(getOfflineQueueCount())
+        showInfo('Saved offline — will sync when connection returns')
+      }
+    } catch (err) {
+      console.error('markAttendance error:', err)
+      showError('Error: ' + err.message)
+      busyRef.current = false
     }
   }
 
