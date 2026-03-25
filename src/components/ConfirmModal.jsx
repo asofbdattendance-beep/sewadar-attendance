@@ -1,27 +1,35 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { AlertTriangle, Trash2, X } from 'lucide-react'
 
 export default function ConfirmModal({ open, onConfirm, onCancel, title, message, confirmLabel, cancelLabel, danger = false, loading = false }) {
   const [countdown, setCountdown] = useState(false)
-  const [confirming, setConfirming] = useState(false)
+  const [countdownDone, setCountdownDone] = useState(false)
+  const timerRef = useRef(null)
 
   useEffect(() => {
     if (!open) {
       setCountdown(false)
-      setConfirming(false)
+      setCountdownDone(false)
+      if (timerRef.current) clearTimeout(timerRef.current)
     }
+    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
   }, [open])
 
   if (!open) return null
 
   const handleConfirmClick = () => {
-    if (danger && !countdown) {
-      setCountdown(true)
-      setConfirming(true)
-      setTimeout(() => {
+    if (danger && !countdownDone) {
+      if (countdown) {
+        onConfirm()
         setCountdown(false)
-        setConfirming(false)
-      }, 3000)
+        setCountdownDone(false)
+      } else {
+        setCountdown(true)
+        timerRef.current = setTimeout(() => {
+          setCountdown(false)
+          setCountdownDone(true)
+        }, 3000)
+      }
     } else {
       onConfirm()
     }
@@ -71,7 +79,7 @@ export default function ConfirmModal({ open, onConfirm, onCancel, title, message
               transition: 'all 0.15s',
             }}
           >
-            {loading ? '…' : countdown ? 'Tap again to confirm' : (confirmLabel || 'Confirm')}
+            {loading ? '…' : (danger && countdown ? 'Tap again to confirm' : (confirmLabel || 'Confirm'))}
           </button>
         </div>
       </div>

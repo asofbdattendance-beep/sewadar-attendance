@@ -51,14 +51,12 @@ export default function FlagsPage() {
   }, [searchInput])
 
   useEffect(() => {
-    loadChildCentres()
-    fetchStats()
+    async function init() {
+      await loadChildCentres()
+      fetchStats()
+    }
+    init()
   }, [statusFilter, profile])
-
-  // Re-fetch stats when childCentres loads (isCentreUser needs scope to be correct)
-  useEffect(() => {
-    if (childCentres.length > 0) fetchStats()
-  }, [childCentres])
 
   async function loadChildCentres() {
     if (isAso || !profile?.centre) return

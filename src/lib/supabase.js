@@ -12,7 +12,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   realtime: { params: { eventsPerSecond: 10 } }
 })
 
-// Badge parser utility
+// Badge parser utility - supports both FB and BH badge formats
 export function parseBadge(badge) {
   if (!badge || badge.length < 12) return null
   const prefix = badge.substring(0, 2)
@@ -20,7 +20,8 @@ export function parseBadge(badge) {
   const gender = badge.substring(6, 7)
   const fixed = badge.substring(7, 8)
   const serial = badge.substring(8)
-  if (prefix !== 'FB' || fixed !== 'A') return null
+  // Support FB (F) and BH (B) prefixes with fixed character 'A'
+  if ((prefix !== 'FB' && prefix !== 'BH') || fixed !== 'A') return null
   return { prefix, centreCode, gender: gender === 'G' ? 'Male' : 'Female', serial, raw: badge }
 }
 

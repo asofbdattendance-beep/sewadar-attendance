@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { Calendar } from 'lucide-react'
+import { todayDateStr } from '../lib/offline'
 
 export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
   const [focusedInput, setFocusedInput] = useState(null)
 
   const today = () => {
-    // Use UTC date for consistency with DB timestamps
-    return new Date().toISOString().split('T')[0]
+    return todayDateStr()
   }
 
   const handleFromChange = (val) => {

@@ -25,6 +25,11 @@ export default function CentreComboBox({ value, onChange, centres = [], includeA
     }
   }, [open])
 
+  // Reset highlighted when options change
+  useEffect(() => {
+    setHighlighted(0)
+  }, [flatOptions.length])
+
   const parents = [...new Set(centres.filter(c => !c.parent_centre).map(c => c.centre_name))]
   const childrenMap = {}
   centres.forEach(c => {

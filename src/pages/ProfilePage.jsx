@@ -40,7 +40,12 @@ export default function ProfilePage({ isOnline }) {
   async function refreshCache() {
     if (syncing) return
     setSyncing(true)
-    const { data } = await supabase.from('sewadars').select('badge_number,sewadar_name,centre,department,badge_status,gender,geo_required')
+    const { data, error } = await supabase.from('sewadars').select('badge_number,sewadar_name,centre,department,badge_status,gender,geo_required')
+    if (error) {
+      setSyncMsg('⚠ Failed to refresh cache. Check connection.')
+      setSyncing(false)
+      return
+    }
     if (data) {
       setCachedSewadars(data)
       setCacheInfo({ count: data.length, note: 'Just refreshed' })

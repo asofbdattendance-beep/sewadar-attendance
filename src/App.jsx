@@ -92,7 +92,17 @@ function AppLayout() {
     }
     async function fetchFlagCount() {
       if (!profile) return
-      const { count } = await supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open')
+      let query = supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open')
+      
+      if (profile.role === ROLES.CENTRE_USER && profile.centre) {
+        const { data: children } = await supabase.from('centres').select('centre_name').eq('parent_centre', profile.centre)
+        const scope = [profile.centre, ...(children?.map(c => c.centre_name) || [])]
+        query = query.in('raised_by_centre', scope)
+      } else if (profile.role === ROLES.SC_SP_USER && profile.centre) {
+        query = query.eq('raised_by_centre', profile.centre)
+      }
+      
+      const { count } = await query
       setOpenFlagCount(count || 0)
     }
     fetchFlagCount().catch(console.warn)

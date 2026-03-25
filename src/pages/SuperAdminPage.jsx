@@ -10,6 +10,7 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
+import { todayDateStr } from '../lib/offline'
 import {
   UserPlus, Trash2, Shield, MapPin, ToggleLeft, ToggleRight,
   RefreshCw, Download, FileSpreadsheet, Calendar,
@@ -73,7 +74,7 @@ export default function SuperAdminPage({ isOnline }) {
   // Attendance tab state
   const [attSearch, setAttSearch] = useState('')
   const [attSearchInput, setAttSearchInput] = useState('')
-  const [attDate, setAttDate] = useState(new Date().toISOString().split('T')[0])
+  const [attDate, setAttDate] = useState(todayDateStr())
   const [attRecords, setAttRecords] = useState([])
   const [attTotal, setAttTotal] = useState(0)
   const [attPage, setAttPage] = useState(1)

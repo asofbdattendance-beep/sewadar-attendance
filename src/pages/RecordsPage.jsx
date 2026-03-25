@@ -192,6 +192,7 @@ function AttendanceTab() {
 
   async function fetchRecords() {
     setLoading(true)
+    setFlagDetails({})
 
     const start = istDayStart(dateRange.from)
     const end   = istDayEnd(dateRange.to)
