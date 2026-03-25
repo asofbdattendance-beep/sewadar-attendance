@@ -4,7 +4,7 @@ import {
   lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue,
   getOfflineQueueCount, syncOfflineQueue, getAttendanceCache,
   getCacheAge, getTodayEntriesForBadge, checkDuplicateInCache, checkDuplicateInOfflineQueue,
-  checkDuplicateOffline, todayDateStr
+  checkDuplicateOffline, todayDateStr, nowIST
 } from '../lib/offline'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
@@ -18,6 +18,7 @@ export default function ScannerPage({ isOnline }) {
   const [childCentres, setChildCentres] = useState([])
   const [gpsStatus, setGpsStatus] = useState('loading')
   const [popupState, setPopupState] = useState(null)
+  const busyRef = useRef(false)
   const [processing, setProcessing] = useState(false)
   const [todayCount, setTodayCount] = useState(0)
   const [pendingSync, setPendingSync] = useState(0)
@@ -66,8 +67,22 @@ export default function ScannerPage({ isOnline }) {
   // Live IN count — centre filter for CENTRE_USER too
   useEffect(() => {
     fetchTodayCount().catch(console.error)
+    
+    // Build filter based on role
+    let filter = {}
+    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
+      filter = { column: 'centre', value: profile.centre }
+    } else if (profile?.role === ROLES.CENTRE_USER && profile?.centre) {
+      // For centre users, listen to all and filter in fetchTodayCount
+    }
+    
     const channel = supabase.channel('scanner-count')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, () => fetchTodayCount().catch(console.error))
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'attendance',
+        filter: filter.column ? `${filter.column}=eq.${filter.value}` : undefined
+      }, () => fetchTodayCount().catch(console.error))
       .subscribe()
     return () => supabase.removeChannel(channel)
   }, [profile?.centre, profile?.role])
@@ -89,12 +104,10 @@ export default function ScannerPage({ isOnline }) {
     if (!error) setTodayCount(count || 0)
   }
 
-  // Offline queue + recent scans
+  // Offline queue + recent scans - no polling needed, updated on enqueue/sync
   useEffect(() => {
     setPendingSync(getOfflineQueueCount())
-    const id = setInterval(() => setPendingSync(getOfflineQueueCount()), 5000)
     setRecentScans(getAttendanceCache().slice(0, 5))
-    return () => clearInterval(id)
   }, [])
 
   // Cleanup AudioContext on unmount
@@ -129,15 +142,35 @@ export default function ScannerPage({ isOnline }) {
     try {
       if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
       const ctx = audioCtxRef.current
-      const osc = ctx.createOscillator(); const gain = ctx.createGain()
-      osc.connect(gain); gain.connect(ctx.destination)
-      osc.frequency.value = type === 'IN' ? 880 : 440
-      osc.type = 'sine'
-      gain.gain.setValueAtTime(0.3, ctx.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25)
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.25)
+      
+      if (type === 'IN') {
+        // Short high beep for IN
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain); gain.connect(ctx.destination)
+        osc.frequency.value = 880
+        osc.type = 'sine'
+        gain.gain.setValueAtTime(0.3, ctx.currentTime)
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
+        osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.15)
+      } else {
+        // Double low beep for OUT
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain); gain.connect(ctx.destination)
+        osc.frequency.value = 440
+        osc.type = 'sine'
+        gain.gain.setValueAtTime(0.3, ctx.currentTime)
+        gain.gain.setValueAtTime(0.3, ctx.currentTime + 0.1)
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2)
+        gain.gain.setValueAtTime(0.001, ctx.currentTime + 0.2)
+        osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.25)
+      }
     } catch (e) { console.warn('Beep failed:', e) }
-    if (navigator.vibrate) navigator.vibrate(type === 'IN' ? [40] : [40, 30, 40])
+    // Vibration: short for IN, double for OUT
+    if (navigator.vibrate) {
+      navigator.vibrate(type === 'IN' ? [30] : [30, 50, 30])
+    }
   }
 
   // Ladder logic
@@ -150,23 +183,46 @@ export default function ScannerPage({ isOnline }) {
   // FIX #7: Complete dependency array for handleScan
   // busyRef prevents any new scan from being processed while a popup is open
   // or while an existing scan is in-flight. Using a ref avoids stale closure issues.
-  const busyRef = useRef(false)
+  const popupRef = useRef(null)
+
+  // Track popupState in ref to avoid stale closure
+  useEffect(() => {
+    popupRef.current = popupState
+  }, [popupState])
+
+  // State ref to avoid recreating handleScan on every render
+  const stateRef = useRef({})
+  useEffect(() => {
+    stateRef.current = { profile, userLocation, centreConfig, childCentres, isAso, isCentreUser, isOnline }
+  }, [profile, userLocation, centreConfig, childCentres, isAso, isCentreUser, isOnline])
+
+  // Submitting state to prevent double-trigger
+  const [submitting, setSubmitting] = useState(false)
 
   const handleScan = useCallback(async (badge) => {
     // Drop scan immediately if popup is open or scan is in-flight
     if (busyRef.current) return
 
     const now = Date.now()
+    // Global throttle - prevent rapid different badge scans
+    if (now - lastScanRef.current.time < 800) return
     // Also debounce exact same badge within 2 seconds
     if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) return
 
     busyRef.current = true
-    lastScanRef.current = { badge, time: now }
-    setProcessing(true)
+
+    // Fallback unlock after 3 seconds if popup fails
+    setTimeout(() => {
+      if (busyRef.current && !popupRef.current) {
+        busyRef.current = false
+      }
+    }, 3000)
+
+    const { isOnline: online, profile: userProfile, userLocation: location, centreConfig: cfg, childCentres: children, isAso: isAsoUser, isCentreUser: isCentreUserRole } = stateRef.current
 
     let found = null
     try {
-      if (isOnline) {
+      if (online) {
         const { data, error } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
         if (error) throw error
         found = data
@@ -182,10 +238,10 @@ export default function ScannerPage({ isOnline }) {
       return
     }
 
-    await processSewadar(found, badge)
-  }, [isOnline, profile, userLocation, centreConfig, childCentres, isAso, isCentreUser])
+    await processSewadar(found, badge, userProfile, location, cfg, children, isAsoUser, isCentreUserRole)
+  }, []) // Empty deps - using refs
 
-  async function processSewadar(found, badge) {
+  async function processSewadar(found, badge, profile, userLocation, centreConfig, childCentres, isAso, isCentreUser) {
     const now = Date.now()
     setProcessing(true)
     const b = badge || found.badge_number
@@ -208,7 +264,7 @@ export default function ScannerPage({ isOnline }) {
         // (they could have been scanned IN at one centre and OUT at another)
       } else if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
         q = q.eq('centre', profile.centre)
-      } else if (profile?.role === ROLES.CENTRE_USER && profile?.centre) {
+      } else if (isCentreUser && profile?.centre) {
         const scope = [profile.centre, ...childCentres]
         q = q.in('centre', scope)
       }
@@ -257,7 +313,7 @@ export default function ScannerPage({ isOnline }) {
 
     // 1. Exception dept sewadar — always show confirmation, even if in scope
     if (isException) {
-      setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount, todayEntries: todayEntries || [], isSameCentre: inScope })
+      setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount, todayEntries: todayEntries || [], isSameCentre: inScope, lastEntry })
     }
     // 2. ASO — unrestricted
     else if (isAso) {
@@ -284,12 +340,12 @@ export default function ScannerPage({ isOnline }) {
 
   const markAttendance = async (type, overrideNote = null) => {
     try {
+      if (submitting) return
+      setSubmitting(true)
+      
       if (!popupState?.sewadar || !profile) {
         console.warn('markAttendance: no sewadar or profile')
-        return
-      }
-      if (busyRef.current) {
-        console.warn('markAttendance: busy')
+        setSubmitting(false)
         return
       }
       busyRef.current = true
@@ -312,19 +368,19 @@ export default function ScannerPage({ isOnline }) {
         submitted_at: scanTime,
       }
 
+      // Unified duplicate check - covers DB, queue, and cache
+      const isDuplicateOffline = checkDuplicateInOfflineQueue(record.badge_number, record.type)
+      const isDuplicateCache = checkDuplicateInCache(record.badge_number, record.type)
+      let isDuplicateDB = false
       if (isOnline) {
-        const isDuplicate = await checkDuplicateOffline(supabase, record)
-        if (isDuplicate && !overrideNote) {
-          showInfo('Duplicate scan already exists')
-          busyRef.current = false
-          return
-        }
-      } else {
-        if (checkDuplicateInOfflineQueue(record.badge_number, record.type)) {
-          showInfo('Duplicate in offline queue')
-          busyRef.current = false
-          return
-        }
+        isDuplicateDB = await checkDuplicateOffline(supabase, record)
+      }
+      
+      if ((isDuplicateOffline || isDuplicateCache || isDuplicateDB) && !overrideNote) {
+        showInfo('Duplicate scan already exists')
+        busyRef.current = false
+        setSubmitting(false)
+        return
       }
 
       addToAttendanceCache({ ...record, id: Date.now() })
@@ -368,6 +424,8 @@ export default function ScannerPage({ isOnline }) {
       console.error('markAttendance error:', err)
       showError('Error: ' + err.message)
       busyRef.current = false
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -377,6 +435,18 @@ export default function ScannerPage({ isOnline }) {
     busyRef.current = false   // unblock scanner for next badge
     if (scannerRef.current) scannerRef.current.resume()
   }
+
+  // Fallback: reset busyRef if popup fails to render
+  useEffect(() => {
+    if (busyRef.current && !popupState) {
+      const timer = setTimeout(() => {
+        if (busyRef.current && !popupState) {
+          busyRef.current = false
+        }
+      }, 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [popupState])
 
   return (
     <div className="page pb-nav">
@@ -477,10 +547,13 @@ export default function ScannerPage({ isOnline }) {
                 <div className="popup-exception-badge">{popupState.sewadar.badge_number}</div>
                 <div className="popup-exception-detail"><span>Centre</span><strong>{popupState.sewadar.centre}</strong></div>
                 <div className="popup-exception-detail"><span>Dept</span><strong>{popupState.sewadar.department}</strong></div>
+                {popupState.lastEntry && (
+                  <div className="popup-exception-detail"><span>Last</span><strong>{popupState.lastEntry.type} @ {popupState.lastEntry.centre}</strong></div>
+                )}
                 <p className="popup-exception-note">Exception department. Confirm to mark attendance here.</p>
                 <div className="popup-actions">
-                  {popupState.allowedTypes?.includes('IN') && <button className="btn-in" onClick={() => markAttendance('IN')}>IN</button>}
-                  {popupState.allowedTypes?.includes('OUT') && <button className="btn-out" onClick={() => markAttendance('OUT')}>OUT</button>}
+                  {popupState.allowedTypes?.includes('IN') && <button className="btn-in" onClick={(e) => { e.stopPropagation(); markAttendance('IN') }}>IN</button>}
+                  {popupState.allowedTypes?.includes('OUT') && <button className="btn-out" onClick={(e) => { e.stopPropagation(); markAttendance('OUT') }}>OUT</button>}
                 </div>
                 <button className="btn-cancel" onClick={closePopup}>Cancel</button>
               </div>
@@ -636,8 +709,8 @@ function SewadarFoundCard({ sewadar, allowedTypes, scanCount, todayEntries, onMa
         </div>
       )}
       <div className="popup-actions">
-        {allowedTypes?.includes('IN') && <button className="btn-in" onClick={() => onMark('IN')}>IN</button>}
-        {allowedTypes?.includes('OUT') && <button className="btn-out" onClick={() => onMark('OUT')}>OUT</button>}
+        {allowedTypes?.includes('IN') && <button type="button" className="btn-in" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMark('IN') }}>IN</button>}
+        {allowedTypes?.includes('OUT') && <button type="button" className="btn-out" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMark('OUT') }}>OUT</button>}
       </div>
       <button className="btn-cancel" onClick={onClose}>Cancel</button>
     </>
