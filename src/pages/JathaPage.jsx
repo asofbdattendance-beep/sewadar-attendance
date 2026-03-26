@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext'
 import { ROLES, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
 import {
   Search, Calendar, CheckCircle, ChevronDown, MapPin, AlertTriangle,
-  X, RefreshCw, Plane, Download, Flag, Pencil, Trash2, FileText, WifiOff
+  X, RefreshCw, Plane, Download, Flag, Pencil, Trash2, FileText
 } from 'lucide-react'
 import ConfirmModal from '../components/ConfirmModal'
 import { showError, showSuccess } from '../components/Toast'
@@ -76,7 +76,7 @@ async function checkConflicts(badgeNumber, dateFrom, dateTo) {
 // ─────────────────────────────────────────────
 //  TAB 1 — MARK JATHA ATTENDANCE
 // ─────────────────────────────────────────────
-function MarkJathaTab({ isOnline }) {
+function MarkJathaTab() {
   const { profile } = useAuth()
 
   const isAso        = profile?.role === ROLES.ASO
@@ -465,11 +465,6 @@ function MarkJathaTab({ isOnline }) {
       <div style={{ height: '0.5rem' }} />
 
       <div className="jatha-sticky-footer">
-        {!isOnline && (
-          <div style={{ fontSize: '0.72rem', color: 'rgba(255,213,79,0.7)', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-            <WifiOff size={11} /> Offline — will sync when internet returns
-          </div>
-        )}
         <button className="btn btn-gold btn-full" onClick={submitJatha}
           disabled={submitting || !canSubmit}
           style={{ padding: '0.85rem', fontSize: '0.95rem', fontWeight: 700 }}>
@@ -1251,7 +1246,7 @@ function EditJathaModal({ record, saving, onSave, onClose }) {
 // ─────────────────────────────────────────────
 //  MAIN PAGE
 // ─────────────────────────────────────────────
-export default function JathaPage({ isOnline }) {
+export default function JathaPage() {
   const [tab, setTab] = useState('mark')
 
   const TABS = [
@@ -1286,7 +1281,7 @@ export default function JathaPage({ isOnline }) {
         ))}
       </div>
 
-      {tab === 'mark'  && <MarkJathaTab isOnline={isOnline} />}
+      {tab === 'mark'  && <MarkJathaTab />}
       {tab === 'view'  && <ViewJathaTab />}
       {tab === 'table' && <JathaTableTab />}
     </div>

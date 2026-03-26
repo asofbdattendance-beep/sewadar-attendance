@@ -94,10 +94,6 @@ export function AuthProvider({ children }) {
     await supabase.auth.signOut()
     setUser(null)
     setProfile(null)
-    localStorage.removeItem('attendance_offline_queue')
-    localStorage.removeItem('attendance_cache')
-    localStorage.removeItem('sewadars_cache')
-    localStorage.removeItem('sewadars_cache_time')
   }
 
   return (

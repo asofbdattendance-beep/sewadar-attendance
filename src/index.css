@@ -291,8 +291,6 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .pulse-dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
 .pulse-dot.green { background:var(--green-light); animation:pulseG 2s infinite; }
 @keyframes pulseG { 0%{box-shadow:0 0 0 0 rgba(76,175,80,0.5);} 70%{box-shadow:0 0 0 6px rgba(76,175,80,0);} 100%{box-shadow:0 0 0 0 rgba(76,175,80,0);} }
-.offline-banner { background:#FFF3E0; border-bottom:1px solid #FFE0B2; padding:0.45rem 1rem; text-align:center; font-size:0.78rem; color:var(--amber); font-weight:600; display:flex; align-items:center; justify-content:center; gap:0.5rem; }
-
 /* ── STATS / DASHBOARD ── */
 .stats-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:0.75rem; }
 .stats-grid-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:0.75rem; }
@@ -817,20 +815,6 @@ tr:hover td { background:#FAFCFF; }
 }
 
 /* ── SCANNER — pending sync pill ── */
-.pill-pending {
-  background: rgba(230,81,0,0.12);
-  color: var(--amber);
-  border: 1px solid rgba(230,81,0,0.25);
-  cursor: pointer;
-}
-.pill-pending:hover:not(:disabled) {
-  background: rgba(230,81,0,0.2);
-}
-.pill-pending:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
 /* ── SCANNER — today count dots in popup ── */
 .popup-scan-history {
   display: flex;

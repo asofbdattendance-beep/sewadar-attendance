@@ -1,17 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, getDistanceMetres, ROLES, isExceptionDept } from '../lib/supabase'
-import {
-  lookupBadgeOffline, addToAttendanceCache, addToOfflineQueue,
-  getOfflineQueueCount, syncOfflineQueue, getAttendanceCache,
-  getCacheAge, getTodayEntriesForBadge, checkDuplicateInCache, checkDuplicateInOfflineQueue,
-  checkDuplicateOffline, todayDateStr, nowIST
-} from '../lib/offline'
+import { nowIST } from '../lib/dateUtils'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
-import { Wifi, WifiOff, MapPin, AlertTriangle, CheckCircle, XCircle, Clock, RefreshCw, Activity, PenLine, Map } from 'lucide-react'
-import { showSuccess, showError, showInfo } from '../components/Toast'
+import { MapPin, AlertTriangle, CheckCircle, XCircle, Clock, PenLine } from 'lucide-react'
+import { showError, showInfo } from '../components/Toast'
 
-export default function ScannerPage({ isOnline }) {
+export default function ScannerPage() {
   const { profile } = useAuth()
   const [userLocation, setUserLocation] = useState(null)
   const [centreConfig, setCentreConfig] = useState(null)
@@ -21,8 +16,6 @@ export default function ScannerPage({ isOnline }) {
   const busyRef = useRef(false)
   const [processing, setProcessing] = useState(false)
   const [todayCount, setTodayCount] = useState(0)
-  const [pendingSync, setPendingSync] = useState(0)
-  const [syncing, setSyncing] = useState(false)
   const [recentScans, setRecentScans] = useState([])
   const [manualModal, setManualModal] = useState(false)
   const soundEnabled = localStorage.getItem('sa_sound') !== 'false'
@@ -36,7 +29,6 @@ export default function ScannerPage({ isOnline }) {
   const isAso = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE_USER
 
-  // Load centre config + child centres
   useEffect(() => {
     if (!profile?.centre) return
     Promise.all([
@@ -50,7 +42,6 @@ export default function ScannerPage({ isOnline }) {
     }).catch(e => console.warn('Failed to load centre config:', e))
   }, [profile?.centre])
 
-  // GPS watch
   useEffect(() => {
     if (!navigator.geolocation) { setGpsStatus('failed'); return }
     const success = (pos) => {
@@ -64,16 +55,12 @@ export default function ScannerPage({ isOnline }) {
     return () => { if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current) }
   }, [])
 
-  // Live IN count — centre filter for CENTRE_USER too
   useEffect(() => {
     fetchTodayCount().catch(console.error)
     
-    // Build filter based on role
     let filter = {}
     if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
       filter = { column: 'centre', value: profile.centre }
-    } else if (profile?.role === ROLES.CENTRE_USER && profile?.centre) {
-      // For centre users, listen to all and filter in fetchTodayCount
     }
     
     const channel = supabase.channel('scanner-count')
@@ -104,13 +91,30 @@ export default function ScannerPage({ isOnline }) {
     if (!error) setTodayCount(count || 0)
   }
 
-  // Offline queue + recent scans - no polling needed, updated on enqueue/sync
-  useEffect(() => {
-    setPendingSync(getOfflineQueueCount())
-    setRecentScans(getAttendanceCache().slice(0, 5))
-  }, [])
+  async function fetchRecentScans() {
+    const today = new Date()
+    const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0, 0))
+    let q = supabase.from('attendance')
+      .select('id,badge_number,sewadar_name,type,scan_time,manual_entry')
+      .gte('scan_time', todayUTC.toISOString())
+      .order('scan_time', { ascending: false })
+      .limit(5)
 
-  // Cleanup AudioContext on unmount
+    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
+      q = q.eq('centre', profile.centre)
+    } else if (profile?.role === ROLES.CENTRE_USER && profile?.centre) {
+      const scope = [profile.centre, ...childCentresRef.current]
+      q = q.in('centre', scope)
+    }
+
+    const { data } = await q
+    if (data) setRecentScans(data)
+  }
+
+  useEffect(() => {
+    fetchRecentScans().catch(console.error)
+  }, [profile?.centre, profile?.role])
+
   useEffect(() => {
     return () => {
       if (audioCtxRef.current) {
@@ -120,23 +124,6 @@ export default function ScannerPage({ isOnline }) {
     }
   }, [])
 
-  async function handleManualSync() {
-    if (!isOnline) { showInfo('Cannot sync while offline'); return }
-    setSyncing(true)
-    const result = await syncOfflineQueue(supabase)
-    setPendingSync(getOfflineQueueCount())
-    setSyncing(false)
-    fetchTodayCount()
-    
-    if (result.synced > 0 && result.failed === 0) {
-      showSuccess(`Synced ${result.synced} record${result.synced > 1 ? 's' : ''}`)
-    } else if (result.synced > 0 && result.failed > 0) {
-      showInfo(`Synced ${result.synced}, ${result.failed} failed`)
-    } else if (result.failed > 0) {
-      showError(`${result.failed} failed to sync`)
-    }
-  }
-
   function playBeep(type) {
     if (!soundEnabled) return
     try {
@@ -144,7 +131,6 @@ export default function ScannerPage({ isOnline }) {
       const ctx = audioCtxRef.current
       
       if (type === 'IN') {
-        // Short high beep for IN
         const osc = ctx.createOscillator()
         const gain = ctx.createGain()
         osc.connect(gain); gain.connect(ctx.destination)
@@ -154,127 +140,95 @@ export default function ScannerPage({ isOnline }) {
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
         osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.15)
       } else {
-        // Double low beep for OUT
         const osc = ctx.createOscillator()
         const gain = ctx.createGain()
         osc.connect(gain); gain.connect(ctx.destination)
         osc.frequency.value = 440
         osc.type = 'sine'
         gain.gain.setValueAtTime(0.3, ctx.currentTime)
-        gain.gain.setValueAtTime(0.3, ctx.currentTime + 0.1)
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2)
-        gain.gain.setValueAtTime(0.001, ctx.currentTime + 0.2)
         osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.25)
       }
     } catch (e) { console.warn('Beep failed:', e) }
-    // Vibration: short for IN, double for OUT
     if (navigator.vibrate) {
       navigator.vibrate(type === 'IN' ? [30] : [30, 50, 30])
     }
   }
 
-  // Ladder logic
   function computeAllowedTypes(todayEntries) {
     if (!todayEntries || todayEntries.length === 0) return ['IN']
     const last = todayEntries[todayEntries.length - 1]
     return last.type === 'IN' ? ['OUT'] : ['IN']
   }
 
-  // FIX #7: Complete dependency array for handleScan
-  // busyRef prevents any new scan from being processed while a popup is open
-  // or while an existing scan is in-flight. Using a ref avoids stale closure issues.
   const popupRef = useRef(null)
 
-  // Track popupState in ref to avoid stale closure
   useEffect(() => {
     popupRef.current = popupState
   }, [popupState])
 
-  // State ref to avoid recreating handleScan on every render
   const stateRef = useRef({})
   useEffect(() => {
-    stateRef.current = { profile, userLocation, centreConfig, childCentres, isAso, isCentreUser, isOnline }
-  }, [profile, userLocation, centreConfig, childCentres, isAso, isCentreUser, isOnline])
+    stateRef.current = { profile, userLocation, centreConfig, childCentres, isAso, isCentreUser }
+  }, [profile, userLocation, centreConfig, childCentres, isAso, isCentreUser])
 
-  // Submitting state to prevent double-trigger
   const [submitting, setSubmitting] = useState(false)
 
   const handleScan = useCallback(async (badge) => {
-    // Drop scan immediately if popup is open or scan is in-flight
     if (busyRef.current) return
 
     const now = Date.now()
-    // Global throttle - prevent rapid different badge scans
     if (now - lastScanRef.current.time < 800) return
-    // Also debounce exact same badge within 2 seconds
     if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) return
 
     busyRef.current = true
 
-    // Fallback unlock after 3 seconds if popup fails
     setTimeout(() => {
       if (busyRef.current && !popupRef.current) {
         busyRef.current = false
       }
     }, 3000)
 
-    const { isOnline: online, profile: userProfile, userLocation: location, centreConfig: cfg, childCentres: children, isAso: isAsoUser, isCentreUser: isCentreUserRole } = stateRef.current
+    const { profile: userProfile, userLocation: location, centreConfig: cfg, childCentres: children, isAso: isAsoUser, isCentreUser: isCentreUserRole } = stateRef.current
 
     let found = null
     try {
-      if (online) {
-        const { data, error } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
-        if (error) throw error
-        found = data
-      } else {
-        found = lookupBadgeOffline(badge)
-      }
+      const { data, error } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
+      if (error) throw error
+      found = data
     } catch (e) { console.warn('Sewadar lookup failed:', e) }
 
     if (!found) {
       setPopupState({ type: 'not_found', badge })
       setProcessing(false)
-      // busyRef stays true — popup is now open, block further scans
       return
     }
 
     await processSewadar(found, badge, userProfile, location, cfg, children, isAsoUser, isCentreUserRole)
-  }, []) // Empty deps - using refs
+  }, [])
 
   async function processSewadar(found, badge, profile, userLocation, centreConfig, childCentres, isAso, isCentreUser) {
     const now = Date.now()
     setProcessing(true)
     const b = badge || found.badge_number
 
-    let todayEntries = []
-    if (isOnline) {
-      // Use UTC start of today for consistency with DB timestamps
-      const today = new Date()
-      const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0, 0))
-      let q = supabase.from('attendance').select('*').eq('badge_number', b)
-        .gte('scan_time', todayUTC.toISOString()).order('scan_time', { ascending: true })
+    const today = new Date()
+    const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 0, 0, 0, 0))
+    let q = supabase.from('attendance').select('*').eq('badge_number', b)
+      .gte('scan_time', todayUTC.toISOString()).order('scan_time', { ascending: true })
 
-      // Exception-dept sewadars travel cross-centre — their attendance is always stored
-      // under their HOME centre. Query by their centre, not the scanner's centre,
-      // so IN/OUT ladder works correctly regardless of where they're scanned.
-      const isExceptionSewadar = isExceptionDept(found.department)
+    const isExceptionSewadar = isExceptionDept(found.department)
 
-      if (isExceptionSewadar) {
-        // No centre filter — query all of today's records for this badge across all centres
-        // (they could have been scanned IN at one centre and OUT at another)
-      } else if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
-        q = q.eq('centre', profile.centre)
-      } else if (isCentreUser && profile?.centre) {
-        const scope = [profile.centre, ...childCentres]
-        q = q.in('centre', scope)
-      }
-
-      const { data, error } = await q
-      if (!error) todayEntries = data || []
-    } else {
-      // Offline mode — cache holds all of today's entries regardless of centre
-      todayEntries = getTodayEntriesForBadge(b)
+    if (isExceptionSewadar) {
+    } else if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
+      q = q.eq('centre', profile.centre)
+    } else if (isCentreUser && profile?.centre) {
+      const scope = [profile.centre, ...childCentres]
+      q = q.in('centre', scope)
     }
+
+    const { data, error } = await q
+    const todayEntries = (!error && data) ? data : []
 
     const lastEntry = todayEntries.length > 0 ? todayEntries[todayEntries.length - 1] : null
     if (lastEntry?.scan_time) {
@@ -291,7 +245,6 @@ export default function ScannerPage({ isOnline }) {
     const isChildCentre = isCentreUser && childCentres.includes(found.centre)
     const isException = isExceptionDept(found.department)
 
-    // Geo fencing check - ALWAYS run this when geo is enabled
     const geoEnabled = centreConfig?.geo_enabled === true
     const hasGeoCoords = centreConfig?.latitude != null && centreConfig?.longitude != null
     console.log('[Geo] Check:', { 
@@ -319,32 +272,22 @@ export default function ScannerPage({ isOnline }) {
       setPopupState({ type: 'invalid_status', sewadar: found, badge: b }); setProcessing(false); return
     }
 
-    // Authorization scope check
     const scopeCentres = [profile?.centre, ...childCentres]
     const inScope = scopeCentres.includes(found.centre)
 
-    // 1. Exception dept sewadar — always show confirmation, even if in scope
     if (isException) {
       setPopupState({ type: 'exception_confirm', sewadar: found, badge: b, allowedTypes, scanCount, todayEntries: todayEntries || [], isSameCentre: inScope, lastEntry })
-    }
-    // 2. ASO — unrestricted
-    else if (isAso) {
+    } else if (isAso) {
       setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount, todayEntries })
-    }
-    // 3. Centre User — scoped to own + child centres
-    else if (isCentreUser) {
+    } else if (isCentreUser) {
       if (inScope) {
         setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount, todayEntries })
       } else {
         setPopupState({ type: 'auth_fail', sewadar: found, badge: b, message: `${found.centre} — not in your scope` }); setProcessing(false); return
       }
-    }
-    // 4. SC_SP User — scoped to own centre only
-    else if (isSameCentre) {
+    } else if (isSameCentre) {
       setPopupState({ type: 'found', sewadar: found, badge: b, allowedTypes, scanCount, todayEntries })
-    }
-    // 5. Out of scope / not authorised
-    else {
+    } else {
       setPopupState({ type: 'auth_fail', sewadar: found, badge: b }); setProcessing(false); return
     }
     setProcessing(false)
@@ -380,57 +323,51 @@ export default function ScannerPage({ isOnline }) {
         submitted_at: scanTime,
       }
 
-      // Unified duplicate check - covers DB, queue, and cache
-      const isDuplicateOffline = checkDuplicateInOfflineQueue(record.badge_number, record.type)
-      const isDuplicateCache = checkDuplicateInCache(record.badge_number, record.type)
-      let isDuplicateDB = false
-      if (isOnline) {
-        isDuplicateDB = await checkDuplicateOffline(supabase, record)
-      }
+      const todayStart = new Date()
+      const todayStartUTC = new Date(Date.UTC(todayStart.getUTCFullYear(), todayStart.getUTCMonth(), todayStart.getUTCDate(), 0, 0, 0, 0))
+
+      const { data: existing } = await supabase
+        .from('attendance')
+        .select('id')
+        .eq('badge_number', record.badge_number)
+        .eq('type', record.type)
+        .gte('scan_time', todayStartUTC.toISOString())
+        .limit(1)
+        .maybeSingle()
       
-      if ((isDuplicateOffline || isDuplicateCache || isDuplicateDB) && !overrideNote) {
+      if (existing && !overrideNote) {
         showInfo('Duplicate scan already exists')
         busyRef.current = false
         setSubmitting(false)
         return
       }
 
-      addToAttendanceCache({ ...record, id: Date.now() })
-      setRecentScans(getAttendanceCache().slice(0, 5))
       playBeep(type)
       setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: type, time: scanTime })
       setTimeout(closePopup, 1200)
 
-      if (isOnline) {
-        const { error: insertError } = await supabase.from('attendance').insert(record)
-        
-        if (insertError) {
-          if (insertError.code === '23505') {
-            showInfo('Duplicate - already exists in database')
-          } else {
-            console.warn('Insert failed, saving offline:', insertError.message)
-            addToOfflineQueue(record)
-            setPendingSync(getOfflineQueueCount())
-            showInfo('Saved offline — will sync when connection returns')
-          }
+      const { error: insertError } = await supabase.from('attendance').insert(record)
+      
+      if (insertError) {
+        if (insertError.code === '23505') {
+          showInfo('Duplicate - already exists in database')
         } else {
-          try {
-            await supabase.from('logs').insert({
-              user_badge: profile.badge_number,
-              action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
-              details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
-              timestamp: scanTime,
-              device_id: navigator.userAgent.slice(0, 50),
-            })
-          } catch (e) {
-            console.warn('Log insert failed:', e)
-          }
-          fetchTodayCount()
+          showError('Error: ' + insertError.message)
         }
       } else {
-        addToOfflineQueue(record)
-        setPendingSync(getOfflineQueueCount())
-        showInfo('Saved offline — will sync when connection returns')
+        try {
+          await supabase.from('logs').insert({
+            user_badge: profile.badge_number,
+            action: overrideNote ? 'MARK_ATTENDANCE_OVERRIDE' : 'MARK_ATTENDANCE',
+            details: `${type} for ${popupState.sewadar.badge_number}${overrideNote ? ` [${overrideNote}]` : ''}`,
+            timestamp: scanTime,
+            device_id: navigator.userAgent.slice(0, 50),
+          })
+        } catch (e) {
+          console.warn('Log insert failed:', e)
+        }
+        fetchTodayCount()
+        fetchRecentScans()
       }
     } catch (err) {
       console.error('markAttendance error:', err)
@@ -444,11 +381,10 @@ export default function ScannerPage({ isOnline }) {
   const closePopup = () => {
     setPopupState(null)
     lastScanRef.current = { badge: null, time: 0 }
-    busyRef.current = false   // unblock scanner for next badge
+    busyRef.current = false
     if (scannerRef.current) scannerRef.current.resume()
   }
 
-  // Fallback: reset busyRef if popup fails to render
   useEffect(() => {
     if (busyRef.current && !popupState) {
       const timer = setTimeout(() => {
@@ -465,16 +401,6 @@ export default function ScannerPage({ isOnline }) {
       <div className="scanner-status-bar">
         <span className="scanner-centre-name">{profile?.centre}</span>
         <div className="scanner-indicators">
-          {pendingSync > 0 && (
-            <button className="scanner-pill pill-pending" onClick={handleManualSync} disabled={!isOnline || syncing} title="Tap to sync offline records">
-              {syncing ? <RefreshCw size={11} style={{ animation: 'spin 1s linear infinite' }} /> : <Activity size={11} />}
-              {pendingSync} pending
-            </button>
-          )}
-          <span className={`scanner-pill ${isOnline ? 'pill-online' : 'pill-offline'}`}>
-            {isOnline ? <Wifi size={11} /> : <WifiOff size={11} />}
-            {isOnline ? 'Online' : 'Offline'}
-          </span>
           <span
             className={`scanner-pill ${gpsStatus === 'success' ? 'pill-gps-ok' : gpsStatus === 'failed' ? 'pill-gps-fail' : 'pill-gps-loading'}`}
             onClick={gpsStatus === 'failed' ? () => {
@@ -494,11 +420,6 @@ export default function ScannerPage({ isOnline }) {
             <MapPin size={11} />
             GEO {centreConfig?.geo_enabled ? 'ON' : 'OFF'}
           </span>
-          {(() => { const age = getCacheAge(); return age !== null ? (
-            <span className="scanner-pill pill-gps-ok" title="Sewadar data cache age">
-              ⚡ {age === 0 ? 'fresh' : `${age}m`}
-            </span>
-          ) : null })()}
         </div>
       </div>
 
@@ -523,7 +444,7 @@ export default function ScannerPage({ isOnline }) {
                 <span style={{ width: 32, height: 20, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 800, background: r.type === 'IN' ? 'rgba(76,175,125,0.15)' : 'rgba(224,92,92,0.15)', color: r.type === 'IN' ? 'var(--green)' : 'var(--red)', flexShrink: 0 }}>{r.type}</span>
                 <span style={{ fontWeight: 600, fontSize: '0.82rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sewadar_name}</span>
                 <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>
-                  {new Date(r.scan_time || r.queued_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                  {new Date(r.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
                 </span>
                 {r.manual_entry && (
                   <span style={{ fontSize: '0.6rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 5px', fontWeight: 700 }}>M</span>
@@ -663,11 +584,9 @@ export default function ScannerPage({ isOnline }) {
         </div>
       )}
 
-      {/* Manual Entry Modal — Centre Admins + ASO */}
       {manualModal && (
         <ManualEntryModal
           profile={profile}
-          isOnline={isOnline}
           childCentres={childCentres}
           userLocation={userLocation}
           centreConfig={centreConfig}
@@ -677,8 +596,7 @@ export default function ScannerPage({ isOnline }) {
             playBeep(record.type)
             setPopupState({ type: 'manual_success', sewadar: { badge_number: record.badge_number, sewadar_name: record.sewadar_name }, attendanceType: record.type, time: record.scan_time })
             fetchTodayCount()
-            setRecentScans(getAttendanceCache().slice(0, 5))
-            // Longer timeout for manual entries so user can clearly see confirmation
+            fetchRecentScans()
             setTimeout(closePopup, 3000)
           }}
         />
@@ -762,16 +680,15 @@ function RecentPopup({ popupState, onOverride, onClose, isAso }) {
   )
 }
 
-// ─────────────────────────────────────────────
-//  MANUAL ENTRY MODAL — Centre Admin + ASO
-// ─────────────────────────────────────────────
-function ManualEntryModal({ profile, isOnline, childCentres, userLocation, centreConfig, onClose, onSuccess }) {
+function ManualEntryModal({ profile, childCentres, userLocation, centreConfig, onClose, onSuccess }) {
   const [search, setSearch] = useState('')
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
   const [selected, setSelected] = useState(null)
   const [attendanceType, setAttendanceType] = useState('IN')
-  const [scanDate, setScanDate] = useState(todayDateStr())
+  const [scanDate, setScanDate] = useState(() => {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date())
+  })
   const [scanTime, setScanTime] = useState(() => {
     const now = new Date()
     return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
@@ -815,7 +732,6 @@ function ManualEntryModal({ profile, isOnline, childCentres, userLocation, centr
     setSubmitting(true)
     setError('')
 
-    // Geo check for Manual Entry
     const geoEnabled = centreConfig?.geo_enabled === true
     const hasGeoCoords = centreConfig?.latitude != null && centreConfig?.longitude != null
     console.log('[Geo Manual] Check:', { userLocation: !!userLocation, geoEnabled, hasGeoCoords, centreConfig })
@@ -847,55 +763,50 @@ function ManualEntryModal({ profile, isOnline, childCentres, userLocation, centr
       submitted_at: new Date().toISOString(),
     }
 
-    if (isOnline) {
-      setChecking(true)
-      const isDuplicate = await checkDuplicateOffline(supabase, record)
-      setChecking(false)
-      
-      if (isDuplicate) {
-        setError('Duplicate attendance already exists for today')
-        setSubmitting(false)
-        return
-      }
-
-      const { error: dbErr } = await supabase.from('attendance').insert(record)
-      if (dbErr) { 
-        if (dbErr.code === '23505') {
-          setError('Duplicate attendance already exists')
-        } else {
-          setError(dbErr.message)
-        }
-        setSubmitting(false) 
-        return 
-      }
-
-      try {
-        await supabase.from('logs').insert({
-          user_badge: profile.badge_number,
-          action: 'MANUAL_ENTRY',
-          details: `Manual ${attendanceType} for ${selected.badge_number} — "${remark.trim()}"`,
-          timestamp: scanTimeISO,
-          device_id: navigator.userAgent.slice(0, 50),
-        })
-      } catch (e) {
-        console.warn('Log insert failed:', e)
-      }
-    } else {
-      if (checkDuplicateInOfflineQueue(record.badge_number, record.type)) {
-        setError('Duplicate in offline queue')
-        setSubmitting(false)
-        return
-      }
-      addToOfflineQueue(record)
+    setChecking(true)
+    const todayStart = new Date()
+    const todayStartUTC = new Date(Date.UTC(todayStart.getUTCFullYear(), todayStart.getUTCMonth(), todayStart.getUTCDate(), 0, 0, 0, 0))
+    const { data: existing } = await supabase
+      .from('attendance')
+      .select('id')
+      .eq('badge_number', record.badge_number)
+      .eq('type', record.type)
+      .gte('scan_time', todayStartUTC.toISOString())
+      .limit(1)
+      .maybeSingle()
+    setChecking(false)
+    
+    if (existing) {
+      setError('Duplicate attendance already exists for today')
+      setSubmitting(false)
+      return
     }
 
-    // Update local cache so recent scans list reflects manual entry immediately
-    addToAttendanceCache({ ...record, id: Date.now() })
+    const { error: dbErr } = await supabase.from('attendance').insert(record)
+    if (dbErr) { 
+      if (dbErr.code === '23505') {
+        setError('Duplicate attendance already exists')
+      } else {
+        setError(dbErr.message)
+      }
+      setSubmitting(false) 
+      return 
+    }
+
+    try {
+      await supabase.from('logs').insert({
+        user_badge: profile.badge_number,
+        action: 'MANUAL_ENTRY',
+        details: `Manual ${attendanceType} for ${selected.badge_number} — "${remark.trim()}"`,
+        timestamp: scanTimeISO,
+        device_id: navigator.userAgent.slice(0, 50),
+      })
+    } catch (e) {
+      console.warn('Log insert failed:', e)
+    }
 
     setSubmitting(false)
-    // Call onSuccess — parent closes modal and shows confirmation popup
     onSuccess(record)
-    // Do NOT call onClose() here — onSuccess already handles modal teardown
   }
 
   return (
@@ -909,7 +820,6 @@ function ManualEntryModal({ profile, isOnline, childCentres, userLocation, centr
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '1.3rem', lineHeight: 1 }}>×</button>
         </div>
 
-        {/* Badge search */}
         <label className="label">Find Sewadar *</label>
         <div style={{ position: 'relative', marginBottom: '1rem' }}>
           <input
@@ -960,7 +870,6 @@ function ManualEntryModal({ profile, isOnline, childCentres, userLocation, centr
           </div>
         )}
 
-        {/* Attendance type */}
         <label className="label">Attendance Type *</label>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '1rem' }}>
           {['IN', 'OUT'].map(t => (
@@ -971,7 +880,6 @@ function ManualEntryModal({ profile, isOnline, childCentres, userLocation, centr
           ))}
         </div>
 
-        {/* Date & Time */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1rem' }}>
           <div>
             <label className="label">Date *</label>
@@ -986,7 +894,6 @@ function ManualEntryModal({ profile, isOnline, childCentres, userLocation, centr
           </div>
         </div>
 
-        {/* Remark — MANDATORY */}
         <label className="label">Reason for Manual Entry * <span style={{ color: 'var(--red)', fontWeight: 700 }}>(Required)</span></label>
         <textarea
           className="input"
@@ -1003,12 +910,6 @@ function ManualEntryModal({ profile, isOnline, childCentres, userLocation, centr
         {error && (
           <div style={{ background: 'var(--red-bg)', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 8, padding: '0.6rem 0.85rem', color: 'var(--red)', fontSize: '0.82rem', marginBottom: '0.75rem' }}>
             {error}
-          </div>
-        )}
-
-        {!isOnline && (
-          <div style={{ background: 'var(--amber-bg)', border: '1px solid rgba(230,81,0,0.2)', borderRadius: 8, padding: '0.5rem 0.75rem', color: 'var(--amber)', fontSize: '0.78rem', fontWeight: 600, marginBottom: '0.75rem', display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-            <Map size={13} /> Offline — entry will be saved locally and synced later
           </div>
         )}
 

@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
-import { syncOfflineQueue, getOfflineQueueCount, populateOfflineCache, populateAttendanceCache } from './lib/offline'
 import { supabase, ROLES } from './lib/supabase'
 import LoginPage from './pages/LoginPage'
 import ScannerPage from './pages/ScannerPage'
@@ -11,7 +10,8 @@ import ProfilePage from './pages/ProfilePage'
 import FlagsPage from './pages/FlagsPage'
 import JathaPage from './pages/JathaPage'
 import ToastContainer from './components/Toast'
-import { Scan, FileText, User, Shield, WifiOff, Flag, Plane, Clock, RefreshCw } from 'lucide-react'
+import NoInternet from './components/NoInternet'
+import { Scan, FileText, User, Shield, Flag, Plane, Clock, RefreshCw } from 'lucide-react'
 
 function SessionExpiredScreen({ signOut }) {
   return (
@@ -23,9 +23,6 @@ function SessionExpiredScreen({ signOut }) {
         <h2 style={{ color: 'var(--gold)', marginBottom: '0.5rem' }}>Session Expired</h2>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem', marginBottom: '0.5rem', lineHeight: 1.5 }}>
           You were automatically logged out after 60 minutes of inactivity.
-        </p>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '1.5rem' }}>
-          All pending offline scans are preserved and will sync after re-login.
         </p>
         <button className="btn btn-gold" onClick={signOut}>Back to Login</button>
       </div>
@@ -60,11 +57,10 @@ function LoadingScreen() {
 
 function AppLayout() {
   const { profile, loading, sessionExpired, signOut, resetActivity, sessionWarning } = useAuth()
-  const [isOnline, setIsOnline] = useState(navigator.onLine)
-  const [pendingSync, setPendingSync] = useState(0)
   const [openFlagCount, setOpenFlagCount] = useState(0)
   const [pwaUpdate, setPwaUpdate] = useState(false)
   const [realtimeStatus, setRealtimeStatus] = useState('disconnected')
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -76,20 +72,17 @@ function AppLayout() {
   }, [])
 
   useEffect(() => {
-    const online = () => {
-      setIsOnline(true)
-      syncOfflineQueue(supabase).then(() => setPendingSync(getOfflineQueueCount())).catch(console.warn)
-      populateOfflineCache(supabase)
-      populateAttendanceCache(supabase)
-    }
+    const online = () => setIsOnline(true)
     const offline = () => setIsOnline(false)
     window.addEventListener('online', online)
     window.addEventListener('offline', offline)
-    setPendingSync(getOfflineQueueCount())
-    if (navigator.onLine) {
-      populateOfflineCache(supabase)
-      populateAttendanceCache(supabase)
+    return () => {
+      window.removeEventListener('online', online)
+      window.removeEventListener('offline', offline)
     }
+  }, [])
+
+  useEffect(() => {
     async function fetchFlagCount() {
       if (!profile) return
       let query = supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open')
@@ -119,19 +112,15 @@ function AppLayout() {
       })
 
     return () => {
-      window.removeEventListener('online', online)
-      window.removeEventListener('offline', offline)
       clearInterval(flagInterval)
       document.removeEventListener('visibilitychange', onVisible)
       supabase.removeChannel(rtChannel)
     }
-  }, [])
+  }, [profile])
 
-  // Note: sessionExpired screen shows until user clicks Back to Login
-  // resetActivity is called on signOut in AuthContext
-
-  // ── Conditional screens (after all hooks) ──
   if (loading) return <LoadingScreen />
+
+  if (!isOnline) return <NoInternet onRetry={() => setIsOnline(navigator.onLine)} />
 
   if (sessionExpired) return <SessionExpiredScreen signOut={signOut} />
 
@@ -162,11 +151,6 @@ function AppLayout() {
           Sewadar Attendance
           <span className="navbar-pill">{rolePill}</span>
         </div>
-        {!isOnline && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(230,81,0,0.25)', border: '1px solid rgba(255,255,255,0.3)', padding: '0.25rem 0.6rem', borderRadius: '6px', color: '#FFD54F', fontSize: '0.72rem', fontWeight: 600 }}>
-            <WifiOff size={12} /> OFFLINE {pendingSync > 0 ? `· ${pendingSync}` : ''}
-          </div>
-        )}
       </nav>
 
       {sessionWarning && (
@@ -187,15 +171,6 @@ function AppLayout() {
           <button onClick={resetActivity} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ffc107', fontWeight: 700, textDecoration: 'underline', fontSize: '0.8rem', fontFamily: 'inherit', padding: 0 }}>
             Stay signed in
           </button>
-        </div>
-      )}
-
-      {!isOnline && (
-        <div className="offline-banner">
-          <WifiOff size={13} /> Offline mode — scans saved locally, will sync when internet returns
-          <span style={{ marginLeft: 'auto', fontSize: '0.72rem', opacity: 0.7 }}>
-            Realtime: {realtimeStatus === 'connected' ? '✓ connected' : '✕ disconnected'}
-          </span>
         </div>
       )}
 
@@ -221,7 +196,6 @@ function AppLayout() {
         </div>
       )}
 
-      {/* Desktop horizontal nav — shown on md+ */}
       <nav className="desktop-nav">
         {navItems.map(({ path, label, icon: Icon, badge }) => (
           <button
@@ -240,17 +214,16 @@ function AppLayout() {
 
       <div style={{ flex: 1 }}>
         <Routes>
-          <Route path="/scan" element={<ScannerPage isOnline={isOnline} />} />
+          <Route path="/scan" element={<ScannerPage />} />
           <Route path="/records" element={(isAso || isCentreUser || isScSpUser) ? <RecordsPage /> : <Navigate to="/scan" replace />} />
-          <Route path="/jatha" element={(isAso || isCentreUser) ? <JathaPage isOnline={isOnline} /> : <Navigate to="/scan" replace />} />
+          <Route path="/jatha" element={(isAso || isCentreUser) ? <JathaPage /> : <Navigate to="/scan" replace />} />
           <Route path="/flags" element={(isAso || isScSpUser) ? <FlagsPage /> : <Navigate to="/scan" replace />} />
-          <Route path="/super-admin" element={isAso ? <SuperAdminPage isOnline={isOnline} /> : <Navigate to="/scan" replace />} />
-          <Route path="/profile" element={<ProfilePage isOnline={isOnline} />} />
+          <Route path="/super-admin" element={isAso ? <SuperAdminPage /> : <Navigate to="/scan" replace />} />
+          <Route path="/profile" element={<ProfilePage />} />
           <Route path="*" element={<Navigate to="/scan" replace />} />
         </Routes>
       </div>
 
-      {/* Mobile bottom nav — shown on mobile only */}
       <nav className="bottom-nav">
         {navItems.map(({ path, label, icon: Icon, badge }) => (
           <button

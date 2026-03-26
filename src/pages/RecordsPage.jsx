@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, FLAG_TYPES } from '../lib/supabase'
-import { todayDateStr } from '../lib/offline'
+import { todayDateStr } from '../lib/dateUtils'
 import {
   Search, Download, Flag, X, RefreshCw,
   ChevronDown, Trash2, FileSpreadsheet, BarChart2,

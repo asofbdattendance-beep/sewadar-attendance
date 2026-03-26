@@ -10,12 +10,12 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
-import { todayDateStr } from '../lib/offline'
+import { todayDateStr } from '../lib/dateUtils'
 import {
   UserPlus, Trash2, Shield, MapPin, ToggleLeft, ToggleRight,
   RefreshCw, Download, FileSpreadsheet, Calendar,
   ChevronDown, ChevronRight, Users, Building2, Plane,
-  Pencil, X, Check, Search, PlusCircle, Eye, EyeOff, Lock, WifiOff
+  Pencil, X, Check, Search, PlusCircle, Eye, EyeOff, Lock
 } from 'lucide-react'
 import CentreComboBox from '../components/CentreComboBox'
 import SkeletonRows from '../components/SkeletonRows'
@@ -27,7 +27,7 @@ import { showSuccess, showError } from '../components/Toast'
 const PAGE_SIZE = 50
 const SEARCH_DEBOUNCE = 300
 
-export default function SuperAdminPage({ isOnline }) {
+export default function SuperAdminPage() {
   const { profile } = useAuth()
 
   // ── ALL HOOKS FIRST ──
@@ -623,15 +623,8 @@ export default function SuperAdminPage({ isOnline }) {
       {tab === 'users' && (
         <div>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1rem' }}>
-            <div style={{ display:'flex', flexDirection:'column', gap:'0.25rem' }}>
               <p className="text-muted text-xs">New users are created via a secure server-side Edge Function.</p>
-              {!isOnline && (
-                <span style={{ fontSize:'0.72rem', color:'rgba(255,213,79,0.7)', display:'flex', alignItems:'center', gap:'0.3rem' }}>
-                  <WifiOff size={11} /> Offline — user creation unavailable
-                </span>
-              )}
-            </div>
-            <button className="btn btn-gold" onClick={() => setShowAddUser(true)} disabled={!isOnline}>
+            <button className="btn btn-gold" onClick={() => setShowAddUser(true)}>
               <UserPlus size={15} /> Add User
             </button>
           </div>
