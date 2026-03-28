@@ -525,39 +525,6 @@ export default function ScannerPage() {
 
       <BarcodeScanner ref={scannerRef} onScan={handleScan} />
 
-      {/* Debug Test Button */}
-      <div style={{ margin: '0.5rem 0.1rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-        <button
-          onClick={() => handleScan('FB5991GA0070')}
-          style={{
-            background: 'rgba(201,168,76,0.1)',
-            border: '1px dashed rgba(201,168,76,0.4)',
-            borderRadius: 8,
-            padding: '0.5rem',
-            fontSize: '0.75rem',
-            fontFamily: 'monospace',
-            color: 'var(--gold)',
-            cursor: 'pointer',
-            textAlign: 'center',
-          }}
-        >
-          [DEBUG] Simulate scan: FB5991GA0070
-        </button>
-        {popupState && (
-          <div style={{
-            background: 'rgba(59,130,246,0.08)',
-            border: '1px solid rgba(59,130,246,0.25)',
-            borderRadius: 6,
-            padding: '0.4rem 0.7rem',
-            fontSize: '0.7rem',
-            fontFamily: 'monospace',
-            color: 'var(--blue)',
-          }}>
-            popupState.type = <strong>{popupState.type}</strong> | badge = {popupState.badge || popupState.sewadar?.badge_number || '—'}
-          </div>
-        )}
-      </div>
-
       {recentScans.length > 0 && (
         <div style={{ margin: '0.85rem 0 0', padding: '0 0.1rem' }}>
           <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: '0.45rem' }}>Recent Scans</div>
