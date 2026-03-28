@@ -36,6 +36,7 @@ export default function ScannerPage() {
   const audioCtxRef = useRef(null)
   const childCentresRef = useRef([])
   const pendingScanRef = useRef(null)
+  const safetyTimerRef = useRef(null)
 
   const isAso = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE
@@ -81,6 +82,13 @@ export default function ScannerPage() {
   useEffect(() => {
     fetchRecentScans().catch(console.error)
   }, [profile?.centre, profile?.role, profile])
+
+  useEffect(() => {
+    if (popupState && safetyTimerRef.current) {
+      clearTimeout(safetyTimerRef.current)
+      safetyTimerRef.current = null
+    }
+  }, [popupState])
 
   async function fetchTodayCount() {
     const today = todayDateStr()
@@ -157,19 +165,20 @@ export default function ScannerPage() {
   }
 
   const handleScan = useCallback(async (badge) => {
-    if (busyRef.current) return
+    console.log('[Scanner] handleScan called with:', badge)
+    if (busyRef.current) { console.log('[Scanner] BLOCKED: busyRef is true'); return }
 
     const now = Date.now()
-    if (now - lastScanRef.current.time < 800) return
-    if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) return
+    if (now - lastScanRef.current.time < 800) { console.log('[Scanner] BLOCKED: debounce 800ms'); return }
+    if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) { console.log('[Scanner] BLOCKED: same badge within 2s'); return }
 
     busyRef.current = true
 
-    setTimeout(() => {
-      if (busyRef.current && !popupState) {
-        busyRef.current = false
-      }
-    }, 3000)
+    if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
+    safetyTimerRef.current = setTimeout(() => {
+      if (busyRef.current) busyRef.current = false
+      safetyTimerRef.current = null
+    }, 5000)
 
     const { profile: _userProfile, userLocation: location, centreConfig: cfg } = { profile, userLocation, centreConfig }
 
@@ -183,42 +192,44 @@ export default function ScannerPage() {
       lookupError = e?.message || 'Database error'
     }
 
+    console.log('[Scanner] Sewadar lookup:', found ? 'FOUND' : 'NOT FOUND', lookupError || '')
+
     if (!found) {
       setPopupState({ type: 'not_found', badge, message: lookupError ? `Lookup failed: ${lookupError}` : null })
       return
     }
 
-    // Check badge status
     const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
     const badgeStatus = (found.badge_status || '').toLowerCase().trim()
+    console.log('[Scanner] Badge status:', badgeStatus)
     if (!ALLOWED_STATUSES.includes(badgeStatus)) {
       setPopupState({ type: 'invalid_status', sewadar: found, badge })
       return
     }
 
-    // Check centre scope
     const scopeCentres = [profile?.centre, ...childCentresRef.current]
     const inScope = scopeCentres.includes(found.centre)
     const isException = isExceptionDept(found.department)
+    console.log('[Scanner] Scope check:', { inScope, isException, isAso, centre: found.centre })
 
     if (!isException && !inScope && !isAso) {
       setPopupState({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
       return
     }
 
-    // Geo check
     if (location && cfg?.geo_enabled === true && cfg?.latitude != null && cfg?.longitude != null) {
       const dist = getDistanceMetres(location.lat, location.lng, cfg.latitude, cfg.longitude)
       const radius = cfg.geo_radius || 200
       if (dist > radius) {
+        console.log('[Scanner] Geo fail:', dist + 'm')
         setPopupState({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
         return
       }
     }
 
-    // Check if late night (Watch & Ward detection)
     const scanTime = nowIST()
     const isLateNight = isLateNightScan(scanTime)
+    console.log('[Scanner] Late night:', isLateNight)
 
     if (isLateNight) {
       pendingScanRef.current = { found, badge: badge, scanTime }
@@ -226,8 +237,9 @@ export default function ScannerPage() {
       return
     }
 
-    // Proceed with normal evaluation
+    console.log('[Scanner] Calling processSewadar...')
     await processSewadar(found, badge, scanTime)
+    console.log('[Scanner] processSewadar returned')
   }, [profile, userLocation, centreConfig, childCentres, isAso])
 
   async function handleWatchWardConfirm(isWatchWard) {
@@ -242,6 +254,7 @@ export default function ScannerPage() {
 
   async function processSewadar(found, badge, scanTime, watchWardConfirm = false) {
     const scanTimeISO = new Date(scanTime.replace(' ', 'T')).toISOString()
+    console.log('[Scanner] processSewadar started for:', badge)
     
     let result
     try {
@@ -253,21 +266,19 @@ export default function ScannerPage() {
         isAso,
         isCentreUser,
       })
+      console.log('[Scanner] evaluateScan result:', JSON.stringify(result))
     } catch (err) {
-      console.error('[Scanner] evaluateScan error:', err)
+      console.error('[Scanner] evaluateScan threw:', err)
       result = { status: 'blocked', reason: 'system_error', message: err.message }
     }
 
-    // Get today's sessions for display
     const today = todayDateStr()
     const todaySessions = await getSessionsForDate(supabase, badge, today)
+    console.log('[Scanner] Today sessions:', todaySessions.length, 'Open session:', todaySessions.find(s => s.is_open) ? 'YES' : 'NO')
 
-    // Determine next action based on open session
     const openSession = todaySessions.find(s => s.is_open)
     const nextType = openSession ? 'OUT' : 'IN'
-
-    const _geoEnabled = centreConfig?.geo_enabled === true
-    const _hasGeoCoords = centreConfig?.latitude != null && centreConfig?.longitude != null
+    console.log('[Scanner] Result status:', result.status, '| Next type:', nextType)
 
     if (result.status === 'blocked' || result.status === 'needs_watch_ward_confirmation') {
       if (result.reason === 'jatha_active') {
@@ -453,6 +464,7 @@ export default function ScannerPage() {
   }
 
   const closePopup = () => {
+    if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
     setPopupState(null)
     lastScanRef.current = { badge: null, time: 0 }
     busyRef.current = false

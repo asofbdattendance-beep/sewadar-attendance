@@ -48,6 +48,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const isDetectingRef  = useRef(false)
   const scanTimerRef    = useRef(null)   // tracks the "clear lastScanned" timeout
   const fpsRef          = useRef({ frames: 0, last: Date.now() })
+  const onScanRef       = useRef(onScan)
 
   const [status, setStatus]           = useState('starting')
   const [errorMsg, setErrorMsg]       = useState('')
@@ -164,6 +165,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             }, 1500)
 
             onScan(text)
+            console.log('[BarcodeScanner] onScan called:', text)
             break
           }
         } catch (e) {
@@ -188,6 +190,10 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       stopScanner()
     }
   }, [])
+
+  useEffect(() => {
+    onScanRef.current = onScan
+  }, [onScan])
 
   useImperativeHandle(ref, () => ({
     stop:    stopScanner,
