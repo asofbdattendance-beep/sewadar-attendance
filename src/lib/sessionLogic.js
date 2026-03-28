@@ -140,6 +140,9 @@ export async function evaluateScan(supabase, {
   isAso = false,
   isCentreUser = false,
 }) {
+  if (!badgeNumber || typeof badgeNumber !== 'string') {
+    throw new Error('Invalid badge number: ' + badgeNumber)
+  }
   if (!scanTimeISO || isNaN(new Date(scanTimeISO).getTime())) {
     throw new Error('Invalid scan time: ' + scanTimeISO)
   }
@@ -167,8 +170,9 @@ export async function evaluateScan(supabase, {
   
   // Step 5: Apply ladder logic
   if (type === 'IN') {
-    // Check if open session exists on the SAME date
-    const openSessionDate = openSession?.date_ist ? String(openSession.date_ist) : null
+    const openSessionDate = openSession?.date_ist
+      ? String(openSession.date_ist).substring(0, 10)
+      : null
     const isSameDay = openSessionDate === scanDateIST
     
     if (openSession && isSameDay) {

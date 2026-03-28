@@ -1,309 +1,1408 @@
-/**
- * BarcodeScanner — Single-engine, cross-platform
- *
- * Uses BarcodeDetector API everywhere.
- * On Android/Chrome: native hardware-accelerated (built-in, ~2-8ms/frame)
- * On iOS/Safari + others: @undecaf/barcode-detector-polyfill (ZBar WASM, ~15-30ms/frame)
- *
- * Same code path for all devices — polyfill just fills the gap where native isn't available.
- */
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { supabase, getDistanceMetres, ROLES, isExceptionDept, DUTY_TYPES } from '../lib/supabase'
+import { nowIST, todayDateStr } from '../lib/dateUtils'
+import { useAuth } from '../context/AuthContext'
+import BarcodeScanner from '../components/scanner/BarcodeScanner'
+import { MapPin, AlertTriangle, CheckCircle, XCircle, PenLine, Moon } from 'lucide-react'
+import { showError } from '../components/Toast'
+import {
+  evaluateScan,
+  executeScan,
+  computeDutyType,
+  isLateNightScan,
+  getSessionsForDate,
+  getOpenSession,
+  asoForceCloseSession,
+  executeStandaloneOut,
+} from '../lib/sessionLogic'
 
-import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react'
-import { CameraOff, RefreshCw, Zap, Lightbulb } from 'lucide-react'
+export default function ScannerPage() {
+  const { profile } = useAuth()
+  const [userLocation, setUserLocation] = useState(null)
+  const [centreConfig, setCentreConfig] = useState(null)
+  const [childCentres, setChildCentres] = useState([])
+  const [gpsStatus, setGpsStatus] = useState('loading')
+  const [popupState, setPopupState] = useState(null)
+  const busyRef = useRef(false)
+  const [todayCount, setTodayCount] = useState(0)
+  const [recentScans, setRecentScans] = useState([])
+  const [manualModal, setManualModal] = useState(false)
+  const [watchWardConfirm, setWatchWardConfirm] = useState(null)
+  const soundEnabled = localStorage.getItem('sa_sound') !== 'false'
 
-// Matches: FB or BH + 4 digits + 1-2 uppercase letters + 4+ digits
-// e.g. FB5991GA0070, FB5991LA0028, BH1234GA0001
-const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{1,2}[0-9]{4}$/
+  const scannerRef = useRef(null)
+  const lastScanRef = useRef({ badge: null, time: 0 })
+  const watchIdRef = useRef(null)
+  const audioCtxRef = useRef(null)
+  const childCentresRef = useRef([])
+  const pendingScanRef = useRef(null)
+  const safetyTimerRef = useRef(null)
+  const sewadarCacheRef = useRef(new Map())
+  const popupStateRef = useRef(null)
 
-function clean(raw) {
-  return raw.trim().toUpperCase().replace(/\s+/g, '')
-}
+  const isAso = profile?.role === ROLES.ASO
+  const isCentreUser = profile?.role === ROLES.CENTRE
 
-async function hasLinearBarcodeSupport() {
-  if (!('BarcodeDetector' in window)) return false
-  try {
-    const formats = await window.BarcodeDetector.getSupportedFormats()
-    return formats.includes('code_39') || formats.includes('code_128')
-  } catch {
-    return false
-  }
-}
-
-async function loadPolyfill() {
-  const { BarcodeDetectorPolyfill } = await import(/* @vite-ignore */ '@undecaf/barcode-detector-polyfill')
-  window.BarcodeDetector = BarcodeDetectorPolyfill
-}
-
-const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
-  const videoRef        = useRef(null)
-  const streamRef       = useRef(null)
-  const rafRef          = useRef(null)
-  const detectorRef     = useRef(null)
-  const mountedRef      = useRef(true)
-  const lastScanRef     = useRef({ badge: null, time: 0 })
-  const isDetectingRef  = useRef(false)
-  const scanTimerRef    = useRef(null)
-  const fpsRef          = useRef({ frames: 0, last: Date.now() })
-  const lastDetectRef   = useRef(0)
-  const torchRef        = useRef(false)
-  const callbackRef     = useRef(onScan)
-  // FIX: store startScanner in a ref so the visibilitychange handler always calls
-  // the latest version without stale closures.
-  const startScannerRef = useRef(null)
-
-  const [status, setStatus]           = useState('starting')
-  const [errorMsg, setErrorMsg]       = useState('')
-  const [lastScanned, setLastScanned] = useState('')
-  const [engineLabel, setEngineLabel] = useState('')
-  const [fps, setFps]                 = useState(0)
-  const [torchOn, setTorchOn]         = useState(false)
-
-  // Keep callback ref in sync with latest onScan
   useEffect(() => {
-    callbackRef.current = onScan
-  }, [onScan])
+    if (!profile?.centre) return
+    Promise.all([
+      supabase.from('centres').select('latitude,longitude,geo_radius,geo_enabled').eq('centre_name', profile.centre).maybeSingle(),
+      supabase.from('centres').select('centre_name').eq('parent_centre', profile.centre)
+    ]).then(([centreRes, childRes]) => {
+      setCentreConfig(centreRes.data)
+      const children = childRes.data?.map(c => c.centre_name) || []
+      setChildCentres(children)
+      childCentresRef.current = children
+    }).catch(e => console.warn('Failed to load centre config:', e))
+  }, [profile?.centre, isAso])
 
-  const stopScanner = useCallback(() => {
-    if (rafRef.current)        { cancelAnimationFrame(rafRef.current); rafRef.current = null }
-    if (scanTimerRef.current)  { clearTimeout(scanTimerRef.current); scanTimerRef.current = null }
-    if (streamRef.current)     { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
-    if (videoRef.current)       videoRef.current.srcObject = null
-    isDetectingRef.current = false
+  useEffect(() => {
+    if (!navigator.geolocation) { setGpsStatus('failed'); return }
+    const success = (pos) => {
+      setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+      setGpsStatus('success')
+    }
+    const fail = () => setGpsStatus(s => s !== 'success' ? 'failed' : s)
+    const opts = { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 }
+    navigator.geolocation.getCurrentPosition(success, fail, opts)
+    watchIdRef.current = navigator.geolocation.watchPosition(success, fail, opts)
+    return () => { if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current) }
   }, [])
 
-  const applyTorch = useCallback((on) => {
-    const track = streamRef.current?.getVideoTracks()[0]
-    if (!track) return
-    try {
-      const capabilities = track.getCapabilities()
-      if (!capabilities.torch) return
-      track.applyConstraints({ advanced: [{ torch: on }] })
-      torchRef.current = on
-      setTorchOn(on)
-    } catch (_) { /* device doesn't support torch */ }
-  }, [])
-
-  const toggleTorch = useCallback(() => applyTorch(!torchRef.current), [applyTorch])
-
-  const startScanner = useCallback(async () => {
-    if (!mountedRef.current) return
-    stopScanner()
-    setStatus('loading')
-    setErrorMsg('')
-    setLastScanned('')
-    lastScanRef.current    = { badge: null, time: 0 }
-    fpsRef.current         = { frames: 0, last: Date.now() }
-    lastDetectRef.current  = 0
-    torchRef.current       = false
-    setTorchOn(false)
-
-    // Preload polyfill if needed (non-blocking)
-    hasLinearBarcodeSupport().then(supported => {
-      if (!supported) loadPolyfill().catch(() => {})
-    }).catch(() => {})
-
-    const hasNative = await hasLinearBarcodeSupport()
-    if (!hasNative) {
-      try {
-        await loadPolyfill()
-        setEngineLabel('WASM')
-      } catch {
-        if (mountedRef.current) {
-          setStatus('error')
-          setErrorMsg('Could not load barcode engine. Check internet and retry.')
-        }
-        return
-      }
-    } else {
-      setEngineLabel('Native')
-    }
-
-    if (!mountedRef.current) return
-
-    try {
-      detectorRef.current = new window.BarcodeDetector({
-        formats: ['code_39', 'code_128', 'codabar']
-      })
-    } catch {
-      if (mountedRef.current) { setStatus('error'); setErrorMsg('Failed to start barcode detector') }
-      return
-    }
-
-    if (!mountedRef.current) return
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width:  { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
-        },
-        audio: false
-      })
-      if (!mountedRef.current) { stream.getTracks().forEach(t => t.stop()); return }
-      streamRef.current = stream
-      videoRef.current.srcObject = stream
-      await videoRef.current.play()
-    } catch (err) {
-      if (!mountedRef.current) return
-      setStatus('error')
-      setErrorMsg(
-        err.name === 'NotAllowedError'
-          ? 'Camera permission denied. Allow camera and retry.'
-          : 'Camera not available on this device.'
-      )
-      return
-    }
-
-    if (!mountedRef.current) return
-    setStatus('ready')
-
-    // ── Detection loop ──
-    const detect = () => {
-      if (!mountedRef.current) return
-
-      fpsRef.current.frames++
-      const now = Date.now()
-      if (now - fpsRef.current.last >= 1000) {
-        setFps(fpsRef.current.frames)
-        fpsRef.current = { frames: 0, last: now }
-      }
-
-      // Skip if already detecting, video not ready, or throttled
-      if (isDetectingRef.current || videoRef.current?.readyState !== 4) {
-        rafRef.current = requestAnimationFrame(detect)
-        return
-      }
-      if (now - lastDetectRef.current < 80) {
-        rafRef.current = requestAnimationFrame(detect)
-        return
-      }
-      lastDetectRef.current = now
-
-      isDetectingRef.current = true
-      detectorRef.current.detect(videoRef.current).then(barcodes => {
-        for (const b of barcodes) {
-          const text = clean(b.rawValue)
-          if (!BADGE_REGEX.test(text)) continue
-
-          const t = Date.now()
-          if (text === lastScanRef.current.badge && t - lastScanRef.current.time < 2000) continue
-
-          lastScanRef.current = { badge: text, time: t }
-          setLastScanned(text)
-
-          if (scanTimerRef.current) clearTimeout(scanTimerRef.current)
-          scanTimerRef.current = setTimeout(() => {
-            if (mountedRef.current) setLastScanned('')
-            scanTimerRef.current = null
-          }, 1500)
-
-          // Call the LATEST callback via ref
-          if (callbackRef.current) {
-            callbackRef.current(text)
-          }
-          break
-        }
-        isDetectingRef.current = false
-        rafRef.current = requestAnimationFrame(detect)
-      }).catch(err => {
-        isDetectingRef.current = false
-        if (import.meta.env?.DEV) console.warn('[Scanner] detect error:', err)
-        rafRef.current = requestAnimationFrame(detect)
-      })
-    }
-
-    rafRef.current = requestAnimationFrame(detect)
-  }, [stopScanner])
-
-  // Keep startScannerRef in sync so the visibilitychange listener never goes stale
   useEffect(() => {
-    startScannerRef.current = startScanner
-  }, [startScanner])
-
-  useEffect(() => {
-    mountedRef.current = true
-    startScanner()
+    fetchTodayCount().catch(console.error)
+    let debounceTimer = null
+    const channel = supabase.channel('scanner-count')
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'attendance',
+      }, () => {
+        clearTimeout(debounceTimer)
+        debounceTimer = setTimeout(() => fetchTodayCount().catch(console.error), 500)
+      })
+      .subscribe()
     return () => {
-      mountedRef.current = false
-      stopScanner()
+      clearTimeout(debounceTimer)
+      supabase.removeChannel(channel)
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps — intentionally run once on mount
+  }, [profile?.centre, profile?.role, profile])
 
   useEffect(() => {
-    const onVisibility = () => {
-      if (document.hidden) {
-        stopScanner()
-      } else if (mountedRef.current) {
-        // FIX: call via ref to always use the latest startScanner without a stale closure
-        startScannerRef.current?.()
+    fetchRecentScans().catch(console.error)
+  }, [profile?.centre, profile?.role, profile])
+
+  useEffect(() => {
+    console.log('[POPUP STATE UPDATED]', popupState?.type || 'null')
+    popupStateRef.current = popupState
+    if (popupState && safetyTimerRef.current) {
+      clearTimeout(safetyTimerRef.current)
+      safetyTimerRef.current = null
+    }
+  }, [popupState])
+
+  async function fetchTodayCount() {
+    const today = todayDateStr()
+    const start = `${today}T00:00:00+05:30`
+    let q = supabase.from('attendance_sessions').select('id', { count: 'exact', head: true })
+      .gte('in_time', start)
+      .eq('is_open', true)
+
+    if (profile?.role === ROLES.CENTRE && profile?.centre) {
+      const scope = [profile.centre, ...childCentresRef.current]
+      q = q.in('centre', scope)
+    }
+
+    const { count, error } = await q
+    if (!error) setTodayCount(count || 0)
+  }
+
+  async function fetchRecentScans() {
+    const today = todayDateStr()
+    const start = `${today}T00:00:00+05:30`
+    let q = supabase.from('attendance')
+      .select('id,badge_number,sewadar_name,type,scan_time,manual_entry')
+      .gte('scan_time', start)
+      .order('scan_time', { ascending: false })
+      .limit(5)
+
+    if (profile?.role === ROLES.CENTRE && profile?.centre) {
+      const scope = [profile.centre, ...childCentresRef.current]
+      q = q.in('centre', scope)
+    }
+
+    const { data } = await q
+    if (data) setRecentScans(data)
+  }
+
+  useEffect(() => {
+    const warmup = () => {
+      if (!audioCtxRef.current) {
+        try { audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)() } catch (_) { /* AudioContext not available */ }
       }
     }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [stopScanner])
+    document.addEventListener('click', warmup, { once: true })
+    document.addEventListener('touchstart', warmup, { once: true })
+    return () => {
+      document.removeEventListener('click', warmup)
+      document.removeEventListener('touchstart', warmup)
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close()
+        audioCtxRef.current = null
+      }
+    }
+  }, [])
 
-  useImperativeHandle(ref, () => ({
-    stop:    stopScanner,
-    resume:  () => { if (mountedRef.current) startScannerRef.current?.() },
-    restart: () => { stopScanner(); setTimeout(() => { if (mountedRef.current) startScannerRef.current?.() }, 100) },
-    toggleTorch,
-  }), [stopScanner, toggleTorch])
+  function playBeep(type) {
+    if (!soundEnabled) return
+    try {
+      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
+      const ctx = audioCtxRef.current
+      
+      if (type === 'IN') {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain); gain.connect(ctx.destination)
+        osc.frequency.value = 880
+        osc.type = 'sine'
+        gain.gain.setValueAtTime(0.3, ctx.currentTime)
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
+        osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.15)
+      } else {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain); gain.connect(ctx.destination)
+        osc.frequency.value = 440
+        osc.type = 'sine'
+        gain.gain.setValueAtTime(0.3, ctx.currentTime)
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2)
+        osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.25)
+      }
+    } catch (e) { console.warn('Beep failed:', e) }
+    if (navigator.vibrate) {
+      navigator.vibrate(type === 'IN' ? [30] : [30, 50, 30])
+    }
+  }
 
-  if (status === 'error') {
-    return (
-      <div className="scanner-wrapper">
-        <div className="scanner-error-simple">
-          <CameraOff size={32} />
-          <p style={{ textAlign: 'center', padding: '0 1rem', fontSize: '0.85rem' }}>{errorMsg}</p>
-          <button onClick={startScanner}><RefreshCw size={14} /> Retry</button>
+  const handleScan = useCallback(async (badge) => {
+    console.log('[SCAN FIRED]', badge)
+    if (busyRef.current) { console.log('[BLOCKED] busyRef'); return }
+
+    busyRef.current = true
+    if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
+    safetyTimerRef.current = setTimeout(() => {
+      console.log('[TIMEOUT] releasing busyRef')
+      if (busyRef.current) busyRef.current = false
+      safetyTimerRef.current = null
+    }, 5000)
+
+    const openPopup = (state) => {
+      console.log('[POPUP]', state.type)
+      if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
+      if (scannerRef.current) scannerRef.current.stop()
+      lastScanRef.current = { badge, time: Date.now() }
+      setPopupState(state)
+    }
+
+    const release = () => {
+      console.log('[RELEASE]')
+      busyRef.current = false
+      if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
+    }
+
+    try {
+      const location = userLocation
+      const cfg = centreConfig
+
+      let found = sewadarCacheRef.current.get(badge)
+      let lookupError = null
+
+      if (!found) {
+        try {
+          const { data, error } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
+          if (error) throw error
+          found = data
+          if (found) sewadarCacheRef.current.set(badge, found)
+        } catch (e) {
+          lookupError = e?.message || 'Database error'
+        }
+      }
+
+      if (!found) {
+        release()
+        openPopup({ type: 'not_found', badge, message: lookupError ? `Lookup failed: ${lookupError}` : null })
+        return
+      }
+
+      const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
+      const badgeStatus = (found.badge_status || '').toLowerCase().trim()
+      if (!ALLOWED_STATUSES.includes(badgeStatus)) {
+        release()
+        openPopup({ type: 'invalid_status', sewadar: found, badge })
+        return
+      }
+
+      const scopeCentres = [profile?.centre, ...childCentresRef.current]
+      const inScope = scopeCentres.includes(found.centre)
+      const isException = isExceptionDept(found.department)
+
+      if (!isException && !inScope && !isAso) {
+        release()
+        openPopup({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
+        return
+      }
+
+      if (!isAso && location && cfg?.geo_enabled === true && cfg?.latitude != null && cfg?.longitude != null) {
+        const dist = getDistanceMetres(location.lat, location.lng, cfg.latitude, cfg.longitude)
+        const radius = cfg.geo_radius || 200
+        if (dist > radius) {
+          release()
+          openPopup({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
+          return
+        }
+      }
+
+      const scanTime = nowIST()
+      const isLateNight = isLateNightScan(scanTime)
+
+      if (isLateNight) {
+        pendingScanRef.current = { found, badge, scanTime }
+        release()
+        setWatchWardConfirm({ sewadar: found, badge })
+        return
+      }
+
+      await processSewadar(found, badge, scanTime)
+    } catch (e) {
+      console.error('[HANDLE SCAN ERROR]', e?.message || e, e?.stack)
+      release()
+      openPopup({ type: 'not_found', badge, message: 'System error: ' + (e?.message || String(e)) })
+    }
+  }, [profile, userLocation, centreConfig, childCentres, isAso])
+
+  async function handleWatchWardConfirm(isWatchWard) {
+    if (!pendingScanRef.current) return
+    
+    const { found, badge, scanTime } = pendingScanRef.current
+    pendingScanRef.current = null
+    setWatchWardConfirm(null)
+    
+    await processSewadar(found, badge, scanTime, isWatchWard)
+  }
+
+  async function processSewadar(found, badge, scanTime, watchWardConfirm = false) {
+    console.log('[PROC] start', { badge, scanTime, found: !!found })
+    let scanTimeISO
+    try {
+      const parsed = new Date(scanTime.replace(' ', 'T'))
+      if (isNaN(parsed.getTime())) throw new Error('Invalid scanTime: ' + scanTime)
+      scanTimeISO = parsed.toISOString()
+    } catch (e) {
+      console.error('[PROC] scanTime parse failed:', e)
+      openPopup({ type: 'not_found', badge, message: 'System error: bad scan time' })
+      return
+    }
+    console.log('[PROC] scanTimeISO =', scanTimeISO)
+    const today = todayDateStr()
+
+    const openPopup = (state) => {
+      if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
+      if (scannerRef.current) scannerRef.current.stop()
+      lastScanRef.current = { badge, time: Date.now() }
+      setPopupState(state)
+    }
+
+    try {
+      const [openSession, todaySessions] = await Promise.all([
+        getOpenSession(supabase, badge),
+        getSessionsForDate(supabase, badge, today),
+      ])
+
+      const actionType = openSession ? 'OUT' : 'IN'
+      console.log('[PROC] actionType =', actionType, '| openSession =', !!openSession)
+
+      let evalResult
+      try {
+        evalResult = await evaluateScan(supabase, {
+          badgeNumber: badge,
+          type: actionType,
+          scanTimeISO,
+          watchWard: watchWardConfirm,
+          isAso,
+          isCentreUser,
+        })
+        console.log('[PROC] evaluateScan result:', evalResult)
+      } catch (e) {
+        console.error('[PROC] evaluateScan threw:', e)
+        openPopup({ type: 'not_found', badge, message: 'System error: ' + (e?.message || String(e)) })
+        return
+      }
+
+      const result = evalResult
+
+      if (result.status === 'blocked') {
+        if (result.reason === 'jatha_active') {
+          openPopup({ type: 'jatha_block', sewadar: found, badge, jatha: result.jatha })
+          return
+        }
+        if (result.reason === 'cross_midnight_session') {
+          openPopup({ type: 'open_session_block', sewadar: found, badge, openSession: result.openSession, todaySessions })
+          return
+        }
+        if (result.reason === 'open_session_same_day') {
+          if (!result.canOverride) {
+            openPopup({ type: 'open_session_block', sewadar: found, badge, openSession: result.openSession, todaySessions })
+          } else {
+            openPopup({ type: 'open_session_override', sewadar: found, badge, openSession: result.openSession, todaySessions, dutyType: result.dutyType })
+          }
+          return
+        }
+        if (result.reason === 'no_open_session') {
+          if (!result.canOverride) {
+            openPopup({ type: 'no_session_block', sewadar: found, badge, todaySessions })
+          } else {
+            openPopup({ type: 'no_session_override', sewadar: found, badge, todaySessions })
+          }
+          return
+        }
+        if (result.reason === 'system_error') {
+          openPopup({ type: 'not_found', badge, message: result.message })
+        } else {
+          openPopup({ type: 'open_session_block', sewadar: found, badge, openSession: result.openSession || null, todaySessions })
+        }
+        return
+      }
+
+      if (result.status === 'needs_watch_ward_confirmation') {
+        openPopup({ type: 'open_session_block', sewadar: found, badge, openSession: result.openSession || null, todaySessions })
+        return
+      }
+
+      if (result.status === 'allowed') {
+        openPopup({ type: 'found', sewadar: found, badge, allowedAction: actionType, todaySessions, dutyType: result.dutyType, watchWard: watchWardConfirm, openSession })
+      }
+    } catch (err) {
+      console.error('[Scanner] processSewadar threw:', err)
+      openPopup({ type: 'not_found', badge, message: err.message })
+    }
+  }
+
+  const markAttendance = async (type, data, overrideData = null) => {
+    if (!data?.found) {
+      console.warn('[markAttendance] no data.found, data:', data)
+      showError('Something went wrong. Please try again.')
+      return
+    }
+    const found = data.found
+    const badge = data.badge || found.badge_number
+    const openSession = data.openSession || null
+    const watchWard = data.watchWard || false
+
+    try {
+      const scanTime = nowIST()
+      const scanTimeISO = new Date(scanTime.replace(' ', 'T')).toISOString()
+
+      if (overrideData?.isOverride) {
+        const { asobadge, reason, overrideType } = overrideData
+        if (overrideType === 'force_close_and_new_in') {
+          await asoForceCloseSession(supabase, { sessionId: openSession.id, asobadge, reason })
+        } else if (overrideType === 'standalone_out') {
+          await executeStandaloneOut(supabase, {
+            badge_number: found.badge_number,
+            sewadar_name: found.sewadar_name,
+            centre: found.centre,
+            department: found.department,
+            scanTimeISO,
+            scanner_badge: profile.badge_number,
+            scanner_name: profile.name,
+            scanner_centre: profile.centre,
+            latitude: userLocation?.lat || null,
+            longitude: userLocation?.lng || null,
+            reason,
+            asobadge,
+          })
+          playBeep('OUT')
+          setPopupState({ type: 'success', sewadar: found, attendanceType: 'OUT', time: scanTime })
+          setTimeout(closePopup, 1200)
+          fetchTodayCount()
+          fetchRecentScans()
+          return
+        }
+      }
+
+      let currentOpenSession = null
+      if (type === 'OUT') {
+        currentOpenSession = await getOpenSession(supabase, found.badge_number)
+      }
+
+      const finalDutyType = overrideData?.dutyType ||
+        (watchWard ? DUTY_TYPES.WATCH_WARD : computeDutyType(scanTimeISO, watchWard))
+
+      await executeScan(supabase, {
+        badge_number: found.badge_number,
+        sewadar_name: found.sewadar_name,
+        centre: found.centre,
+        department: found.department,
+        type,
+        scanTimeISO,
+        dutyType: finalDutyType,
+        openSession: currentOpenSession,
+        scanner_badge: profile.badge_number || 'UNKNOWN',
+        scanner_name: profile.name || 'Unknown',
+        scanner_centre: profile.centre || 'UNKNOWN',
+        latitude: userLocation?.lat || null,
+        longitude: userLocation?.lng || null,
+        manual_entry: false,
+        submitted_by: profile.badge_number || 'UNKNOWN',
+      })
+
+      playBeep(type)
+      setPopupState({ type: 'success', sewadar: found, attendanceType: type, time: scanTime })
+      setTimeout(closePopup, 1200)
+
+      try {
+        await supabase.from('logs').insert({
+          user_badge: profile.badge_number,
+          action: type === 'IN' ? 'MARK_IN' : 'MARK_OUT',
+          details: `${type} for ${found.badge_number}`,
+          timestamp: scanTimeISO,
+          device_id: navigator.userAgent.slice(0, 50),
+        })
+      } catch (_) { /* logging failure is non-critical */ }
+
+      fetchTodayCount()
+      fetchRecentScans()
+    } catch (err) {
+      console.error('[markAttendance]', err?.message || err, err?.stack)
+      showError('Error: ' + (err?.message || String(err)))
+    }
+  }
+
+  const closePopup = () => {
+    if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
+    setPopupState(null)
+    lastScanRef.current = { badge: null, time: 0 }
+    busyRef.current = false
+    if (scannerRef.current) scannerRef.current.resume()
+  }
+
+  return (
+    <div className="page pb-nav">
+      <div className="scanner-status-bar">
+        <span className="scanner-centre-name">{profile?.centre}</span>
+        <div className="scanner-indicators">
+          <span
+            className={`scanner-pill ${gpsStatus === 'success' ? 'pill-gps-ok' : gpsStatus === 'failed' ? 'pill-gps-fail' : 'pill-gps-loading'}`}
+            onClick={gpsStatus === 'failed' ? () => {
+              setGpsStatus('loading')
+              navigator.geolocation?.getCurrentPosition(
+                p => { setUserLocation({ lat: p.coords.latitude, lng: p.coords.longitude }); setGpsStatus('success') },
+                () => setGpsStatus('failed'),
+                { enableHighAccuracy: true, timeout: 15000 }
+              )
+            } : undefined}
+            style={gpsStatus === 'failed' ? { cursor: 'pointer' } : {}}
+          >
+            <MapPin size={11} />
+            GPS {gpsStatus === 'success' ? '✓' : gpsStatus === 'failed' ? '✕' : '…'}
+          </span>
+          <span className={`scanner-pill ${centreConfig?.geo_enabled ? 'pill-gps-ok' : 'pill-offline'}`} title={centreConfig?.geo_enabled ? `Geo fencing active (${centreConfig?.geo_radius || 200}m radius)` : 'Geo fencing not enabled for this centre'}>
+            <MapPin size={11} />
+            GEO {centreConfig?.geo_enabled ? 'ON' : 'OFF'}
+          </span>
         </div>
+      </div>
+
+      <div className="scanner-live-strip">
+        <span className="pulse-dot green" />
+        <span className="scanner-live-count">{todayCount} inside now</span>
+        {(isAso || isCentreUser) && (
+          <button className="scanner-manual-btn" onClick={() => setManualModal(true)}>
+            <PenLine size={13} /> Manual Entry
+          </button>
+        )}
+      </div>
+
+      <BarcodeScanner ref={scannerRef} onScan={handleScan} />
+
+      {/* Debug Test Button */}
+      <div style={{ margin: '0.5rem 0.1rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+        <button
+          onClick={() => handleScan('FB5991GA0070')}
+          style={{
+            background: 'rgba(201,168,76,0.1)',
+            border: '1px dashed rgba(201,168,76,0.4)',
+            borderRadius: 8,
+            padding: '0.5rem',
+            fontSize: '0.75rem',
+            fontFamily: 'monospace',
+            color: 'var(--gold)',
+            cursor: 'pointer',
+            textAlign: 'center',
+          }}
+        >
+          [DEBUG] Simulate scan: FB5991GA0070
+        </button>
+        {popupState && (
+          <div style={{
+            background: 'rgba(59,130,246,0.08)',
+            border: '1px solid rgba(59,130,246,0.25)',
+            borderRadius: 6,
+            padding: '0.4rem 0.7rem',
+            fontSize: '0.7rem',
+            fontFamily: 'monospace',
+            color: 'var(--blue)',
+          }}>
+            popupState.type = <strong>{popupState.type}</strong> | badge = {popupState.badge || popupState.sewadar?.badge_number || '—'}
+          </div>
+        )}
+      </div>
+
+      {recentScans.length > 0 && (
+        <div style={{ margin: '0.85rem 0 0', padding: '0 0.1rem' }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: '0.45rem' }}>Recent Scans</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+            {recentScans.map((r, i) => (
+              <div key={r.id || i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.7rem' }}>
+                <span style={{ width: 32, height: 20, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 800, background: r.type === 'IN' ? 'rgba(76,175,125,0.15)' : 'rgba(224,92,92,0.15)', color: r.type === 'IN' ? 'var(--green)' : 'var(--red)', flexShrink: 0 }}>{r.type}</span>
+                <span style={{ fontWeight: 600, fontSize: '0.82rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sewadar_name}</span>
+                <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>
+                  {new Date(r.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+                {r.manual_entry && (
+                  <span style={{ fontSize: '0.6rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 5px', fontWeight: 700 }}>M</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Watch & Ward Confirmation Popup */}
+      {watchWardConfirm && (
+        <div className="popup-overlay" onClick={() => { setWatchWardConfirm(null); pendingScanRef.current = null }}>
+          <div className="popup-card" onClick={e => e.stopPropagation()}>
+            <div style={{ textAlign: 'center', padding: '1rem' }}>
+              <div style={{ width: 56, height: 56, background: 'rgba(59,130,246,0.15)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+                <Moon size={28} color="#3b82f6" />
+              </div>
+              <h3 style={{ marginBottom: '0.5rem', color: 'var(--blue)' }}>Late Night Scan</h3>
+              <p style={{ color: 'var(--text-muted)', marginBottom: '1rem' }}>
+                It is past 9 PM. Is this a Watch & Ward Sewadar entry?
+              </p>
+              <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.75rem', marginBottom: '1rem' }}>
+                <div style={{ fontWeight: 600 }}>{watchWardConfirm.sewadar.sewadar_name}</div>
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>{watchWardConfirm.badge}</div>
+              </div>
+              <div style={{ display: 'grid', gap: '0.5rem' }}>
+                <button className="btn btn-primary btn-full" onClick={() => handleWatchWardConfirm(true)}>
+                  Yes - Watch & Ward
+                </button>
+                <button className="btn btn-outline btn-full" onClick={() => handleWatchWardConfirm(false)}>
+                  No - Regular Entry
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {popupState && (
+        <div className="popup-overlay" onClick={closePopup}>
+          <div className="popup-card" onClick={e => e.stopPropagation()}>
+
+            {popupState.type === 'found' && (
+              <SewadarFoundCard
+                sewadar={popupState.sewadar}
+                badge={popupState.badge}
+                allowedAction={popupState.allowedAction}
+                todaySessions={popupState.todaySessions}
+                dutyType={popupState.dutyType}
+                watchWard={popupState.watchWard}
+                openSession={popupState.openSession}
+                onMark={markAttendance}
+                onClose={closePopup}
+              />
+            )}
+
+            {popupState.type === 'jatha_block' && (
+              <div className="popup-error">
+                <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">On Jatha Duty</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
+                <div className="error-badge">{popupState.jatha?.jatha_centre}</div>
+                <div className="error-msg">
+                  Cannot mark attendance. Sewadar is on {popupState.jatha?.jatha_type} from {popupState.jatha?.date_from} to {popupState.jatha?.date_to}
+                </div>
+                <button className="btn-cancel" onClick={closePopup}>Dismiss</button>
+              </div>
+            )}
+
+            {popupState.type === 'open_session_block' && (
+              <div className="popup-error">
+                <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Already Checked In</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
+                <div className="error-msg">
+                  Already has an open session. Scan OUT first before a new IN.
+                </div>
+                <button className="btn-cancel" onClick={closePopup}>Dismiss</button>
+              </div>
+            )}
+
+            {popupState.type === 'open_session_override' && (
+              <OverridePopup
+                type="open_session"
+                sewadar={popupState.sewadar}
+                badge={popupState.badge}
+                openSession={popupState.openSession}
+                todaySessions={popupState.todaySessions}
+                onMark={markAttendance}
+                onClose={closePopup}
+                isAso={isAso}
+                profile={profile}
+              />
+            )}
+
+            {popupState.type === 'no_session_block' && (
+              <div className="popup-error">
+                <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Not Checked In</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
+                <div className="error-msg">
+                  No open session found. Scan IN first.
+                </div>
+                <button className="btn-cancel" onClick={closePopup}>Dismiss</button>
+              </div>
+            )}
+
+            {popupState.type === 'no_session_override' && (
+              <OverridePopup
+                type="no_session"
+                sewadar={popupState.sewadar}
+                badge={popupState.badge}
+                todaySessions={popupState.todaySessions}
+                onMark={markAttendance}
+                onClose={closePopup}
+                isAso={isAso}
+              />
+            )}
+
+            {popupState.type === 'not_found' && (
+              <div className="popup-error">
+                <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Badge Not Found</div>
+                <div className="error-badge">{popupState.badge}</div>
+                <div className="error-msg">{popupState.message || 'This badge is not registered in the system'}</div>
+                <button className="btn-cancel" onClick={closePopup}>Try Again</button>
+              </div>
+            )}
+
+            {popupState.type === 'invalid_status' && (
+              <div className="popup-error">
+                <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Badge Ineligible</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
+                <div className="error-badge">{popupState.badge}</div>
+                <div style={{ margin: '8px auto', display: 'inline-block', background: 'rgba(198,40,40,0.1)', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 6, padding: '3px 12px', fontSize: 13, fontWeight: 700, color: '#dc2626' }}>
+                  Status: {popupState.sewadar?.badge_status || 'Unknown'}
+                </div>
+                <div className="error-msg">Only Open, Permanent & Elderly badges can be marked</div>
+                <button className="btn-cancel" onClick={closePopup}>Dismiss</button>
+              </div>
+            )}
+
+            {popupState.type === 'auth_fail' && (
+              <div className="popup-error">
+                <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Not Authorised</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
+                <div className="error-msg">{popupState.message || `${popupState.sewadar?.centre || 'Unknown'} — Different centre`}</div>
+                <button className="btn-cancel" onClick={closePopup}>Try Another</button>
+              </div>
+            )}
+
+            {popupState.type === 'geo_fail' && (
+              <div className="popup-error">
+                <MapPin size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Outside Area</div>
+                <div className="error-msg">{popupState.message} from centre</div>
+                <div className="error-hint">Move closer and try again</div>
+                <button className="btn-cancel" onClick={closePopup}>Try Again</button>
+              </div>
+            )}
+
+            {popupState.type === 'success' && (
+              <div className="popup-success">
+                <div className={`success-icon-ring ${popupState.attendanceType === 'IN' ? 'ring-green' : 'ring-red'}`}>
+                  <CheckCircle size={36} color={popupState.attendanceType === 'IN' ? '#16a34a' : '#dc2626'} />
+                </div>
+                <div className="success-title" style={{ color: popupState.attendanceType === 'IN' ? '#16a34a' : '#dc2626' }}>
+                  {popupState.attendanceType}
+                </div>
+                <div className="success-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
+                <div className="success-type">
+                  {popupState.time ? new Date(popupState.time.replace(' ', 'T')).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {manualModal && (
+        <ManualEntryModal
+          profile={profile}
+          childCentres={childCentres}
+          userLocation={userLocation}
+          centreConfig={centreConfig}
+          onClose={() => setManualModal(false)}
+          onSuccess={(record) => {
+            setManualModal(false)
+            playBeep(record.type)
+            setPopupState({ type: 'success', sewadar: { badge_number: record.badge_number, sewadar_name: record.sewadar_name }, attendanceType: record.type, time: record.scan_time })
+            fetchTodayCount()
+            fetchRecentScans()
+            setTimeout(closePopup, 3000)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function SewadarFoundCard({ sewadar, badge, allowedAction, todaySessions, dutyType, watchWard, openSession, onMark, onClose }) {
+  const statusStyle = (s) => {
+    const status = (s || '').toLowerCase()
+    if (status === 'permanent') return { bg: 'rgba(33,115,70,0.12)', color: 'var(--green)' }
+    if (status === 'open') return { bg: 'rgba(37,99,235,0.12)', color: 'var(--blue)' }
+    if (status === 'elderly') return { bg: 'rgba(201,168,76,0.15)', color: 'var(--gold)' }
+    return { bg: 'rgba(198,40,40,0.1)', color: 'var(--red)' }
+  }
+  const st = statusStyle(sewadar?.badge_status)
+
+  const data = { found: sewadar, badge, openSession, dutyType, todaySessions, watchWard }
+
+  return (
+    <>
+      <div className="popup-header">
+        <div className="sewadar-info">
+          <div className="name">{sewadar?.sewadar_name}</div>
+          <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>{sewadar?.badge_number}</div>
+        </div>
+        <span className={`gender-badge ${sewadar?.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>{sewadar?.gender}</span>
+      </div>
+      <div className="popup-details">
+        <div className="detail"><span>Centre</span><span>{sewadar?.centre}</span></div>
+        <div className="detail"><span>Dept</span><span>{sewadar?.department || '—'}</span></div>
+        <div className="detail">
+          <span>Status</span>
+          <span style={{ background: st.bg, color: st.color, border: '1px solid currentColor', borderRadius: 5, padding: '1px 8px', fontSize: 12, fontWeight: 700 }}>
+            {sewadar?.badge_status || 'Unknown'}
+          </span>
+        </div>
+      </div>
+      {todaySessions && todaySessions.length > 0 && (
+        <div className="popup-scan-history">
+          {todaySessions.slice(0, 20).map((s, i) => (
+            <span key={i} className={`scan-dot ${s.is_open ? 'dot-in' : s.out_time ? (s.force_closed ? 'dot-out' : 'dot-in') : 'dot-in'}`} />
+          ))}
+          <span className="scan-history-label">
+            {todaySessions.length} session{todaySessions.length !== 1 ? 's' : ''} today · next: {allowedAction}
+          </span>
+        </div>
+      )}
+      <div className="popup-actions">
+        {allowedAction === 'IN' && (
+          <button type="button" className="btn-in" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMark('IN', data) }}>
+            IN
+          </button>
+        )}
+        {allowedAction === 'OUT' && (
+          <button type="button" className="btn-out" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMark('OUT', data) }}>
+            OUT
+          </button>
+        )}
+      </div>
+      <button className="btn-cancel" onClick={onClose}>Cancel</button>
+    </>
+  )
+}
+
+function OverridePopup({ type, sewadar, badge, openSession, todaySessions, onMark, onClose, isAso, profile }) {
+  const [reason, setReason] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  if (!isAso) {
+    return (
+      <div className="popup-error">
+        <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
+        <div className="error-title">{type === 'open_session' ? 'Already Checked In' : 'Not Checked In'}</div>
+        <div className="error-name">{sewadar?.sewadar_name || 'Unknown'}</div>
+        <div className="error-msg">
+          {type === 'open_session' 
+            ? 'Cannot mark IN. Already has open session. Contact ASO for help.'
+            : 'Cannot mark OUT. No open session found. Contact ASO for help.'
+          }
+        </div>
+        <button className="btn-cancel" onClick={onClose}>Dismiss</button>
       </div>
     )
   }
 
+  async function handleOverride() {
+    if (!reason.trim()) return
+    setSubmitting(true)
+
+    const overrideData = {
+      isOverride: true,
+      asobadge: profile?.badge_number || 'UNKNOWN',
+      reason: reason.trim(),
+      overrideType: type === 'open_session' ? 'force_close_and_new_in' : 'standalone_out',
+    }
+
+    const data = { found: sewadar, badge, openSession, dutyType: null, todaySessions, watchWard: false }
+    await onMark(type === 'open_session' ? 'IN' : 'OUT', data, overrideData)
+    setSubmitting(false)
+  }
+
   return (
-    <div className="scanner-wrapper">
-      <video ref={videoRef} className="scanner-video" playsInline muted autoPlay />
-
-      {status === 'loading' && (
-        <div className="scanner-overlay">
-          <div className="scanner-spinner" />
-          <span>{engineLabel === 'WASM' ? 'Loading engine…' : 'Starting camera...'}</span>
-        </div>
-      )}
-
-      {status === 'ready' && (
-        <>
-          <div className="scan-frame">
-            <div className="scan-corner tl" />
-            <div className="scan-corner tr" />
-            <div className="scan-corner bl" />
-            <div className="scan-corner br" />
-            <div className="scan-line" />
-          </div>
-
-          {/* FIX: replaced non-existent 'Flashlight' icon with 'Lightbulb' from lucide-react */}
-          <button
-            className="scanner-torch-btn"
-            onClick={toggleTorch}
-            style={{ background: torchOn ? 'rgba(255,220,0,0.9)' : 'rgba(0,0,0,0.5)' }}
-            title={torchOn ? 'Flash off' : 'Flash on'}
-          >
-            <Lightbulb size={18} color={torchOn ? '#000' : '#fff'} />
-          </button>
-
-          <div className="scanner-fps-badge">
-            <Zap size={10} />
-            {fps}fps · {engineLabel}
-          </div>
-
-          {lastScanned && <div className="scan-result">{lastScanned}</div>}
-          <div className="scan-tip">Position barcode within the frame</div>
-        </>
-      )}
+    <div className="popup-recent">
+      <div className="popup-recent-icon"><AlertTriangle size={28} color="#f59e0b" /></div>
+      <div className="recent-name">{sewadar?.sewadar_name || 'Unknown'}</div>
+      <div className="recent-badge">{badge}</div>
+      <div className="recent-msg">
+        {type === 'open_session' 
+          ? 'Open session exists. Provide reason to force close and create new IN.'
+          : 'No open session. Provide reason to create standalone OUT.'
+        }
+      </div>
+      <div style={{ marginTop: '1rem' }}>
+        <label className="label">Reason for override *</label>
+        <textarea
+          className="input"
+          rows={2}
+          placeholder="Why are you overriding the rule?..."
+          value={reason}
+          onChange={e => setReason(e.target.value)}
+          style={{ resize: 'none' }}
+        />
+      </div>
+      <div className="popup-actions" style={{ marginTop: '0.75rem' }}>
+        <button 
+          className="btn btn-primary" 
+          onClick={handleOverride}
+          disabled={!reason.trim() || submitting}
+        >
+          {submitting ? 'Processing...' : 'Confirm Override'}
+        </button>
+        <button className="btn-cancel" onClick={onClose}>Cancel</button>
+      </div>
     </div>
   )
-})
+}
 
-export default BarcodeScanner
+function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _centreConfig, onClose, onSuccess }) {
+  const [search, setSearch] = useState('')
+  const [results, setResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [selected, setSelected] = useState(null)
+  const [dutyType, setDutyType] = useState('satsang') // satsang, gate_entry, watch_ward
+  const [satsangType, setSatsangType] = useState('IN') // For satsang: IN or OUT
+  const [inDate, setInDate] = useState(todayDateStr())
+  const [inTime, setInTime] = useState(() => {
+    const now = new Date()
+    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+  })
+  const [outDate, setOutDate] = useState(todayDateStr())
+  const [outTime, setOutTime] = useState(() => {
+    const now = new Date()
+    return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+  })
+  const [remark, setRemark] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [successMsg, setSuccessMsg] = useState('')
+  const searchRef = useRef(null)
+
+  const isAso = profile?.role === ROLES.ASO
+
+  useEffect(() => { searchRef.current?.focus() }, [])
+
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (search.length < 2) { setResults([]); return }
+      setSearching(true)
+      try {
+        let q = supabase.from('sewadars')
+          .select('*')
+          .or(`badge_number.ilike.%${search.toUpperCase()}%,sewadar_name.ilike.%${search.toUpperCase()}%`)
+          .limit(10)
+
+        if (profile?.role === ROLES.CENTRE) {
+          const scope = [profile.centre, ...childCentres]
+          q = q.in('centre', scope)
+        }
+
+        const { data } = await q
+        setResults(data || [])
+      } catch (_e) { setResults([]) }
+      setSearching(false)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [search, profile, childCentres])
+
+  const canSubmit = selected && (dutyType === 'satsang' ? remark.trim().length >= 3 : true)
+
+  async function handleSubmit() {
+    if (!canSubmit) return
+    setSubmitting(true)
+    setError('')
+
+    const inTimeISO = new Date(`${inDate}T${inTime}:00+05:30`).toISOString()
+    const outTimeISO = new Date(`${outDate}T${outTime}:00+05:30`).toISOString()
+
+    try {
+      // For SATSANG: handle IN or OUT separately
+      if (dutyType === 'satsang') {
+        if (satsangType === 'IN') {
+          // Check for existing open satsang session
+          const { data: existingOpen } = await supabase
+            .from('attendance_sessions')
+            .select('id, in_time')
+            .eq('badge_number', selected.badge_number)
+            .eq('duty_type', 'satsang')
+            .eq('is_open', true)
+            .limit(1)
+
+          if (existingOpen?.length > 0) {
+            setError(`Cannot mark IN. Open satsang session exists from ${new Date(existingOpen[0].in_time).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}. Mark OUT first.`)
+            setSubmitting(false)
+            return
+          }
+
+          // Create session + IN
+          const { data: session, error: sessionError } = await supabase
+            .from('attendance_sessions')
+            .insert({
+              badge_number: selected.badge_number,
+              sewadar_name: selected.sewadar_name,
+              centre: selected.centre,
+              department: selected.department || null,
+              duty_type: 'satsang',
+              in_time: inTimeISO,
+              date_ist: inDate,
+              is_open: true,
+              manual_in: true,
+              scanner_badge: profile.badge_number,
+              scanner_name: profile.name,
+              scanner_centre: profile.centre,
+              in_scanner_name: profile.name,
+            })
+            .select('id')
+            .single()
+
+          if (sessionError) throw new Error('Failed to create session: ' + sessionError.message)
+
+          const { data: inAtt, error: inError } = await supabase
+            .from('attendance')
+            .insert({
+              badge_number: selected.badge_number,
+              sewadar_name: selected.sewadar_name,
+              centre: selected.centre,
+              department: selected.department || null,
+              type: 'IN',
+              scan_time: inTimeISO,
+              duty_type: 'satsang',
+              session_id: session.id,
+              scanner_badge: profile.badge_number,
+              scanner_name: profile.name,
+              scanner_centre: profile.centre,
+              latitude: userLocation?.lat || null,
+              longitude: userLocation?.lng || null,
+              manual_entry: true,
+              submitted_by: profile.badge_number,
+              submitted_at: new Date().toISOString(),
+            })
+            .select('id')
+            .single()
+
+          if (inError) {
+            await supabase.from('attendance_sessions').delete().eq('id', session.id)
+            throw new Error('Failed to record IN: ' + inError.message)
+          }
+
+          await supabase.from('attendance_sessions').update({ in_id: inAtt.id }).eq('id', session.id)
+
+          setSuccessMsg(`✓ IN marked for ${selected.sewadar_name}`)
+          setSubmitting(false)
+          setRemark('')
+          setTimeout(() => onClose(), 1500)
+          return
+
+        } else {
+          // OUT: Find open session and add OUT
+          try {
+            const { data: sessions } = await supabase
+              .from('attendance_sessions')
+              .select('id')
+              .eq('badge_number', selected.badge_number)
+              .eq('is_open', true)
+              .eq('duty_type', 'satsang')
+              .order('in_time', { ascending: false })
+              .limit(1)
+
+            if (!sessions?.length) throw new Error('No open satsang session found. Mark IN first.')
+
+            const openSession = sessions[0]
+
+            const { data: outAtt, error: outError } = await supabase
+              .from('attendance')
+              .insert({
+                badge_number: selected.badge_number,
+                sewadar_name: selected.sewadar_name,
+                centre: selected.centre,
+                department: selected.department || null,
+                type: 'OUT',
+                scan_time: outTimeISO,
+                duty_type: 'satsang',
+                session_id: openSession.id,
+                scanner_badge: profile.badge_number,
+                scanner_name: profile.name,
+                scanner_centre: profile.centre,
+                latitude: userLocation?.lat || null,
+                longitude: userLocation?.lng || null,
+                manual_entry: true,
+                submitted_by: profile.badge_number,
+                submitted_at: new Date().toISOString(),
+              })
+              .select('id')
+              .single()
+
+            if (outError) throw new Error('Failed to record OUT: ' + outError.message)
+
+            await supabase
+              .from('attendance_sessions')
+              .update({
+                out_id: outAtt.id,
+                out_time: outTimeISO,
+                is_open: false,
+                manual_out: true,
+                out_scanner_name: profile.name,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', openSession.id)
+
+            setSuccessMsg(`✓ OUT marked for ${selected.sewadar_name}`)
+            setSubmitting(false)
+            setRemark('')
+            setTimeout(() => onClose(), 1500)
+            return
+          } catch (err) {
+            setError(err.message)
+            setSubmitting(false)
+            return
+          }
+        }
+      } else {
+        // For GATE_ENTRY and WATCH_WARD: Create session + IN + OUT together
+        // Step 1: Create session with IN
+        const { data: session, error: sessionError } = await supabase
+          .from('attendance_sessions')
+          .insert({
+            badge_number: selected.badge_number,
+            sewadar_name: selected.sewadar_name,
+            centre: selected.centre,
+            department: selected.department || null,
+            duty_type: dutyType,
+            in_time: inTimeISO,
+            date_ist: inDate,
+            is_open: true,
+            manual_in: true,
+            scanner_badge: profile.badge_number,
+            scanner_name: profile.name,
+            scanner_centre: profile.centre,
+            in_scanner_name: profile.name,
+          })
+          .select('id')
+          .single()
+
+        if (sessionError) throw new Error('Failed to create session: ' + sessionError.message)
+
+        // Step 2: Create IN attendance record
+        const { data: inAtt, error: inError } = await supabase
+          .from('attendance')
+          .insert({
+            badge_number: selected.badge_number,
+            sewadar_name: selected.sewadar_name,
+            centre: selected.centre,
+            department: selected.department || null,
+            type: 'IN',
+            scan_time: inTimeISO,
+            duty_type: dutyType,
+            session_id: session.id,
+            scanner_badge: profile.badge_number,
+            scanner_name: profile.name,
+            scanner_centre: profile.centre,
+            latitude: userLocation?.lat || null,
+            longitude: userLocation?.lng || null,
+            manual_entry: true,
+            submitted_by: profile.badge_number,
+            submitted_at: new Date().toISOString(),
+          })
+          .select('id')
+          .single()
+
+        if (inError) {
+          await supabase.from('attendance_sessions').delete().eq('id', session.id)
+          throw new Error('Failed to record IN: ' + inError.message)
+        }
+
+        // Step 3: Update session with in_id
+        await supabase.from('attendance_sessions').update({ in_id: inAtt.id }).eq('id', session.id)
+
+        // Step 4: Create OUT attendance record
+        const { data: outAtt, error: outError } = await supabase
+          .from('attendance')
+          .insert({
+            badge_number: selected.badge_number,
+            sewadar_name: selected.sewadar_name,
+            centre: selected.centre,
+            department: selected.department || null,
+            type: 'OUT',
+            scan_time: outTimeISO,
+            duty_type: dutyType,
+            session_id: session.id,
+            scanner_badge: profile.badge_number,
+            scanner_name: profile.name,
+            scanner_centre: profile.centre,
+            latitude: userLocation?.lat || null,
+            longitude: userLocation?.lng || null,
+            manual_entry: true,
+            submitted_by: profile.badge_number,
+            submitted_at: new Date().toISOString(),
+          })
+          .select('id')
+          .single()
+
+        if (outError) {
+          await supabase.from('attendance').delete().eq('session_id', session.id)
+          await supabase.from('attendance_sessions').delete().eq('id', session.id)
+          throw new Error('Failed to record OUT: ' + outError.message)
+        }
+
+        // Step 5: Close session with OUT
+        const { error: closeError } = await supabase
+          .from('attendance_sessions')
+          .update({
+            out_id: outAtt.id,
+            out_time: outTimeISO,
+            is_open: false,
+            manual_out: true,
+            out_scanner_name: profile.name,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', session.id)
+
+        if (closeError) throw new Error('Failed to close session: ' + closeError.message)
+
+        // Log
+        try {
+          await supabase.from('logs').insert({
+            user_badge: profile.badge_number,
+            action: 'MANUAL_ATTENDANCE',
+            details: `Manual ${dutyType} for ${selected.badge_number} (${inDate} ${inTime} → ${outDate} ${outTime}) — "${remark.trim()}"`,
+            timestamp: new Date().toISOString(),
+            device_id: navigator.userAgent.slice(0, 50),
+          })
+        } catch (_) { /* logging non-critical */ }
+
+        const dutyLabel = dutyType === 'gate_entry' ? 'Gate Entry' : 'Watch & Ward'
+        setSuccessMsg(`✓ ${dutyLabel} recorded for ${selected.sewadar_name}`)
+        
+        setSubmitting(false)
+        setTimeout(() => onClose(), 1500)
+      }
+    } catch (err) {
+      setError(err.message)
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxHeight: '90vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <PenLine size={18} color="var(--gold)" />
+            <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1rem', fontWeight: 700 }}>Manual Entry</h3>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '1.3rem', lineHeight: 1 }}>×</button>
+        </div>
+
+        {successMsg && (
+          <div style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1rem', color: '#16a34a', fontWeight: 600, fontSize: '0.88rem' }}>
+            ✓ {successMsg}
+          </div>
+        )}
+
+        <label className="label">Find Sewadar *</label>
+        <div style={{ position: 'relative', marginBottom: '1rem' }}>
+          <input
+            ref={searchRef}
+            type="text"
+            placeholder="Search by name or badge number…"
+            value={search}
+            onChange={e => { setSearch(e.target.value); setSelected(null) }}
+            className="input"
+            style={{ paddingRight: search ? '2.5rem' : '1rem' }}
+          />
+          {search && (
+            <button onClick={() => { setSearch(''); setResults([]); setSelected(null) }}
+              style={{ position: 'absolute', right: '0.85rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
+              ×
+            </button>
+          )}
+        </div>
+
+        {searching && <div className="spinner" style={{ margin: '0.5rem auto', width: 28, height: 28 }} />}
+
+        {results.length > 0 && !selected && (
+          <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', marginBottom: '1rem', maxHeight: 200, overflowY: 'auto' }}>
+            {results.map(s => (
+              <button key={s.badge_number} onClick={() => { setSelected(s); setResults([]); setSearch(s.badge_number) }}
+                style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', padding: '0.65rem 0.85rem', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: '0.88rem', color: 'var(--text-primary)' }}>{s.sewadar_name}</div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{s.centre} · {s.department || '—'}</div>
+                </div>
+                <span style={{ fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--gold)', fontWeight: 700 }}>{s.badge_number}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {selected && (
+          <div style={{ background: 'var(--gold-bg)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1rem' }}>
+            <div style={{ fontWeight: 700, color: 'var(--gold)', marginBottom: '0.2rem' }}>{selected.sewadar_name}</div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{selected.badge_number} · {selected.centre} · {selected.department || '—'}</div>
+            <button onClick={() => { setSelected(null); setSearch('') }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.72rem', marginTop: '0.35rem', fontFamily: 'inherit' }}>
+              Change
+            </button>
+          </div>
+        )}
+
+        <label className="label">Duty Type *</label>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem', marginBottom: '1rem' }}>
+          {[
+            { value: 'satsang', label: 'Satsang', color: '#9333ea', bg: 'rgba(168,85,247,0.1)' },
+            { value: 'gate_entry', label: 'Gate Entry', color: '#6b7280', bg: 'rgba(107,114,128,0.1)' },
+            { value: 'watch_ward', label: 'Watch & Ward', color: '#3b82f6', bg: 'rgba(59,130,246,0.1)' },
+          ].map(dt => (
+            <button key={dt.value} onClick={() => setDutyType(dt.value)}
+              style={{ padding: '0.6rem 0.25rem', border: `2px solid ${dutyType === dt.value ? dt.color : 'var(--border)'}`, borderRadius: 8, background: dutyType === dt.value ? dt.bg : 'transparent', color: dutyType === dt.value ? dt.color : 'var(--text-secondary)', fontWeight: 700, fontSize: '0.75rem', cursor: 'pointer', fontFamily: 'inherit' }}>
+              {dt.label}
+            </button>
+          ))}
+        </div>
+
+        {dutyType === 'satsang' ? (
+          <>
+            <label className="label">Mark *</label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '1rem' }}>
+              {['IN', 'OUT'].map(t => (
+                <button key={t} onClick={() => setSatsangType(t)}
+                  style={{ padding: '0.65rem', border: `2px solid ${satsangType === t ? (t === 'IN' ? '#16a34a' : '#dc2626') : 'var(--border)'}`, borderRadius: 8, background: satsangType === t ? (t === 'IN' ? 'rgba(34,197,94,0.1)' : 'rgba(220,38,38,0.1)') : 'transparent', color: satsangType === t ? (t === 'IN' ? '#16a34a' : '#dc2626') : 'var(--text-secondary)', fontWeight: 700, fontSize: '0.9rem', cursor: 'pointer', fontFamily: 'inherit' }}>
+                  {t}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '1rem', marginBottom: '1rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                <div>
+                  <label className="label">Date</label>
+                  <input type="date" className="input" value={satsangType === 'IN' ? inDate : outDate} onChange={e => satsangType === 'IN' ? setInDate(e.target.value) : setOutDate(e.target.value)} />
+                </div>
+                <div>
+                  <label className="label">Time</label>
+                  <input type="time" className="input" value={satsangType === 'IN' ? inTime : outTime} onChange={e => satsangType === 'IN' ? setInTime(e.target.value) : setOutTime(e.target.value)} />
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '1rem', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#16a34a', display: 'inline-block' }}></span>
+                <span style={{ fontWeight: 700, fontSize: '0.85rem', color: '#16a34a' }}>IN</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                <div>
+                  <label className="label">Date</label>
+                  <input type="date" className="input" value={inDate} onChange={e => setInDate(e.target.value)} />
+                </div>
+                <div>
+                  <label className="label">Time</label>
+                  <input type="time" className="input" value={inTime} onChange={e => setInTime(e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '1rem', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#dc2626', display: 'inline-block' }}></span>
+                <span style={{ fontWeight: 700, fontSize: '0.85rem', color: '#dc2626' }}>OUT</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                <div>
+                  <label className="label">Date</label>
+                  <input type="date" className="input" value={outDate} onChange={e => setOutDate(e.target.value)} />
+                </div>
+                <div>
+                  <label className="label">Time</label>
+                  <input type="time" className="input" value={outTime} onChange={e => setOutTime(e.target.value)} />
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {dutyType === 'satsang' && (
+          <>
+            <label className="label">Reason * <span style={{ color: 'var(--red)', fontWeight: 700 }}>(Required)</span></label>
+            <textarea
+              className="input"
+              rows={2}
+              placeholder="Why is this being entered manually?..."
+              value={remark}
+              onChange={e => setRemark(e.target.value)}
+              style={{ resize: 'none', marginBottom: '0.5rem' }}
+            />
+            <p style={{ fontSize: '0.72rem', color: remark.trim().length < 3 ? 'var(--text-muted)' : 'var(--green)', marginBottom: dutyType === 'satsang' ? '0.5rem' : '1rem' }}>
+              {remark.trim().length < 3 ? 'Minimum 3 characters required' : `✓ ${remark.trim().length} characters`}
+            </p>
+          </>
+        )}
+
+        {error && (
+          <div style={{ background: 'var(--red-bg)', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 8, padding: '0.6rem 0.85rem', color: 'var(--red)', fontSize: '0.82rem', marginBottom: '0.75rem' }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+          <button className="btn btn-outline btn-full" onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-gold btn-full"
+            onClick={handleSubmit}
+            disabled={!canSubmit || submitting}
+          >
+            {submitting ? 'Saving…' : dutyType === 'satsang' ? (satsangType === 'IN' ? 'Mark IN' : 'Mark OUT') : 'Save Entry'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
