@@ -686,7 +686,7 @@ export default function ScannerPage() {
                 </div>
                 <div className="success-name">{popupState.sewadar.sewadar_name}</div>
                 <div className="success-type">
-                  {new Date(popupState.time.replace(' ', 'T')).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                  {popupState.time ? new Date(popupState.time.replace(' ', 'T')).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}
                 </div>
               </div>
             )}
