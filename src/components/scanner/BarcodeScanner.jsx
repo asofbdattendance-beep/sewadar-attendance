@@ -6,8 +6,6 @@
  * On iOS/Safari + others: @undecaf/barcode-detector-polyfill (ZBar WASM, ~15-30ms/frame)
  *
  * Same code path for all devices — polyfill just fills the gap where native isn't available.
- * iOS Safari does have BarcodeDetector but only supports QR/2D formats, NOT Code39/128.
- * The polyfill replaces it entirely and supports all linear barcode formats.
  */
 
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
@@ -38,30 +36,34 @@ async function loadPolyfill() {
 
 const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const videoRef        = useRef(null)
-  const streamRef      = useRef(null)
-  const rafRef         = useRef(null)
-  const detectorRef    = useRef(null)
+  const streamRef       = useRef(null)
+  const rafRef          = useRef(null)
+  const detectorRef     = useRef(null)
   const mountedRef      = useRef(true)
-  const lastScanRef    = useRef({ badge: null, time: 0 })
+  const lastScanRef     = useRef({ badge: null, time: 0 })
   const isDetectingRef = useRef(false)
-  const scanTimerRef   = useRef(null)
-  const fpsRef         = useRef({ frames: 0, last: Date.now() })
-  const onScanRef      = useRef(onScan)
-  const lastDetectRef  = useRef(0)
-  const torchRef      = useRef(false)
-
-  const [status, setStatus]       = useState('starting')
-  const [errorMsg, setErrorMsg]   = useState('')
+  const scanTimerRef    = useRef(null)
+  const fpsRef          = useRef({ frames: 0, last: Date.now() })
+  const lastDetectRef   = useRef(0)
+  const torchRef        = useRef(false)
+  const callbackRef     = useRef(onScan)
+  const [status, setStatus]           = useState('starting')
+  const [errorMsg, setErrorMsg]       = useState('')
   const [lastScanned, setLastScanned] = useState('')
   const [engineLabel, setEngineLabel] = useState('')
-  const [fps, setFps]             = useState(0)
-  const [torchOn, setTorchOn]     = useState(false)
+  const [fps, setFps]               = useState(0)
+  const [torchOn, setTorchOn]         = useState(false)
+
+  // Keep callback ref in sync with latest onScan
+  useEffect(() => {
+    callbackRef.current = onScan
+  }, [onScan])
 
   const stopScanner = () => {
-    if (rafRef.current)         { cancelAnimationFrame(rafRef.current); rafRef.current = null }
-    if (scanTimerRef.current)   { clearTimeout(scanTimerRef.current); scanTimerRef.current = null }
-    if (streamRef.current)      { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
-    if (videoRef.current)        videoRef.current.srcObject = null
+    if (rafRef.current)        { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+    if (scanTimerRef.current)  { clearTimeout(scanTimerRef.current); scanTimerRef.current = null }
+    if (streamRef.current)     { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
+    if (videoRef.current)       videoRef.current.srcObject = null
     isDetectingRef.current = false
   }
 
@@ -85,11 +87,16 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     setStatus('loading')
     setErrorMsg('')
     setLastScanned('')
-    lastScanRef.current  = { badge: null, time: 0 }
-    fpsRef.current       = { frames: 0, last: Date.now() }
+    lastScanRef.current    = { badge: null, time: 0 }
+    fpsRef.current        = { frames: 0, last: Date.now() }
     lastDetectRef.current = 0
     torchRef.current = false
     setTorchOn(false)
+
+    // Preload polyfill if needed (non-blocking)
+    hasLinearBarcodeSupport().then(supported => {
+      if (!supported) loadPolyfill().catch(() => {})
+    }).catch(() => {})
 
     const hasNative = await hasLinearBarcodeSupport()
     if (!hasNative) {
@@ -99,13 +106,15 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       } catch {
         if (mountedRef.current) {
           setStatus('error')
-          setErrorMsg('Could not load barcode engine. Check internet connection and retry.')
+          setErrorMsg('Could not load barcode engine. Check internet and retry.')
         }
         return
       }
     } else {
       setEngineLabel('Native')
     }
+
+    if (!mountedRef.current) return
 
     try {
       detectorRef.current = new window.BarcodeDetector({
@@ -115,6 +124,8 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       if (mountedRef.current) { setStatus('error'); setErrorMsg('Failed to start barcode detector') }
       return
     }
+
+    if (!mountedRef.current) return
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -134,7 +145,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       setStatus('error')
       setErrorMsg(
         err.name === 'NotAllowedError'
-          ? 'Camera permission denied. Please allow camera access and retry.'
+          ? 'Camera permission denied. Allow camera and retry.'
           : 'Camera not available on this device.'
       )
       return
@@ -143,7 +154,8 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     if (!mountedRef.current) return
     setStatus('ready')
 
-    const detect = async () => {
+    // ── Detection loop ──
+    const detect = () => {
       if (!mountedRef.current) return
 
       fpsRef.current.frames++
@@ -153,11 +165,11 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
         fpsRef.current = { frames: 0, last: now }
       }
 
+      // Skip if already detecting, video not ready, or throttled
       if (isDetectingRef.current || videoRef.current?.readyState !== 4) {
         rafRef.current = requestAnimationFrame(detect)
         return
       }
-
       if (now - lastDetectRef.current < 80) {
         rafRef.current = requestAnimationFrame(detect)
         return
@@ -165,8 +177,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       lastDetectRef.current = now
 
       isDetectingRef.current = true
-      try {
-        const barcodes = await detectorRef.current.detect(videoRef.current)
+      detectorRef.current.detect(videoRef.current).then(barcodes => {
         for (const b of barcodes) {
           const text = clean(b.rawValue)
           if (!BADGE_REGEX.test(text)) continue
@@ -183,16 +194,19 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             scanTimerRef.current = null
           }, 1500)
 
-          onScanRef.current(text)
+          // Call the LATEST callback via ref
+          if (callbackRef.current) {
+            callbackRef.current(text)
+          }
           break
         }
-      } catch (e) {
-        if (import.meta.env.DEV) console.warn('[Scanner] detect error:', e)
-      } finally {
         isDetectingRef.current = false
-      }
-
-      rafRef.current = requestAnimationFrame(detect)
+        rafRef.current = requestAnimationFrame(detect)
+      }).catch(err => {
+        isDetectingRef.current = false
+        if (import.meta.env.DEV) console.warn('[Scanner] detect error:', err)
+        rafRef.current = requestAnimationFrame(detect)
+      })
     }
 
     rafRef.current = requestAnimationFrame(detect)
@@ -200,19 +214,12 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   useEffect(() => {
     mountedRef.current = true
-    hasLinearBarcodeSupport().then(supported => {
-      if (!supported) loadPolyfill()
-    }).catch(() => {})
     startScanner()
     return () => {
       mountedRef.current = false
       stopScanner()
     }
   }, [])
-
-  useEffect(() => {
-    onScanRef.current = onScan
-  }, [onScan])
 
   useEffect(() => {
     const onVisibility = () => {
@@ -249,7 +256,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       {status === 'loading' && (
         <div className="scanner-overlay">
           <div className="scanner-spinner" />
-          <span>{engineLabel === 'WASM' ? 'Loading iOS engine…' : 'Starting camera...'}</span>
+          <span>{engineLabel === 'WASM' ? 'Loading engine…' : 'Starting camera...'}</span>
         </div>
       )}
 

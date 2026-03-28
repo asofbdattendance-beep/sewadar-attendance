@@ -184,10 +184,9 @@ export default function ScannerPage() {
 
   const handleScan = useCallback(async (badge) => {
     console.log('[SCAN FIRED]', badge)
-    if (busyRef.current) { console.log('[BLOCKED] busyRef true'); return }
+    if (busyRef.current) { console.log('[BLOCKED] busyRef'); return }
 
     busyRef.current = true
-
     if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
     safetyTimerRef.current = setTimeout(() => {
       console.log('[TIMEOUT] releasing busyRef')
@@ -210,7 +209,8 @@ export default function ScannerPage() {
     }
 
     try {
-      const { profile: _userProfile, userLocation: location, centreConfig: cfg } = { profile, userLocation, centreConfig }
+      const location = userLocation
+      const cfg = centreConfig
 
       let found = sewadarCacheRef.current.get(badge)
       let lookupError = null
@@ -240,25 +240,25 @@ export default function ScannerPage() {
         return
       }
 
-    const scopeCentres = [profile?.centre, ...childCentresRef.current]
-    const inScope = scopeCentres.includes(found.centre)
-    const isException = isExceptionDept(found.department)
+      const scopeCentres = [profile?.centre, ...childCentresRef.current]
+      const inScope = scopeCentres.includes(found.centre)
+      const isException = isExceptionDept(found.department)
 
-    if (!isException && !inScope && !isAso) {
-      release()
-      openPopup({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
-      return
-    }
-
-    if (!isAso && location && cfg?.geo_enabled === true && cfg?.latitude != null && cfg?.longitude != null) {
-      const dist = getDistanceMetres(location.lat, location.lng, cfg.latitude, cfg.longitude)
-      const radius = cfg.geo_radius || 200
-      if (dist > radius) {
+      if (!isException && !inScope && !isAso) {
         release()
-        openPopup({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
+        openPopup({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
         return
       }
-    }
+
+      if (!isAso && location && cfg?.geo_enabled === true && cfg?.latitude != null && cfg?.longitude != null) {
+        const dist = getDistanceMetres(location.lat, location.lng, cfg.latitude, cfg.longitude)
+        const radius = cfg.geo_radius || 200
+        if (dist > radius) {
+          release()
+          openPopup({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
+          return
+        }
+      }
 
       const scanTime = nowIST()
       const isLateNight = isLateNightScan(scanTime)
@@ -504,6 +504,39 @@ export default function ScannerPage() {
       </div>
 
       <BarcodeScanner ref={scannerRef} onScan={handleScan} />
+
+      {/* Debug Test Button */}
+      <div style={{ margin: '0.5rem 0.1rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+        <button
+          onClick={() => handleScan('FB5991GA0070')}
+          style={{
+            background: 'rgba(201,168,76,0.1)',
+            border: '1px dashed rgba(201,168,76,0.4)',
+            borderRadius: 8,
+            padding: '0.5rem',
+            fontSize: '0.75rem',
+            fontFamily: 'monospace',
+            color: 'var(--gold)',
+            cursor: 'pointer',
+            textAlign: 'center',
+          }}
+        >
+          [DEBUG] Simulate scan: FB5991GA0070
+        </button>
+        {popupState && (
+          <div style={{
+            background: 'rgba(59,130,246,0.08)',
+            border: '1px solid rgba(59,130,246,0.25)',
+            borderRadius: 6,
+            padding: '0.4rem 0.7rem',
+            fontSize: '0.7rem',
+            fontFamily: 'monospace',
+            color: 'var(--blue)',
+          }}>
+            popupState.type = <strong>{popupState.type}</strong> | badge = {popupState.badge || popupState.sewadar?.badge_number || '—'}
+          </div>
+        )}
+      </div>
 
       {recentScans.length > 0 && (
         <div style={{ margin: '0.85rem 0 0', padding: '0 0.1rem' }}>
