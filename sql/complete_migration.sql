@@ -306,6 +306,129 @@ CREATE POLICY "logs_insert" ON public.logs
   FOR INSERT TO authenticated WITH CHECK (true);
 
 -- =====================================================
+-- STEP 15: Add flag columns to attendance_sessions
+-- =====================================================
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'attendance_sessions' AND column_name = 'flagged') THEN
+    ALTER TABLE public.attendance_sessions ADD COLUMN flagged boolean NOT NULL DEFAULT false;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'attendance_sessions' AND column_name = 'flag_reason') THEN
+    ALTER TABLE public.attendance_sessions ADD COLUMN flag_reason text;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'attendance_sessions' AND column_name = 'flagged_by') THEN
+    ALTER TABLE public.attendance_sessions ADD COLUMN flagged_by text;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'attendance_sessions' AND column_name = 'flagged_at') THEN
+    ALTER TABLE public.attendance_sessions ADD COLUMN flagged_at timestamptz;
+  END IF;
+END $$;
+
+-- =====================================================
+-- STEP 16: Add index for flagged sessions
+-- =====================================================
+CREATE INDEX IF NOT EXISTS idx_sessions_flagged ON public.attendance_sessions(flagged) WHERE flagged = true;
+
+-- =====================================================
+-- STEP 17: Create flags table with replies thread
+-- =====================================================
+CREATE TABLE IF NOT EXISTS public.flags (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  session_id      bigint REFERENCES public.attendance_sessions(id) ON DELETE SET NULL, -- nullable so SET NULL works
+  raised_by_badge text NOT NULL,
+  raised_by_name  text NOT NULL,
+  raised_by_centre text NOT NULL,
+  reason          text NOT NULL,
+  status          text NOT NULL DEFAULT 'open'
+                  CHECK (status IN ('open', 'in_progress', 'resolved')),
+  resolved_by     text,
+  resolved_at     timestamptz,
+  resolved_reason text,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  updated_at      timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.flags ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "flags_read" ON public.flags;
+CREATE POLICY "flags_read" ON public.flags
+  FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "flags_insert" ON public.flags;
+CREATE POLICY "flags_insert" ON public.flags
+  FOR INSERT TO authenticated WITH CHECK (true);
+
+DROP POLICY IF EXISTS "flags_update" ON public.flags;
+CREATE POLICY "flags_update" ON public.flags
+  FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
+-- =====================================================
+-- STEP 18: Create flag_replies table
+-- =====================================================
+CREATE TABLE IF NOT EXISTS public.flag_replies (
+  id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  flag_id       bigint REFERENCES public.flags(id) ON DELETE SET NULL,
+  replied_by_badge  text NOT NULL,
+  replied_by_name   text NOT NULL,
+  replied_by_centre text,
+  message       text NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.flag_replies ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "flag_replies_read" ON public.flag_replies;
+CREATE POLICY "flag_replies_read" ON public.flag_replies
+  FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "flag_replies_insert" ON public.flag_replies;
+CREATE POLICY "flag_replies_insert" ON public.flag_replies
+  FOR INSERT TO authenticated WITH CHECK (true);
+
+-- =====================================================
+-- STEP 19: Create indexes for flags
+-- =====================================================
+CREATE INDEX IF NOT EXISTS idx_flags_session_id ON public.flags(session_id);
+CREATE INDEX IF NOT EXISTS idx_flags_status ON public.flags(status);
+CREATE INDEX IF NOT EXISTS idx_flags_raised_by ON public.flags(raised_by_badge);
+CREATE INDEX IF NOT EXISTS idx_flag_replies_flag_id ON public.flag_replies(flag_id);
+
+-- =====================================================
+-- STEP 20: Create flag_audit_log table for full trail
+-- =====================================================
+CREATE TABLE IF NOT EXISTS public.flag_audit_log (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  flag_id     bigint REFERENCES public.flags(id) ON DELETE SET NULL,
+  action      text NOT NULL,
+  actor_badge text NOT NULL,
+  actor_name  text NOT NULL,
+  details     text,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.flag_audit_log ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "flag_audit_read" ON public.flag_audit_log;
+CREATE POLICY "flag_audit_read" ON public.flag_audit_log
+  FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "flag_audit_insert" ON public.flag_audit_log;
+CREATE POLICY "flag_audit_insert" ON public.flag_audit_log
+  FOR INSERT TO authenticated WITH CHECK (true);
+
+-- =====================================================
 -- VERIFICATION QUERIES
 -- =====================================================
 

@@ -174,14 +174,17 @@ export default function ScannerPage() {
     const { profile: _userProfile, userLocation: location, centreConfig: cfg } = { profile, userLocation, centreConfig }
 
     let found = null
+    let lookupError = null
     try {
       const { data, error } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
       if (error) throw error
       found = data
-    } catch (e) { console.warn('Sewadar lookup failed:', e) }
+    } catch (e) {
+      lookupError = e?.message || 'Database error'
+    }
 
     if (!found) {
-      setPopupState({ type: 'not_found', badge })
+      setPopupState({ type: 'not_found', badge, message: lookupError ? `Lookup failed: ${lookupError}` : null })
       return
     }
 
@@ -218,10 +221,8 @@ export default function ScannerPage() {
     const isLateNight = isLateNightScan(scanTime)
 
     if (isLateNight) {
-      // Store pending scan and ask Watch & Ward confirmation
       pendingScanRef.current = { found, badge: badge, scanTime }
       setWatchWardConfirm({ sewadar: found, badge })
-      busyRef.current = false
       return
     }
 
@@ -242,15 +243,20 @@ export default function ScannerPage() {
   async function processSewadar(found, badge, scanTime, watchWardConfirm = false) {
     const scanTimeISO = new Date(scanTime.replace(' ', 'T')).toISOString()
     
-    // Evaluate the scan
-    const result = await evaluateScan(supabase, {
-      badgeNumber: badge,
-      type: 'IN', // Default to IN, will update based on session
-      scanTimeISO,
-      watchWard: watchWardConfirm,
-      isAso,
-      isCentreUser,
-    })
+    let result
+    try {
+      result = await evaluateScan(supabase, {
+        badgeNumber: badge,
+        type: 'IN',
+        scanTimeISO,
+        watchWard: watchWardConfirm,
+        isAso,
+        isCentreUser,
+      })
+    } catch (err) {
+      console.error('[Scanner] evaluateScan error:', err)
+      result = { status: 'blocked', reason: 'system_error', message: err.message }
+    }
 
     // Get today's sessions for display
     const today = todayDateStr()
@@ -263,7 +269,7 @@ export default function ScannerPage() {
     const _geoEnabled = centreConfig?.geo_enabled === true
     const _hasGeoCoords = centreConfig?.latitude != null && centreConfig?.longitude != null
 
-    if (result.status === 'blocked') {
+    if (result.status === 'blocked' || result.status === 'needs_watch_ward_confirmation') {
       if (result.reason === 'jatha_active') {
         setPopupState({ 
           type: 'jatha_block', 
@@ -274,7 +280,18 @@ export default function ScannerPage() {
         return
       }
 
-      if (result.reason === 'open_session_exists') {
+      if (result.reason === 'cross_midnight_session') {
+        setPopupState({ 
+          type: 'open_session_block', 
+          sewadar: found, 
+          badge, 
+          openSession: result.openSession,
+          todaySessions 
+        })
+        return
+      }
+
+      if (result.reason === 'open_session_same_day') {
         if (!result.canOverride) {
           // Centre user - hard block
           setPopupState({ 
@@ -306,6 +323,21 @@ export default function ScannerPage() {
         }
         return
       }
+
+      // Fallback for any unhandled blocked reason
+      console.warn('[Scanner] Unhandled blocked reason:', result.reason, result)
+      if (result.reason === 'system_error') {
+        setPopupState({ type: 'not_found', badge, message: result.message })
+      } else {
+        setPopupState({ 
+          type: 'open_session_block', 
+          sewadar: found, 
+          badge, 
+          openSession: result.openSession || null,
+          todaySessions 
+        })
+      }
+      return
     }
 
     // Allowed - show confirmation
@@ -323,7 +355,7 @@ export default function ScannerPage() {
   const markAttendance = async (type, overrideData = null) => {
     try {
       if (!popupState?.sewadar || !profile) {
-        console.warn('markAttendance: no sewadar or profile')
+        showError('Something went wrong. Please try again.')
         return
       }
 
@@ -598,7 +630,7 @@ export default function ScannerPage() {
                 <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
                 <div className="error-title">Badge Not Found</div>
                 <div className="error-badge">{popupState.badge}</div>
-                <div className="error-msg">This badge is not registered in the system</div>
+                <div className="error-msg">{popupState.message || 'This badge is not registered in the system'}</div>
                 <button className="btn-cancel" onClick={closePopup}>Try Again</button>
               </div>
             )}
@@ -1117,7 +1149,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
             timestamp: new Date().toISOString(),
             device_id: navigator.userAgent.slice(0, 50),
           })
-        } catch (_) {}
+        } catch (_) { /* logging non-critical */ }
 
         const dutyLabel = dutyType === 'gate_entry' ? 'Gate Entry' : 'Watch & Ward'
         setSuccessMsg(`✓ ${dutyLabel} recorded for ${selected.sewadar_name}`)
