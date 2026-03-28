@@ -273,9 +273,9 @@ export default function ScannerPage() {
       release()
       await processSewadar(found, badge, scanTime)
     } catch (e) {
-      console.error('[HANDLE SCAN ERROR]', e)
+      console.error('[HANDLE SCAN ERROR]', e?.message || e, e?.stack)
       release()
-      openPopup({ type: 'not_found', badge, message: 'System error: ' + (e?.message || 'Unknown') })
+      openPopup({ type: 'not_found', badge, message: 'System error: ' + (e?.message || String(e)) })
     }
   }, [profile, userLocation, centreConfig, childCentres, isAso])
 
@@ -290,7 +290,18 @@ export default function ScannerPage() {
   }
 
   async function processSewadar(found, badge, scanTime, watchWardConfirm = false) {
-    const scanTimeISO = new Date(scanTime.replace(' ', 'T')).toISOString()
+    console.log('[PROC] start', { badge, scanTime, found: !!found })
+    let scanTimeISO
+    try {
+      const parsed = new Date(scanTime.replace(' ', 'T'))
+      if (isNaN(parsed.getTime())) throw new Error('Invalid scanTime: ' + scanTime)
+      scanTimeISO = parsed.toISOString()
+    } catch (e) {
+      console.error('[PROC] scanTime parse failed:', e)
+      openPopup({ type: 'not_found', badge, message: 'System error: bad scan time' })
+      return
+    }
+    console.log('[PROC] scanTimeISO =', scanTimeISO)
     const today = todayDateStr()
 
     const openPopup = (state) => {
@@ -302,17 +313,25 @@ export default function ScannerPage() {
 
     let result
     try {
-      const [evalResult, todaySessions] = await Promise.all([
-        evaluateScan(supabase, {
-          badgeNumber: badge,
-          type: 'IN',
-          scanTimeISO,
-          watchWard: watchWardConfirm,
-          isAso,
-          isCentreUser,
-        }),
-        getSessionsForDate(supabase, badge, today),
-      ])
+      let evalResult, todaySessions
+      try {
+        ;[evalResult, todaySessions] = await Promise.all([
+          evaluateScan(supabase, {
+            badgeNumber: badge,
+            type: 'IN',
+            scanTimeISO,
+            watchWard: watchWardConfirm,
+            isAso,
+            isCentreUser,
+          }),
+          getSessionsForDate(supabase, badge, today),
+        ])
+        console.log('[PROC] evaluateScan result:', evalResult)
+      } catch (e) {
+        console.error('[PROC] evaluateScan threw:', e)
+        openPopup({ type: 'not_found', badge, message: 'System error: ' + (e?.message || String(e)) })
+        return
+      }
       result = evalResult
 
       const openSession = todaySessions.find(s => s.is_open)

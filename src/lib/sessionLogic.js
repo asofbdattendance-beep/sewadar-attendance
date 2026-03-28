@@ -140,6 +140,9 @@ export async function evaluateScan(supabase, {
   isAso = false,
   isCentreUser = false,
 }) {
+  if (!scanTimeISO || isNaN(new Date(scanTimeISO).getTime())) {
+    throw new Error('Invalid scan time: ' + scanTimeISO)
+  }
   const scanDateIST = scanTimeToISTDate(scanTimeISO)
   
   // Step 1: Check for active jatha (hard block for all)

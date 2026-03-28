@@ -28,7 +28,7 @@ export function formatDateStr(dateStr) {
 }
 
 export function nowIST() {
-  return new Intl.DateTimeFormat('en-CA', {
+  const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata',
     year: 'numeric',
     month: '2-digit',
@@ -36,5 +36,7 @@ export function nowIST() {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-  }).format(new Date()) + '+05:30'
+  }).formatToParts(new Date())
+  const get = (type) => (parts.find(p => p.type === type) || { value: '00' }).value
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}+05:30`
 }
