@@ -59,7 +59,7 @@ export default function EmptyState({
           fontSize: '0.75rem',
           color: 'var(--text-muted)',
         }}>
-          Searching for: <strong style={{ color: 'var(--text-secondary)' }}>"{searchTerm}"</strong>
+          Searching for: <strong style={{ color: 'var(--text-secondary)' }}>&ldquo;{searchTerm}&rdquo;</strong>
         </div>
       )}
 

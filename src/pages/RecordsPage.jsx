@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { todayDateStr, formatDateStr, scanTimeToISTDate } from '../lib/dateUtils'
 import {
   Search, Download, Flag, X, RefreshCw,
-  Trash2, FileText, BarChart2, Users, Calendar
+  Trash2, FileText, BarChart2
 } from 'lucide-react'
 import DateRangePicker from '../components/DateRangePicker'
 import CentreComboBox from '../components/CentreComboBox'
@@ -454,7 +454,7 @@ function ReportsTab() {
           style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.6rem', background: 'var(--bg)', fontSize: '0.85rem' }}>
           <option value="satsang">Satsang Days</option>
           <option value="duty_summary">Duty Summary</option>
-          <option value="open_now">Who's Inside Now</option>
+          <option value="open_now">Who&apos;s Inside Now</option>
         </select>
 
         {reportType !== 'open_now' && (
@@ -539,8 +539,8 @@ function FlagsTab() {
 
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(true)
-  const [totalCount, setTotalCount] = useState(0)
-  const [page, setPage] = useState(1)
+  const [_totalCount, setTotalCount] = useState(0)
+  const [page, _setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState('open')
 
   useEffect(() => {
@@ -617,6 +617,7 @@ export default function RecordsPage() {
   const [activeTab, setActiveTab] = useState('attendance')
 
   const canReports = isAso || profile?.can_reports
+  const canFlags = isAso || profile?.can_flags
 
   return (
     <div>
@@ -657,27 +658,29 @@ export default function RecordsPage() {
           </button>
         )}
 
-        <button
-          onClick={() => setActiveTab('flags')}
-          style={{
-            padding: '0.5rem 1rem',
-            background: activeTab === 'flags' ? 'var(--gold-bg)' : 'transparent',
-            border: 'none',
-            borderRadius: '8px 8px 0 0',
-            color: activeTab === 'flags' ? 'var(--gold)' : 'var(--text-muted)',
-            fontWeight: 600,
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-          }}
-        >
+        {canFlags && (
+          <button
+            onClick={() => setActiveTab('flags')}
+            style={{
+              padding: '0.5rem 1rem',
+              background: activeTab === 'flags' ? 'var(--gold-bg)' : 'transparent',
+              border: 'none',
+              borderRadius: '8px 8px 0 0',
+              color: activeTab === 'flags' ? 'var(--gold)' : 'var(--text-muted)',
+              fontWeight: 600,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
           <Flag size={14} style={{ marginRight: '0.35rem', verticalAlign: 'middle' }} />
           Flags
-        </button>
+          </button>
+        )}
       </div>
 
       {activeTab === 'attendance' && <AttendanceTab />}
       {activeTab === 'reports' && canReports && <ReportsTab />}
-      {activeTab === 'flags' && <FlagsTab />}
+      {activeTab === 'flags' && canFlags && <FlagsTab />}
     </div>
   )
 }

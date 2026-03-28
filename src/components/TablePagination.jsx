@@ -5,7 +5,7 @@ export default function TablePagination({
   pageSize = 50,
   total = 0,
   onPageChange,
-  showPageCount = true,
+  _showPageCount = true,
 }) {
   if (total === 0) return null
 

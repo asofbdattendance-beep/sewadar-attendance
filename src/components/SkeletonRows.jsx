@@ -38,12 +38,6 @@ export default function SkeletonRows({ rows = 10, cols = 5 }) {
           ))}
         </tr>
       ))}
-      <style>{`
-        @keyframes skeletonFade {
-          from { opacity: 0.4; }
-          to { opacity: 0.9; }
-        }
-      `}</style>
     </>
   )
 }

@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, getDistanceMetres, ROLES, isExceptionDept, DUTY_TYPES } from '../lib/supabase'
-import { nowIST, todayDateStr, scanTimeToISTDate } from '../lib/dateUtils'
+import { nowIST, todayDateStr } from '../lib/dateUtils'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
-import { MapPin, AlertTriangle, CheckCircle, XCircle, Clock, PenLine, Moon } from 'lucide-react'
-import { showError, showInfo } from '../components/Toast'
+import { MapPin, AlertTriangle, CheckCircle, XCircle, PenLine, Moon } from 'lucide-react'
+import { showError } from '../components/Toast'
 import {
   evaluateScan,
   executeScan,
@@ -12,7 +12,6 @@ import {
   isLateNightScan,
   getSessionsForDate,
   getOpenSession,
-  formatDuration,
   asoForceCloseSession,
   executeStandaloneOut,
 } from '../lib/sessionLogic'
@@ -25,7 +24,6 @@ export default function ScannerPage() {
   const [gpsStatus, setGpsStatus] = useState('loading')
   const [popupState, setPopupState] = useState(null)
   const busyRef = useRef(false)
-  const [processing, setProcessing] = useState(false)
   const [todayCount, setTodayCount] = useState(0)
   const [recentScans, setRecentScans] = useState([])
   const [manualModal, setManualModal] = useState(false)
@@ -53,7 +51,7 @@ export default function ScannerPage() {
       setChildCentres(children)
       childCentresRef.current = children
     }).catch(e => console.warn('Failed to load centre config:', e))
-  }, [profile?.centre])
+  }, [profile?.centre, isAso])
 
   useEffect(() => {
     if (!navigator.geolocation) { setGpsStatus('failed'); return }
@@ -78,7 +76,11 @@ export default function ScannerPage() {
       }, () => fetchTodayCount().catch(console.error))
       .subscribe()
     return () => supabase.removeChannel(channel)
-  }, [profile?.centre, profile?.role])
+  }, [profile?.centre, profile?.role, profile])
+
+  useEffect(() => {
+    fetchRecentScans().catch(console.error)
+  }, [profile?.centre, profile?.role, profile])
 
   async function fetchTodayCount() {
     const today = todayDateStr()
@@ -113,10 +115,6 @@ export default function ScannerPage() {
     const { data } = await q
     if (data) setRecentScans(data)
   }
-
-  useEffect(() => {
-    fetchRecentScans().catch(console.error)
-  }, [profile?.centre, profile?.role])
 
   useEffect(() => {
     return () => {
@@ -173,7 +171,7 @@ export default function ScannerPage() {
       }
     }, 3000)
 
-    const { profile: userProfile, userLocation: location, centreConfig: cfg } = { profile, userLocation, centreConfig }
+    const { profile: _userProfile, userLocation: location, centreConfig: cfg } = { profile, userLocation, centreConfig }
 
     let found = null
     try {
@@ -184,7 +182,6 @@ export default function ScannerPage() {
 
     if (!found) {
       setPopupState({ type: 'not_found', badge })
-      setProcessing(false)
       return
     }
 
@@ -193,7 +190,6 @@ export default function ScannerPage() {
     const badgeStatus = (found.badge_status || '').toLowerCase().trim()
     if (!ALLOWED_STATUSES.includes(badgeStatus)) {
       setPopupState({ type: 'invalid_status', sewadar: found, badge })
-      setProcessing(false)
       return
     }
 
@@ -204,7 +200,6 @@ export default function ScannerPage() {
 
     if (!isException && !inScope && !isAso) {
       setPopupState({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
-      setProcessing(false)
       return
     }
 
@@ -214,7 +209,6 @@ export default function ScannerPage() {
       const radius = cfg.geo_radius || 200
       if (dist > radius) {
         setPopupState({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
-        setProcessing(false)
         return
       }
     }
@@ -227,14 +221,13 @@ export default function ScannerPage() {
       // Store pending scan and ask Watch & Ward confirmation
       pendingScanRef.current = { found, badge: badge, scanTime }
       setWatchWardConfirm({ sewadar: found, badge })
-      setProcessing(false)
       busyRef.current = false
       return
     }
 
     // Proceed with normal evaluation
     await processSewadar(found, badge, scanTime)
-  }, [profile, userLocation, centreConfig, childCentres])
+  }, [profile, userLocation, centreConfig, childCentres, isAso])
 
   async function handleWatchWardConfirm(isWatchWard) {
     if (!pendingScanRef.current) return
@@ -267,8 +260,8 @@ export default function ScannerPage() {
     const openSession = todaySessions.find(s => s.is_open)
     const nextType = openSession ? 'OUT' : 'IN'
 
-    const geoEnabled = centreConfig?.geo_enabled === true
-    const hasGeoCoords = centreConfig?.latitude != null && centreConfig?.longitude != null
+    const _geoEnabled = centreConfig?.geo_enabled === true
+    const _hasGeoCoords = centreConfig?.latitude != null && centreConfig?.longitude != null
 
     if (result.status === 'blocked') {
       if (result.reason === 'jatha_active') {
@@ -336,7 +329,7 @@ export default function ScannerPage() {
 
       const scanTime = nowIST()
       const scanTimeISO = new Date(scanTime.replace(' ', 'T')).toISOString()
-      const { found, badge, openSession, dutyType, todaySessions } = popupState
+      const { found, badge: _badge, openSession, dutyType: _dutyType, todaySessions: _todaySessions } = popupState
 
       // If override, handle it first
       if (overrideData?.isOverride) {
@@ -385,7 +378,7 @@ export default function ScannerPage() {
         (popupState.watchWard ? DUTY_TYPES.WATCH_WARD : computeDutyType(scanTimeISO, popupState.watchWard))
 
       // Execute the scan
-      const result = await executeScan(supabase, {
+      const _result = await executeScan(supabase, {
         badge_number: found.badge_number,
         sewadar_name: found.sewadar_name,
         centre: found.centre,
@@ -488,12 +481,6 @@ export default function ScannerPage() {
               </div>
             ))}
           </div>
-        </div>
-      )}
-
-      {processing && (
-        <div className="scanner-processing">
-          <div className="scanner-processing-dot" />Processing…
         </div>
       )}
 
@@ -687,7 +674,7 @@ export default function ScannerPage() {
   )
 }
 
-function SewadarFoundCard({ sewadar, allowedAction, todaySessions, dutyType, onMark, onClose }) {
+function SewadarFoundCard({ sewadar, allowedAction, todaySessions, _dutyType, onMark, onClose }) {
   const statusStyle = (s) => {
     const status = (s || '').toLowerCase()
     if (status === 'permanent') return { bg: 'rgba(33,115,70,0.12)', color: 'var(--green)' }
@@ -743,7 +730,7 @@ function SewadarFoundCard({ sewadar, allowedAction, todaySessions, dutyType, onM
   )
 }
 
-function OverridePopup({ type, sewadar, badge, openSession, todaySessions, onMark, onClose, isAso, profile }) {
+function OverridePopup({ type, sewadar, badge, openSession: _openSession, todaySessions: _todaySessions, onMark, onClose, isAso, profile }) {
   const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -815,7 +802,7 @@ function OverridePopup({ type, sewadar, badge, openSession, todaySessions, onMar
   )
 }
 
-function ManualEntryModal({ profile, childCentres, userLocation, centreConfig, onClose, onSuccess }) {
+function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _centreConfig, onClose, onSuccess }) {
   const [search, setSearch] = useState('')
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
@@ -852,7 +839,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig, o
 
         const { data } = await q
         setResults(data || [])
-      } catch (e) { setResults([]) }
+      } catch (_e) { setResults([]) }
       setSearching(false)
     }, 300)
     return () => clearTimeout(timer)
@@ -893,7 +880,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig, o
         return
       }
       // ASO creates standalone OUT
-executeStandaloneOut(supabase, {
+      await executeStandaloneOut(supabase, {
         badge_number: selected.badge_number,
         sewadar_name: selected.sewadar_name,
         centre: selected.centre,
@@ -922,7 +909,7 @@ executeStandaloneOut(supabase, {
     const dutyType = computeDutyType(scanTimeISO, attendanceType === 'WATCH_WARD')
 
     try {
-      const result = await executeScan(supabase, {
+      const _result = await executeScan(supabase, {
         badge_number: selected.badge_number,
         sewadar_name: selected.sewadar_name,
         centre: selected.centre,

@@ -15,6 +15,54 @@ export function AuthProvider({ children }) {
   const lastActivityRef = useRef(Date.now())
   const timeoutCheckRef = useRef(null)
 
+  async function fetchProfile(userId) {
+    const { data: userData, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('auth_id', userId)
+      .single()
+
+    if (error) {
+      console.warn('Failed to load profile:', error)
+      setProfile(null)
+      setLoading(false)
+      return
+    }
+
+    let permissions = {
+      can_scan: true,
+      can_records: true,
+      can_reports: false,
+      can_jatha: false,
+      can_manual_entry: false,
+      can_flags: false,
+      can_edit_jatha: false,
+    }
+
+    if (userData.role === ROLES.CENTRE) {
+      const { data: permData } = await supabase
+        .from('user_permissions')
+        .select('*')
+        .eq('user_id', userData.id)
+        .single()
+
+      if (permData) {
+        permissions = {
+          can_scan: permData.can_scan ?? true,
+          can_records: permData.can_records ?? true,
+          can_reports: permData.can_reports ?? false,
+          can_jatha: permData.can_jatha ?? false,
+          can_manual_entry: permData.can_manual_entry ?? false,
+          can_flags: permData.can_flags ?? false,
+          can_edit_jatha: permData.can_edit_jatha ?? false,
+        }
+      }
+    }
+
+    setProfile({ ...userData, ...permissions })
+    setLoading(false)
+  }
+
   const resetActivity = useCallback(() => {
     lastActivityRef.current = Date.now()
     setSessionWarning(false)
@@ -48,7 +96,7 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     const events = ['mousedown', 'keydown', 'touchstart', 'scroll']
-    events.forEach(e => window.addEventListener(e, resetActivity, { passive: true })) // NOTE: resetActivity only reads a ref — passive: true is safe and avoids performance penalty
+    events.forEach(e => window.addEventListener(e, resetActivity, { passive: true }))
     return () => events.forEach(e => window.removeEventListener(e, resetActivity))
   }, [resetActivity])
 
@@ -66,56 +114,7 @@ export function AuthProvider({ children }) {
       }
     }, 30000)
     return () => clearInterval(timeoutCheckRef.current)
-  }, [sessionExpired])
-
-  async function fetchProfile(userId) {
-    const { data: userData, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('auth_id', userId)
-      .single()
-    
-    if (error) {
-      console.warn('Failed to load profile:', error)
-      setProfile(null)
-      setLoading(false)
-      return
-    }
-    
-    // Fetch permissions for centre users
-    let permissions = {
-      can_scan: true,
-      can_records: true,
-      can_reports: false,
-      can_jatha: false,
-      can_manual_entry: false,
-      can_flags: false,
-      can_edit_jatha: false,
-    }
-    
-    if (userData.role === ROLES.CENTRE) {
-      const { data: permData } = await supabase
-        .from('user_permissions')
-        .select('*')
-        .eq('user_id', userData.id)
-        .single()
-      
-      if (permData) {
-        permissions = {
-          can_scan: permData.can_scan ?? true,
-          can_records: permData.can_records ?? true,
-          can_reports: permData.can_reports ?? false,
-          can_jatha: permData.can_jatha ?? false,
-          can_manual_entry: permData.can_manual_entry ?? false,
-          can_flags: permData.can_flags ?? false,
-          can_edit_jatha: permData.can_edit_jatha ?? false,
-        }
-      }
-    }
-    
-    setProfile({ ...userData, ...permissions })
-    setLoading(false)
-  }
+  }, [sessionExpired, sessionWarning])
 
   async function signIn(email, password) {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })

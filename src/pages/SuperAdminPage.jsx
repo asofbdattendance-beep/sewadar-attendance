@@ -22,7 +22,7 @@ import SkeletonRows from '../components/SkeletonRows'
 import TablePagination from '../components/TablePagination'
 import EmptyState from '../components/EmptyState'
 import ConfirmModal from '../components/ConfirmModal'
-import { showSuccess, showError } from '../components/Toast'
+import { showSuccess, _showError } from '../components/Toast'
 
 const PAGE_SIZE = 50
 const SEARCH_DEBOUNCE = 300
@@ -86,10 +86,10 @@ export default function SuperAdminPage() {
 
   // Attendance tab state
   const [attSearch, setAttSearch] = useState('')
-  const [attSearchInput, setAttSearchInput] = useState('')
+  const [attSearchInput, _setAttSearchInput] = useState('')
   const [attDate, setAttDate] = useState(todayDateStr())
   const [attRecords, setAttRecords] = useState([])
-  const [attTotal, setAttTotal] = useState(0)
+  const [_attTotal, setAttTotal] = useState(0)
   const [attPage, setAttPage] = useState(1)
   const [attLoading, setAttLoading] = useState(false)
   const [editingAtt, setEditingAtt] = useState(null)
@@ -1201,7 +1201,7 @@ export default function SuperAdminPage() {
 
                   {userSewadarInput.length >= 2 && userSewadarResults.length === 0 && !userSewadarSearching && (
                     <div style={{ position:'absolute', top:'calc(100% + 4px)', left:0, right:0, zIndex:100, background:'var(--bg-elevated)', border:'1px solid var(--border)', borderRadius:10, padding:'0.85rem', textAlign:'center', color:'var(--text-muted)', fontSize:'0.82rem', boxShadow:'0 4px 20px rgba(0,0,0,0.12)' }}>
-                      No sewadars found for "{userSewadarInput}"
+                      No sewadars found for &ldquo;{userSewadarInput}&rdquo;
                     </div>
                   )}
                 </div>

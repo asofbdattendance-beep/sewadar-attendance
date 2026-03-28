@@ -4,20 +4,20 @@ import App from './App.jsx'
 import './index.css'
 
 // ── PWA update notification — production only ──
-let swRegistration = null
+let _swRegistration = null
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').then(reg => {
-      swRegistration = reg
-      reg.addEventListener('updatefound', () => {
-        const newWorker = reg.installing
-        newWorker.addEventListener('statechange', () => {
-          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-            window.__pwaUpdateAvailable = true
-            window.dispatchEvent(new Event('pwa-update-available'))
-          }
+      _swRegistration = reg
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing
+          newWorker.addEventListener('statechange', () => {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              window.__pwaUpdateAvailable = true
+              window.dispatchEvent(new window.Event('pwa-update-available'))
+            }
+          })
         })
-      })
     }).catch(() => { /* SW registration failed — ignore */ })
   })
 }

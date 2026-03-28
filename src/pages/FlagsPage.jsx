@@ -68,7 +68,7 @@ export default function FlagsPage() {
     const scope = getScope()
     let query = supabase.from('queries').select('status', { count: 'exact', head: true })
     if (scope.length > 0) query = query.in('raised_by_centre', scope)
-    const { count } = await query
+    await query
     const s = { open: 0, in_progress: 0, resolved: 0, total: 0 }
     if (scope.length > 0) {
       const [open, ip, res] = await Promise.all([

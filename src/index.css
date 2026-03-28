@@ -653,19 +653,6 @@ tr:hover td { background:#FAFCFF; }
 .flag-card-right { display:flex; align-items:center; gap:8px; color:var(--text-muted); }
 .flag-time { font-size:11px; color:var(--text-muted); }
 
-.flag-status-badge { display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; }
-.flag-status-open { background:var(--red-bg); color:var(--red); }
-.flag-status-progress { background:var(--amber-bg); color:var(--amber); }
-.flag-status-resolved { background:var(--green-bg); color:var(--green); }
-.flag-type-label { font-size:12px; color:var(--text-secondary); font-weight:500; }
-
-.flag-description { padding:8px 14px 6px; font-size:14px; font-weight:500; color:var(--text-primary); line-height:1.45; }
-.flag-meta { display:flex; align-items:center; gap:6px; padding:0 14px 8px; font-size:12px; color:var(--text-muted); }
-.flag-meta strong { color:var(--text-secondary); font-weight:600; }
-.flag-meta-centre { color:var(--text-muted); font-size:11px; }
-
-.flag-attendance-ref { display:flex; align-items:center; gap:8px; padding:8px 14px; background:#fafbfc; border-top:1px solid var(--border); flex-wrap:wrap; }
-.flag-type-pill { display:inline-flex; align-items:center; padding:2px 7px; border-radius:4px; font-size:10px; font-weight:700; letter-spacing:0.05em; }
 .pill-in { background:#dcfce7; color:#16a34a; }
 .pill-out { background:#fee2e2; color:#dc2626; }
 .flag-att-name { font-size:12px; font-weight:600; color:var(--text-primary); }
@@ -1006,4 +993,15 @@ tr:hover td { background:#FAFCFF; }
   .table-wrap {
     max-height: none;
   }
+}
+
+/* ── ANIMATIONS (extracted from inline <style> tags) ── */
+@keyframes toastSlideIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes skeletonFade {
+  from { opacity: 0.4; }
+  to { opacity: 0.9; }
 }

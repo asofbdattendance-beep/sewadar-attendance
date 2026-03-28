@@ -12,7 +12,7 @@
  * - Centre users = hard block only (no override)
  */
 
-import { todayDateStr, scanTimeToISTDate } from './dateUtils'
+import { scanTimeToISTDate } from './dateUtils'
 import { DUTY_TYPES, DUTY_TYPE_LABEL } from './supabase'
 
 export { DUTY_TYPES, DUTY_TYPE_LABEL }

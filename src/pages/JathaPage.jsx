@@ -8,7 +8,7 @@ import {
   X, RefreshCw, Plane, Download, Flag, Pencil, Trash2, FileText
 } from 'lucide-react'
 import ConfirmModal from '../components/ConfirmModal'
-import { showError, showSuccess } from '../components/Toast'
+import { showError } from '../components/Toast'
 
 const ALL_JATHA_TYPES = [
   { value: JATHA_TYPE.MAJOR_CENTRE, label: JATHA_TYPE_LABEL[JATHA_TYPE.MAJOR_CENTRE] },
@@ -444,7 +444,7 @@ function MarkJathaTab() {
         <textarea className="input" rows={2} placeholder="Any notes about this jatha…"
           value={remarks} onChange={e => setRemarks(e.target.value)} style={{ resize: 'none' }} />
         <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '0.5rem', lineHeight: 1.5 }}>
-          Found a mistake after submitting? Use the "Flag error" button in the View Records tab.
+          Found a mistake after submitting? Use the &ldquo;Flag error&rdquo; button in the View Records tab.
         </p>
       </div>
 
@@ -761,7 +761,7 @@ function ViewJathaTab() {
                     {flagModal.badge_number} · {fmtDate(flagModal.date_from)} → {fmtDate(flagModal.date_to)} · {flagModal.jatha_centre}
                   </div>
                 </div>
-                <label className="label">What's wrong? <span style={{ color: 'var(--red)' }}>*</span></label>
+                <label className="label">What&apos;s wrong? <span style={{ color: 'var(--red)' }}>*</span></label>
                 <textarea className="input" rows={3} placeholder="Describe the error or issue…"
                   value={flagReason} onChange={e => setFlagReason(e.target.value)}
                   style={{ resize: 'none', marginBottom: '1rem', borderColor: 'rgba(198,40,40,0.35)' }} autoFocus />

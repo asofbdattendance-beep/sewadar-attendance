@@ -1,17 +1,24 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { LogOut, Wifi, User, Volume2, VolumeX } from 'lucide-react'
 import ConfirmModal from '../components/ConfirmModal'
 
 export default function ProfilePage() {
   const { profile, signOut } = useAuth()
-  const [soundEnabled, setSoundEnabled] = useState(localStorage.getItem('sa_sound') !== 'false')
+  const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem('sa_sound') !== 'false')
   const [signOutConfirm, setSignOutConfirm] = useState(false)
+
+  useEffect(() => {
+    const handler = () => setSoundEnabled(localStorage.getItem('sa_sound') !== 'false')
+    window.addEventListener('storage', handler)
+    return () => window.removeEventListener('storage', handler)
+  }, [])
 
   function toggleSound() {
     const next = !soundEnabled
     setSoundEnabled(next)
     localStorage.setItem('sa_sound', next ? 'true' : 'false')
+    window.dispatchEvent(new Event('storage'))
   }
 
   const roleColor = { aso: 'var(--gold)', centre: 'var(--blue)' }

@@ -7,11 +7,10 @@ import ScannerPage from './pages/ScannerPage'
 import RecordsPage from './pages/RecordsPage'
 import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
-import FlagsPage from './pages/FlagsPage'
 import JathaPage from './pages/JathaPage'
 import ToastContainer from './components/Toast'
 import NoInternet from './components/NoInternet'
-import { Scan, FileText, User, Shield, Flag, Plane, Clock, RefreshCw } from 'lucide-react'
+import { Scan, FileText, User, Shield, Plane, Clock, RefreshCw } from 'lucide-react'
 
 function SessionExpiredScreen({ signOut }) {
   return (
@@ -59,7 +58,7 @@ function AppLayout() {
   const { profile, loading, sessionExpired, signOut, resetActivity, sessionWarning } = useAuth()
   const [openFlagCount, setOpenFlagCount] = useState(0)
   const [pwaUpdate, setPwaUpdate] = useState(false)
-  const [realtimeStatus, setRealtimeStatus] = useState('disconnected')
+  const [_realtimeStatus, setRealtimeStatus] = useState('disconnected')
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
   const navigate = useNavigate()
   const location = useLocation()
@@ -126,19 +125,19 @@ function AppLayout() {
 
   if (!profile.is_active) return <InactiveScreen />
 
-  const isCentreUser = profile.role === ROLES.CENTRE
+  const _isCentreUser = profile.role === ROLES.CENTRE
   const isAso = profile.role === ROLES.ASO
   
   const canScan = isAso || profile.can_scan
   const canRecords = isAso || profile.can_records
   const canJatha = isAso || profile.can_jatha
-  const canFlags = isAso || profile.can_flags
-  const canReports = isAso || profile.can_reports
+  const _canFlags = isAso || profile.can_flags
+  const _canReports = isAso || profile.can_reports
 
   const navItems = [
     { path: '/scan', label: 'Scanner', icon: Scan, show: canScan },
     { path: '/jatha', label: 'Jatha', icon: Plane, show: canJatha },
-    { path: '/records', label: 'Records', icon: FileText, show: canRecords, badge: isAso ? openFlagCount : 0 },
+    { path: '/records', label: 'Records', icon: FileText, show: canRecords, badge: (isAso || profile?.can_flags) ? openFlagCount : 0 },
     ...(isAso ? [{ path: '/super-admin', label: 'Control', icon: Shield, show: true }] : []),
     { path: '/profile', label: 'Profile', icon: User, show: true },
   ].filter(item => item.show !== false)
