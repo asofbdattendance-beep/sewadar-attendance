@@ -10,18 +10,16 @@ import {
 import ConfirmModal from '../components/ConfirmModal'
 import { showError, showSuccess } from '../components/Toast'
 
-// ── All supported jatha types including jatha_home ──
 const ALL_JATHA_TYPES = [
-  { value: 'major_centre', label: 'Major Centre' },
-  { value: 'beas',         label: 'Beas'         },
-  { value: 'jatha_home',   label: 'Jatha Home'   },
+  { value: JATHA_TYPE.MAJOR_CENTRE, label: JATHA_TYPE_LABEL[JATHA_TYPE.MAJOR_CENTRE] },
+  { value: JATHA_TYPE.BEAS,         label: JATHA_TYPE_LABEL[JATHA_TYPE.BEAS]         },
+  { value: JATHA_TYPE.JATHA_HOME,    label: JATHA_TYPE_LABEL[JATHA_TYPE.JATHA_HOME]   },
 ]
 
 function getJathaLabel(type) {
   if (!type) return '—'
   if (JATHA_TYPE_LABEL && JATHA_TYPE_LABEL[type]) return JATHA_TYPE_LABEL[type]
-  const found = ALL_JATHA_TYPES.find(t => t.value === type)
-  return found ? found.label : type
+  return type
 }
 
 // Satsang days for jatha = total days inclusive (no Wed/Sun rule)
@@ -80,8 +78,7 @@ function MarkJathaTab() {
   const { profile } = useAuth()
 
   const isAso        = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE_USER
-  const isScSpUser   = profile?.role === ROLES.SC_SP_USER
+  const isCentreUser = profile?.role === ROLES.CENTRE
   const [childCentres, setChildCentres] = useState([])
 
   useEffect(() => {
@@ -231,7 +228,7 @@ function MarkJathaTab() {
       submitted_by: profile.badge_number, submitted_name: profile.name, submitted_centre: profile.centre,
     })
     await supabase.from('logs').insert({
-      user_badge: profile.badge_number, action: 'JATHA_ATTENDANCE',
+      user_badge: profile.badge_number, action: 'JATHA_CREATE',
       details: `Jatha for ${selected.badge_number} → ${jathaCentre} (${jathaType}) ${dateFrom}–${dateTo}`,
       timestamp: new Date().toISOString()
     })
@@ -497,7 +494,7 @@ function ViewJathaTab() {
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const flagTimerRef = useRef(null)
 
-  const isAdmin = [ROLES.ASO, ROLES.CENTRE_USER].includes(profile?.role)
+  const isAdmin = [ROLES.ASO, ROLES.CENTRE].includes(profile?.role)
   const isAso   = profile?.role === ROLES.ASO
 
   useEffect(() => { fetchRecords().catch(console.error) }, [typeFilter, monthFilter, page])
@@ -516,9 +513,7 @@ function ViewJathaTab() {
       const end   = new Date(year, month, 0).toISOString().split('T')[0]
       q = q.gte('date_from', start).lte('date_from', end)
     }
-    if (profile?.role === ROLES.SC_SP_USER) {
-      q = q.eq('centre', profile.centre)
-    } else if (profile?.role === ROLES.CENTRE_USER) {
+    if (profile?.role === ROLES.CENTRE) {
       const { data: cd } = await supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       q = q.in('centre', cd?.map(c => c.centre_name) || [profile.centre])
@@ -792,7 +787,7 @@ function ViewJathaTab() {
 function JathaTableTab() {
   const { profile } = useAuth()
   const isAso        = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE_USER
+  const isCentreUser = profile?.role === ROLES.CENTRE
   const isAdmin      = isAso || isCentreUser
 
   // Reactive desktop detection
@@ -844,9 +839,7 @@ function JathaTableTab() {
     if (dateRange.to)   q = q.lte('date_to', dateRange.to)
     if (typeFilter)     q = q.eq('jatha_type', typeFilter)
 
-    if (profile?.role === ROLES.SC_SP_USER) {
-      q = q.eq('centre', profile.centre)
-    } else if (isCentreUser) {
+    if (isCentreUser) {
       const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
       q = q.in('centre', scope)
     } else if (centreFilter) {

@@ -14,8 +14,19 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 
 export const ROLES = {
   ASO: 'aso',
-  CENTRE_USER: 'centre_user',
-  SC_SP_USER: 'sc_sp_user'
+  CENTRE: 'centre'
+}
+
+export const DUTY_TYPES = {
+  SATSANG: 'satsang',
+  GATE_ENTRY: 'gate_entry',
+  WATCH_WARD: 'watch_ward',
+}
+
+export const DUTY_TYPE_LABEL = {
+  satsang: 'Satsang Duty',
+  gate_entry: 'Gate Entry',
+  watch_ward: 'Watch & Ward Sewadar',
 }
 
 // Badge parser utility - supports both FB and BH badge formats
@@ -88,7 +99,7 @@ export async function getCentreScope(centreName, role) {
 export async function getViewableCentres(profile) {
   if (!profile) return []
   if (profile.role === ROLES.ASO) return null
-  if (profile.role === ROLES.CENTRE_USER) return getCentreScope(profile.centre, ROLES.CENTRE_USER)
+  if (profile.role === ROLES.CENTRE) return getCentreScope(profile.centre, ROLES.CENTRE)
   return [profile.centre]
 }
 
@@ -114,4 +125,23 @@ export const FLAG_STATUS = {
   OPEN: 'open',
   IN_PROGRESS: 'in_progress',
   RESOLVED: 'resolved',
+}
+
+export const LOG_ACTIONS = {
+  LOGIN: 'LOGIN',
+  LOGOUT: 'LOGOUT',
+  MARK_IN: 'MARK_IN',
+  MARK_OUT: 'MARK_OUT',
+  MANUAL_ENTRY: 'MANUAL_ENTRY',
+  FORCE_CLOSE: 'FORCE_CLOSE_SESSION',
+  STANDALONE_OUT: 'STANDALONE_OUT',
+  DELETE_SESSION: 'DELETE_SESSION',
+  CREATE_USER: 'CREATE_USER',
+  UPDATE_USER: 'UPDATE_USER',
+  UPDATE_PERMISSIONS: 'UPDATE_PERMISSIONS',
+  CREATE_FLAG: 'CREATE_FLAG',
+  RESOLVE_FLAG: 'RESOLVE_FLAG',
+  JATHA_CREATE: 'JATHA_CREATE',
+  JATHA_UPDATE: 'JATHA_UPDATE',
+  JATHA_DELETE: 'JATHA_DELETE',
 }

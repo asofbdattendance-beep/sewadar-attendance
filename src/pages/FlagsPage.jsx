@@ -17,8 +17,7 @@ const SEARCH_DEBOUNCE = 300
 export default function FlagsPage() {
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE_USER
-  const isScSpUser = profile?.role === ROLES.SC_SP_USER
+  const isCentreUser = profile?.role === ROLES.CENTRE
 
   const [allFlags, setAllFlags] = useState([])
   const [loading, setLoading] = useState(true)
@@ -98,7 +97,6 @@ export default function FlagsPage() {
   function getScope() {
     if (isAso) return []
     if (isCentreUser) return childCentres.length > 0 ? childCentres : profile?.centre ? [profile.centre] : []
-    if (isScSpUser) return profile?.centre ? [profile.centre] : []
     return []
   }
 
@@ -415,7 +413,7 @@ export default function FlagsPage() {
               allFlags.map((flag, idx) => {
                 const isExpanded = expandedId === flag.id
                 const replies = flag.query_replies || []
-                const canReply = isAso || isCentreUser || (isScSpUser && flag.raised_by_badge === profile?.badge_number)
+                const canReply = isAso || isCentreUser || flag.raised_by_badge === profile?.badge_number
                 const canResolve = (isAso || isCentreUser) && flag.status !== FLAG_STATUS.RESOLVED
 
                 return (
@@ -509,7 +507,7 @@ export default function FlagsPage() {
                                         {reply.replied_by_name}
                                         {reply.replied_by_role && (
                                           <span style={{ marginLeft: 6, fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400, background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
-                                            {reply.replied_by_role === 'aso' ? 'ASO' : reply.replied_by_role === 'centre_user' ? 'Centre User' : reply.replied_by_role === 'sc_sp_user' ? 'SC/SP User' : reply.replied_by_role}
+                                            {reply.replied_by_role === 'aso' ? 'ASO' : reply.replied_by_role === 'centre' ? 'Centre' : reply.replied_by_role}
                                           </span>
                                         )}
                                       </span>

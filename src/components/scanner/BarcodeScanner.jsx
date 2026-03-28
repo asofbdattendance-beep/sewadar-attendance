@@ -171,7 +171,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
           }
         } catch (e) {
           // Detection errors are non-fatal — log for debugging, keep loop running
-          if (process.env.NODE_ENV === 'development') console.warn('[Scanner] detect error:', e)
+          if (import.meta.env.DEV) console.warn('[Scanner] detect error:', e)
         } finally {
           isDetectingRef.current = false
         }

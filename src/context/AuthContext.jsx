@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, ROLES } from '../lib/supabase'
 
 const SESSION_TIMEOUT_MS = 60 * 60 * 1000 // 60 minutes
 const SESSION_WARNING_MS = 55 * 60 * 1000 // 55 minutes — show warning
@@ -66,20 +66,54 @@ export function AuthProvider({ children }) {
       }
     }, 30000)
     return () => clearInterval(timeoutCheckRef.current)
-  }, [sessionExpired, sessionWarning])
+  }, [sessionExpired])
 
   async function fetchProfile(userId) {
-    const { data, error } = await supabase
+    const { data: userData, error } = await supabase
       .from('users')
       .select('*')
       .eq('auth_id', userId)
       .single()
+    
     if (error) {
       console.warn('Failed to load profile:', error)
       setProfile(null)
-    } else {
-      setProfile(data)
+      setLoading(false)
+      return
     }
+    
+    // Fetch permissions for centre users
+    let permissions = {
+      can_scan: true,
+      can_records: true,
+      can_reports: false,
+      can_jatha: false,
+      can_manual_entry: false,
+      can_flags: false,
+      can_edit_jatha: false,
+    }
+    
+    if (userData.role === ROLES.CENTRE) {
+      const { data: permData } = await supabase
+        .from('user_permissions')
+        .select('*')
+        .eq('user_id', userData.id)
+        .single()
+      
+      if (permData) {
+        permissions = {
+          can_scan: permData.can_scan ?? true,
+          can_records: permData.can_records ?? true,
+          can_reports: permData.can_reports ?? false,
+          can_jatha: permData.can_jatha ?? false,
+          can_manual_entry: permData.can_manual_entry ?? false,
+          can_flags: permData.can_flags ?? false,
+          can_edit_jatha: permData.can_edit_jatha ?? false,
+        }
+      }
+    }
+    
+    setProfile({ ...userData, ...permissions })
     setLoading(false)
   }
 

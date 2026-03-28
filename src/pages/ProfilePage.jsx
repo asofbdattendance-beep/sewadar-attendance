@@ -14,8 +14,8 @@ export default function ProfilePage() {
     localStorage.setItem('sa_sound', next ? 'true' : 'false')
   }
 
-  const roleColor = { aso: 'var(--gold)', centre_user: 'var(--blue)', sc_sp_user: 'var(--green)' }
-  const roleName = {aso: 'ASO', centre_user: 'CENTRE USER', sc_sp_user: 'SC_SP USER'}
+  const roleColor = { aso: 'var(--gold)', centre: 'var(--blue)' }
+  const roleName = {aso: 'ASO', centre: 'CENTRE'}
 
   return (
     <div className="page pb-nav">

@@ -87,12 +87,10 @@ function AppLayout() {
       if (!profile) return
       let query = supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open')
       
-      if (profile.role === ROLES.CENTRE_USER && profile.centre) {
+      if (profile.role === ROLES.CENTRE && profile.centre) {
         const { data: children } = await supabase.from('centres').select('centre_name').eq('parent_centre', profile.centre)
         const scope = [profile.centre, ...(children?.map(c => c.centre_name) || [])]
         query = query.in('raised_by_centre', scope)
-      } else if (profile.role === ROLES.SC_SP_USER && profile.centre) {
-        query = query.eq('raised_by_centre', profile.centre)
       }
       
       const { count } = await query
@@ -128,20 +126,24 @@ function AppLayout() {
 
   if (!profile.is_active) return <InactiveScreen />
 
-  const isScSpUser = profile.role === ROLES.SC_SP_USER
-  const isCentreUser = profile.role === ROLES.CENTRE_USER
+  const isCentreUser = profile.role === ROLES.CENTRE
   const isAso = profile.role === ROLES.ASO
+  
+  const canScan = isAso || profile.can_scan
+  const canRecords = isAso || profile.can_records
+  const canJatha = isAso || profile.can_jatha
+  const canFlags = isAso || profile.can_flags
+  const canReports = isAso || profile.can_reports
 
   const navItems = [
-    { path: '/scan', label: 'Scan', icon: Scan },
-    ...(isAso || isCentreUser || isScSpUser ? [{ path: '/records', label: 'Records', icon: FileText }] : []),
-    ...(isAso || isCentreUser ? [{ path: '/jatha', label: 'Jatha', icon: Plane }] : []),
-    ...(isAso || isScSpUser ? [{ path: '/flags', label: 'Flags', icon: Flag, badge: openFlagCount }] : []),
-    ...(isAso ? [{ path: '/super-admin', label: 'Control', icon: Shield }] : []),
-    { path: '/profile', label: 'Profile', icon: User },
-  ]
+    { path: '/scan', label: 'Scanner', icon: Scan, show: canScan },
+    { path: '/jatha', label: 'Jatha', icon: Plane, show: canJatha },
+    { path: '/records', label: 'Records', icon: FileText, show: canRecords, badge: isAso ? openFlagCount : 0 },
+    ...(isAso ? [{ path: '/super-admin', label: 'Control', icon: Shield, show: true }] : []),
+    { path: '/profile', label: 'Profile', icon: User, show: true },
+  ].filter(item => item.show !== false)
 
-  const rolePill = isAso ? 'ASO' : isCentreUser ? 'CENTRE USER' : 'SC_SP USER'
+  const rolePill = isAso ? 'ASO' : 'CENTRE'
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -214,13 +216,12 @@ function AppLayout() {
 
       <div style={{ flex: 1 }}>
         <Routes>
-          <Route path="/scan" element={<ScannerPage />} />
-          <Route path="/records" element={(isAso || isCentreUser || isScSpUser) ? <RecordsPage /> : <Navigate to="/scan" replace />} />
-          <Route path="/jatha" element={(isAso || isCentreUser) ? <JathaPage /> : <Navigate to="/scan" replace />} />
-          <Route path="/flags" element={(isAso || isScSpUser) ? <FlagsPage /> : <Navigate to="/scan" replace />} />
+          <Route path="/scan" element={canScan ? <ScannerPage /> : <Navigate to="/records" replace />} />
+          <Route path="/jatha" element={canJatha ? <JathaPage /> : <Navigate to="/scan" replace />} />
+          <Route path="/records" element={canRecords ? <RecordsPage /> : <Navigate to="/scan" replace />} />
           <Route path="/super-admin" element={isAso ? <SuperAdminPage /> : <Navigate to="/scan" replace />} />
           <Route path="/profile" element={<ProfilePage />} />
-          <Route path="*" element={<Navigate to="/scan" replace />} />
+          <Route path="*" element={<Navigate to={canScan ? "/scan" : canRecords ? "/records" : "/jatha"} replace />} />
         </Routes>
       </div>
 

@@ -47,6 +47,19 @@ export default function SuperAdminPage() {
   const [expandedChild, setExpandedChild] = useState(null)
   const [deleteConfirm, setDeleteConfirm] = useState(null)
 
+  // Permissions management
+  const [permissionsModal, setPermissionsModal] = useState(null)
+  const [permissions, setPermissions] = useState({
+    can_scan: true,
+    can_records: true,
+    can_reports: false,
+    can_jatha: false,
+    can_manual_entry: false,
+    can_flags: false,
+    can_edit_jatha: false,
+  })
+  const [savingPermissions, setSavingPermissions] = useState(false)
+
   // ── Add User: sewadar-search flow ──
   // Step 1: search sewadars; Step 2: locked sewadar + email/password/role
   const [userSewadarInput, setUserSewadarInput]     = useState('')
@@ -55,7 +68,7 @@ export default function SuperAdminPage() {
   const [lockedSewadar, setLockedSewadar]           = useState(null)   // sewadar row from DB
   const [newUserEmail, setNewUserEmail]             = useState('')
   const [newUserPassword, setNewUserPassword]       = useState('')
-  const [newUserRole, setNewUserRole]               = useState('sc_sp_user')
+  const [newUserRole, setNewUserRole]               = useState('centre')
   const [newUserCentre, setNewUserCentre]           = useState('')
 
   // Sewadar tab state
@@ -198,6 +211,76 @@ export default function SuperAdminPage() {
     } catch (err) { showMsg('Delete failed: ' + err.message, 'error') }
   }
 
+  // ── Permissions Management ──
+  async function openPermissionsModal(u) {
+    if (u.role === ROLES.ASO) {
+      showMsg('ASO has all permissions by default', 'info')
+      return
+    }
+    if (u.role !== ROLES.CENTRE) {
+      showMsg('Only Centre users can have permissions managed', 'info')
+      return
+    }
+    setPermissionsModal(u)
+    
+    const { data } = await supabase
+      .from('user_permissions')
+      .select('*')
+      .eq('user_id', u.id)
+      .single()
+    
+    if (data) {
+      setPermissions({
+        can_scan: data.can_scan ?? true,
+        can_records: data.can_records ?? true,
+        can_reports: data.can_reports ?? false,
+        can_jatha: data.can_jatha ?? false,
+        can_manual_entry: data.can_manual_entry ?? false,
+        can_flags: data.can_flags ?? false,
+        can_edit_jatha: data.can_edit_jatha ?? false,
+      })
+    } else {
+      setPermissions({
+        can_scan: true,
+        can_records: true,
+        can_reports: false,
+        can_jatha: false,
+        can_manual_entry: false,
+        can_flags: false,
+        can_edit_jatha: false,
+      })
+    }
+  }
+
+  async function savePermissions() {
+    if (!permissionsModal) return
+    setSavingPermissions(true)
+    
+    try {
+      const { error } = await supabase
+        .from('user_permissions')
+        .upsert({
+          user_id: permissionsModal.id,
+          ...permissions,
+          updated_by: profile.badge_number,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' })
+      
+      if (error) throw error
+      
+      await logAction(profile, 'UPDATE_PERMISSIONS', `Updated permissions for ${permissionsModal.badge_number}`)
+      showSuccess('Permissions saved')
+      setPermissionsModal(null)
+    } catch (err) {
+      showMsg('Failed to save: ' + err.message, 'error')
+    }
+    setSavingPermissions(false)
+  }
+
+  function togglePermission(key) {
+    setPermissions(p => ({ ...p, [key]: !p[key] }))
+  }
+
   // ── Search sewadars for Add User modal ──
   async function searchSewadarsForUser(term) {
     if (!term.trim() || term.trim().length < 2) { setUserSewadarResults([]); return }
@@ -238,7 +321,7 @@ export default function SuperAdminPage() {
     setUserSewadarResults([])
     setNewUserEmail('')
     setNewUserPassword('')
-    setNewUserRole('sc_sp_user')
+    setNewUserRole('centre')
     setNewUserCentre('')
     setShowPw(false)
     setCreatedUserCard(null)
@@ -572,8 +655,8 @@ export default function SuperAdminPage() {
     children: centres.filter(c => c.parent_centre === p),
     config: centres.find(c => c.centre_name === p)
   }))
-  const roleColor = { aso: 'var(--gold)', centre_user: 'var(--blue)', sc_sp_user: 'var(--green)' }
-  const roleName  = { aso: 'ASO', centre_user: 'CENTRE USER', sc_sp_user: 'SC_SP USER' }
+  const roleColor = { aso: 'var(--gold)', centre: 'var(--blue)' }
+  const roleName  = { aso: 'ASO', centre: 'CENTRE' }
 
   const TAB_BTN = (key, label, Icon) => (
     <button key={key} onClick={() => setTab(key)}
@@ -643,6 +726,11 @@ export default function SuperAdminPage() {
                       {u.is_active ? <ToggleRight size={22} color="var(--green)" /> : <ToggleLeft size={22} color="var(--text-muted)" />}
                     </button></td>
                     <td>
+                      {u.role !== ROLES.ASO && (
+                        <button className="btn btn-ghost" style={{ padding:'0.25rem', color:'var(--gold)' }} onClick={() => openPermissionsModal(u)} title="Permissions">
+                          <Shield size={15} />
+                        </button>
+                      )}
                       {u.role !== ROLES.ASO && (
                         <button className="btn btn-ghost" style={{ padding:'0.25rem', color:'var(--red)' }} onClick={() => deleteUser(u)}>
                           <Trash2 size={15} />
@@ -1146,8 +1234,7 @@ export default function SuperAdminPage() {
                     <label className="label">Role</label>
                     <select className="input" value={newUserRole} onChange={e => setNewUserRole(e.target.value)}>
                       <option value="aso">ASO</option>
-                      <option value="centre_user">CENTRE USER</option>
-                      <option value="sc_sp_user">SC_SP USER</option>
+                      <option value="centre">CENTRE</option>
                     </select>
                   </div>
                   <div>
@@ -1162,8 +1249,8 @@ export default function SuperAdminPage() {
                 {newUserRole === ROLES.ASO && (
                   <div className="super-admin-note mb-2">ASO has access to ALL centres and full system control.</div>
                 )}
-                {newUserRole === ROLES.CENTRE_USER && (
-                  <div className="super-admin-note mb-2">Centre User governs <strong>{newUserCentre}</strong> and all its sub-centres.</div>
+                {newUserRole === ROLES.CENTRE && (
+                  <div className="super-admin-note mb-2">Centre user governs <strong>{newUserCentre}</strong> and all its sub-centres. Permissions can be configured after creation.</div>
                 )}
               </>
             )}
@@ -1226,7 +1313,7 @@ export default function SuperAdminPage() {
                 </button>
               )}
               {createdUserCard && (
-                <button className="btn btn-gold btn-full" onClick={() => { setCreatedUserCard(null); setLockedSewadar(null); setUserSewadarInput(''); setNewUserEmail(''); setNewUserPassword(''); setNewUserRole('sc_sp_user') }}>
+                <button className="btn btn-gold btn-full" onClick={() => { setCreatedUserCard(null); setLockedSewadar(null); setUserSewadarInput(''); setNewUserEmail(''); setNewUserPassword(''); setNewUserRole('centre') }}>
                   + Add Another
                 </button>
               )}
@@ -1308,6 +1395,67 @@ export default function SuperAdminPage() {
         confirmLabel="Delete"
         danger
       />
+
+      {/* ── PERMISSIONS MODAL ── */}
+      {permissionsModal && (
+        <div className="overlay" onClick={() => setPermissionsModal(null)}>
+          <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Shield size={18} color="var(--gold)" />
+                <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1rem', fontWeight: 700 }}>User Permissions</h3>
+              </div>
+              <button onClick={() => setPermissionsModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '1.3rem', lineHeight: 1 }}>×</button>
+            </div>
+
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1rem' }}>
+              <div style={{ fontWeight: 600, color: 'var(--gold)' }}>{permissionsModal.name}</div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{permissionsModal.badge_number} · {permissionsModal.centre}</div>
+            </div>
+
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+              Configure what this centre user can access. ASO has full access by default.
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.25rem' }}>
+              {[
+                { key: 'can_scan', label: 'Scanner', desc: 'Can mark attendance via scanner' },
+                { key: 'can_records', label: 'Records', desc: 'Can view attendance records' },
+                { key: 'can_reports', label: 'Reports', desc: 'Can view reports' },
+                { key: 'can_jatha', label: 'Jatha', desc: 'Can mark jatha attendance' },
+                { key: 'can_manual_entry', label: 'Manual Entry', desc: 'Can do manual attendance entry' },
+                { key: 'can_flags', label: 'Flags', desc: 'Can view and manage flags' },
+                { key: 'can_edit_jatha', label: 'Edit Jatha', desc: 'Can edit/delete jatha records' },
+              ].map(perm => (
+                <div key={perm.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem', background: 'var(--bg)', borderRadius: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{perm.label}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{perm.desc}</div>
+                  </div>
+                  <button
+                    onClick={() => togglePermission(perm.key)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0.25rem' }}
+                  >
+                    {permissions[perm.key] ? (
+                      <ToggleRight size={28} color="var(--green)" />
+                    ) : (
+                      <ToggleLeft size={28} color="var(--text-muted)" />
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <button
+              className="btn btn-gold btn-full"
+              onClick={savePermissions}
+              disabled={savingPermissions}
+            >
+              {savingPermissions ? 'Saving…' : 'Save Permissions'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
