@@ -92,6 +92,7 @@ export default function ScannerPage() {
   }, [profile?.centre, profile?.role, profile])
 
   useEffect(() => {
+    console.log('[POPUP STATE UPDATED]', popupState?.type || 'null')
     if (popupState && safetyTimerRef.current) {
       clearTimeout(safetyTimerRef.current)
       safetyTimerRef.current = null
@@ -182,91 +183,100 @@ export default function ScannerPage() {
   }
 
   const handleScan = useCallback(async (badge) => {
-    if (busyRef.current) return
+    console.log('[SCAN FIRED]', badge)
+    if (busyRef.current) { console.log('[BLOCKED] busyRef true'); return }
 
     busyRef.current = true
 
     if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
     safetyTimerRef.current = setTimeout(() => {
+      console.log('[TIMEOUT] releasing busyRef')
       if (busyRef.current) busyRef.current = false
       safetyTimerRef.current = null
     }, 5000)
 
     const openPopup = (state) => {
+      console.log('[POPUP]', state.type)
       if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
       if (scannerRef.current) scannerRef.current.stop()
-      const now = Date.now()
-      lastScanRef.current = { badge, time: now }
+      lastScanRef.current = { badge, time: Date.now() }
       setPopupState(state)
     }
 
     const release = () => {
+      console.log('[RELEASE]')
       busyRef.current = false
       if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
     }
 
-    const { profile: _userProfile, userLocation: location, centreConfig: cfg } = { profile, userLocation, centreConfig }
+    try {
+      const { profile: _userProfile, userLocation: location, centreConfig: cfg } = { profile, userLocation, centreConfig }
 
-    let found = sewadarCacheRef.current.get(badge)
-    let lookupError = null
+      let found = sewadarCacheRef.current.get(badge)
+      let lookupError = null
 
-    if (!found) {
-      try {
-        const { data, error } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
-        if (error) throw error
-        found = data
-        if (found) sewadarCacheRef.current.set(badge, found)
-      } catch (e) {
-        lookupError = e?.message || 'Database error'
+      if (!found) {
+        try {
+          const { data, error } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
+          if (error) throw error
+          found = data
+          if (found) sewadarCacheRef.current.set(badge, found)
+        } catch (e) {
+          lookupError = e?.message || 'Database error'
+        }
       }
-    }
 
-    if (!found) {
-      release()
-      openPopup({ type: 'not_found', badge, message: lookupError ? `Lookup failed: ${lookupError}` : null })
-      return
-    }
-
-    const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
-    const badgeStatus = (found.badge_status || '').toLowerCase().trim()
-    if (!ALLOWED_STATUSES.includes(badgeStatus)) {
-      release()
-      openPopup({ type: 'invalid_status', sewadar: found, badge })
-      return
-    }
-
-    const scopeCentres = [profile?.centre, ...childCentresRef.current]
-    const inScope = scopeCentres.includes(found.centre)
-    const isException = isExceptionDept(found.department)
-
-    if (!isException && !inScope && !isAso) {
-      release()
-      openPopup({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
-      return
-    }
-
-    if (location && cfg?.geo_enabled === true && cfg?.latitude != null && cfg?.longitude != null) {
-      const dist = getDistanceMetres(location.lat, location.lng, cfg.latitude, cfg.longitude)
-      const radius = cfg.geo_radius || 200
-      if (dist > radius) {
+      if (!found) {
         release()
-        openPopup({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
+        openPopup({ type: 'not_found', badge, message: lookupError ? `Lookup failed: ${lookupError}` : null })
         return
       }
-    }
 
-    const scanTime = nowIST()
-    const isLateNight = isLateNightScan(scanTime)
+      const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
+      const badgeStatus = (found.badge_status || '').toLowerCase().trim()
+      if (!ALLOWED_STATUSES.includes(badgeStatus)) {
+        release()
+        openPopup({ type: 'invalid_status', sewadar: found, badge })
+        return
+      }
 
-    if (isLateNight) {
-      pendingScanRef.current = { found, badge, scanTime }
+      const scopeCentres = [profile?.centre, ...childCentresRef.current]
+      const inScope = scopeCentres.includes(found.centre)
+      const isException = isExceptionDept(found.department)
+
+      if (!isException && !inScope && !isAso) {
+        release()
+        openPopup({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
+        return
+      }
+
+      if (location && cfg?.geo_enabled === true && cfg?.latitude != null && cfg?.longitude != null) {
+        const dist = getDistanceMetres(location.lat, location.lng, cfg.latitude, cfg.longitude)
+        const radius = cfg.geo_radius || 200
+        if (dist > radius) {
+          release()
+          openPopup({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
+          return
+        }
+      }
+
+      const scanTime = nowIST()
+      const isLateNight = isLateNightScan(scanTime)
+
+      if (isLateNight) {
+        pendingScanRef.current = { found, badge, scanTime }
+        release()
+        setWatchWardConfirm({ sewadar: found, badge })
+        return
+      }
+
       release()
-      setWatchWardConfirm({ sewadar: found, badge })
-      return
+      await processSewadar(found, badge, scanTime)
+    } catch (e) {
+      console.error('[HANDLE SCAN ERROR]', e)
+      release()
+      openPopup({ type: 'not_found', badge, message: 'System error: ' + (e?.message || 'Unknown') })
     }
-
-    release()
-    await processSewadar(found, badge, scanTime)
   }, [profile, userLocation, centreConfig, childCentres, isAso])
 
   async function handleWatchWardConfirm(isWatchWard) {
