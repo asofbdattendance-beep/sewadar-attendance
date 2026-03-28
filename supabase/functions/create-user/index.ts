@@ -66,7 +66,7 @@ serve(async (req) => {
       )
     }
 
-    const validRoles = ['aso', 'centre_user', 'sc_sp_user']
+    const validRoles = ['aso', 'centre']
     if (!validRoles.includes(role)) {
       return new Response(
         JSON.stringify({ error: "Invalid role" }),

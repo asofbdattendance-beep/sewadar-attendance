@@ -401,13 +401,15 @@ export default function ScannerPage() {
       setTimeout(closePopup, 1200)
 
       // Log the action
-      await supabase.from('logs').insert({
-        user_badge: profile.badge_number,
-        action: type === 'IN' ? 'MARK_IN' : 'MARK_OUT',
-        details: `${type} for ${found.badge_number}`,
-        timestamp: scanTimeISO,
-        device_id: navigator.userAgent.slice(0, 50),
-      }).catch(console.warn)
+      try {
+        await supabase.from('logs').insert({
+          user_badge: profile.badge_number,
+          action: type === 'IN' ? 'MARK_IN' : 'MARK_OUT',
+          details: `${type} for ${found.badge_number}`,
+          timestamp: scanTimeISO,
+          device_id: navigator.userAgent.slice(0, 50),
+        })
+      } catch (_) { /* logging failure is non-critical */ }
 
       fetchTodayCount()
       fetchRecentScans()
@@ -808,6 +810,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
   const [searching, setSearching] = useState(false)
   const [selected, setSelected] = useState(null)
   const [attendanceType, setAttendanceType] = useState('IN')
+  const [isWatchWard, setIsWatchWard] = useState(false)
   const [scanDate, setScanDate] = useState(todayDateStr())
   const [scanTime, setScanTime] = useState(() => {
     const now = new Date()
@@ -853,87 +856,110 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
     setError('')
 
     const scanTimeISO = new Date(`${scanDate}T${scanTime}:00+05:30`).toISOString()
+    const scanDateIST = new Date(scanTimeISO).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
 
-    // Check open session
-    const openSession = await getOpenSession(supabase, selected.badge_number)
+    // Evaluate scan using unified logic
+    const result = await evaluateScan(supabase, {
+      badgeNumber: selected.badge_number,
+      type: attendanceType,
+      scanTimeISO,
+      watchWard: isWatchWard, // Use the state variable
+      isAso,
+      isCentreUser: !isAso,
+    })
 
-    // Evaluate according to rules
-    if (attendanceType === 'IN' && openSession) {
-      if (!isAso) {
+    // Handle blocked cases
+    if (result.status === 'blocked') {
+      if (result.reason === 'jatha_active') {
+        setError(`Cannot mark attendance. Sewadar is on ${result.jatha?.jatha_type || 'jatha'} at ${result.jatha?.jatha_centre || 'jatha centre'}`)
+      } else if (result.reason === 'open_session_exists') {
         setError('Cannot create new IN. Open session exists. Scan OUT first.')
-        setSubmitting(false)
-        return
-      }
-      // ASO override
-      // Force close old session
-      await asoForceCloseSession(supabase, {
-        sessionId: openSession.id,
-        asobadge: profile.badge_number,
-        reason: remark.trim(),
-      })
-    }
-
-    if (attendanceType === 'OUT' && !openSession) {
-      if (!isAso) {
+      } else if (result.reason === 'no_open_session') {
         setError('Cannot create OUT. No open session found. Scan IN first.')
-        setSubmitting(false)
-        return
+      } else {
+        setError('Cannot complete this action.')
       }
-      // ASO creates standalone OUT
-      await executeStandaloneOut(supabase, {
-        badge_number: selected.badge_number,
-        sewadar_name: selected.sewadar_name,
-        centre: selected.centre,
-        department: selected.department,
-        scanTimeISO,
-        scanner_badge: profile.badge_number,
-        scanner_name: profile.name,
-        scanner_centre: profile.centre,
-        latitude: userLocation?.lat || null,
-        longitude: userLocation?.lng || null,
-        reason: remark.trim(),
-        asobadge: profile.badge_number,
-      })
-
       setSubmitting(false)
-      onSuccess({
-        badge_number: selected.badge_number,
-        sewadar_name: selected.sewadar_name,
-        type: 'OUT',
-        scan_time: scanTimeISO,
-      })
       return
     }
 
-    // Normal flow
-    const dutyType = computeDutyType(scanTimeISO, attendanceType === 'WATCH_WARD')
-
     try {
-      const _result = await executeScan(supabase, {
-        badge_number: selected.badge_number,
-        sewadar_name: selected.sewadar_name,
-        centre: selected.centre,
-        department: selected.department || null,
-        type: attendanceType,
-        scanTimeISO,
-        dutyType,
-        openSession,
-        scanner_badge: profile.badge_number,
-        scanner_name: profile.name,
-        scanner_centre: profile.centre,
-        latitude: userLocation?.lat || null,
-        longitude: userLocation?.lng || null,
-        manual_entry: true,
-        submitted_by: profile.badge_number,
-      })
+      // For IN with open session, ASO needs to force close first
+      if (result.status === 'allowed' && result.action === 'new_in' && result.openSession) {
+        if (!isAso) {
+          setError('Cannot create new IN. Open session exists. Scan OUT first.')
+          setSubmitting(false)
+          return
+        }
+        // ASO force closes old session
+        await asoForceCloseSession(supabase, {
+          sessionId: result.openSession.id,
+          asobadge: profile.badge_number,
+          reason: remark.trim(),
+        })
+      }
 
-      await supabase.from('logs').insert({
-        user_badge: profile.badge_number,
-        action: 'MANUAL_ENTRY',
-        details: `Manual ${attendanceType} for ${selected.badge_number} — "${remark.trim()}"`,
-        timestamp: scanTimeISO,
-        device_id: navigator.userAgent.slice(0, 50),
-      })
+      const dutyType = computeDutyType(scanTimeISO, isWatchWard)
+
+      if (result.action === 'new_in') {
+        await executeScan(supabase, {
+          badge_number: selected.badge_number,
+          sewadar_name: selected.sewadar_name,
+          centre: selected.centre,
+          department: selected.department || null,
+          type: 'IN',
+          scanTimeISO,
+          dutyType,
+          scanner_badge: profile.badge_number,
+          scanner_name: profile.name,
+          scanner_centre: profile.centre,
+          latitude: userLocation?.lat || null,
+          longitude: userLocation?.lng || null,
+          manual_entry: true,
+          submitted_by: profile.badge_number,
+        })
+
+        // Log
+        try {
+          await supabase.from('logs').insert({
+            user_badge: profile.badge_number,
+            action: 'MANUAL_IN',
+            details: `Manual IN for ${selected.badge_number} — "${remark.trim()}"`,
+            timestamp: scanTimeISO,
+            device_id: navigator.userAgent.slice(0, 50),
+          })
+        } catch (_) {}
+
+      } else if (result.action === 'close_session') {
+        await executeScan(supabase, {
+          badge_number: selected.badge_number,
+          sewadar_name: selected.sewadar_name,
+          centre: selected.centre,
+          department: selected.department || null,
+          type: 'OUT',
+          scanTimeISO,
+          dutyType: result.dutyType,
+          openSession: result.openSession,
+          scanner_badge: profile.badge_number,
+          scanner_name: profile.name,
+          scanner_centre: profile.centre,
+          latitude: userLocation?.lat || null,
+          longitude: userLocation?.lng || null,
+          manual_entry: true,
+          submitted_by: profile.badge_number,
+        })
+
+        // Log
+        try {
+          await supabase.from('logs').insert({
+            user_badge: profile.badge_number,
+            action: 'MANUAL_OUT',
+            details: `Manual OUT for ${selected.badge_number} — "${remark.trim()}"`,
+            timestamp: scanTimeISO,
+            device_id: navigator.userAgent.slice(0, 50),
+          })
+        } catch (_) {}
+      }
 
       setSubmitting(false)
       onSuccess({
@@ -1006,14 +1032,25 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
         )}
 
         <label className="label">Attendance Type *</label>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '1rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
           {['IN', 'OUT'].map(t => (
-            <button key={t} onClick={() => setAttendanceType(t)}
+            <button key={t} onClick={() => { setAttendanceType(t); if (t === 'OUT') setIsWatchWard(false) }}
               style={{ padding: '0.65rem', border: `2px solid ${attendanceType === t ? (t === 'IN' ? 'var(--green)' : 'var(--red)') : 'var(--border)'}`, borderRadius: 8, background: attendanceType === t ? (t === 'IN' ? 'var(--green-bg)' : 'var(--red-bg)') : 'white', color: attendanceType === t ? (t === 'IN' ? 'var(--green)' : 'var(--red)') : 'var(--text-secondary)', fontWeight: 700, fontSize: '0.9rem', cursor: 'pointer', fontFamily: 'inherit' }}>
               {t}
             </button>
           ))}
         </div>
+        
+        {attendanceType === 'IN' && (
+          <div style={{ marginBottom: '1rem', padding: '0.6rem', background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 8 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem' }}>
+              <input type="checkbox" checked={isWatchWard} onChange={e => setIsWatchWard(e.target.checked)} />
+              <Moon size={14} color="#3b82f6" />
+              <span style={{ color: '#3b82f6', fontWeight: 600 }}>Watch & Ward</span>
+              <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>(Overnight duty)</span>
+            </label>
+          </div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1rem' }}>
           <div>

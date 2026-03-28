@@ -142,23 +142,58 @@ function AttendanceTab() {
     setDeleteConfirm(record)
   }
 
+  function exportAttendanceCSV() {
+    if (!records.length) return
+    const header = ['Badge', 'Name', 'Centre', 'Department', 'Duty Type', 'IN Date', 'IN Time', 'IN Scanner', 'OUT Date', 'OUT Time', 'OUT Scanner', 'Duration', 'Status']
+    const rows = records.map(r => {
+      const inDate = formatDateStr(r.date_ist)
+      const outDate = r.out_time ? formatDateStr(scanTimeToISTDate(r.out_time)) : ''
+      const isCrossMidnight = r.out_time && scanTimeToISTDate(r.out_time) !== r.date_ist
+      return [
+        csvEscape(r.badge_number),
+        csvEscape(r.sewadar_name),
+        csvEscape(r.centre),
+        csvEscape(r.department || ''),
+        csvEscape(DUTY_TYPE_LABEL[r.duty_type] || r.duty_type),
+        csvEscape(inDate),
+        formatTime(r.in_time),
+        csvEscape(r.in_scanner_name || r.scanner_name || ''),
+        csvEscape(outDate),
+        formatTime(r.out_time),
+        csvEscape(r.out_scanner_name || ''),
+        formatDuration(r.in_time, r.out_time) || '',
+        r.is_open ? 'Open' : r.force_closed ? 'Corrected' : 'Complete',
+      ]
+    })
+    const csv = [header, ...rows].map(r => r.join(',')).join('\n')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.download = `attendance_${dateRange.from}_${dateRange.to}.csv`
+    a.click()
+  }
+
   async function doDelete() {
     if (!deleteConfirm) return
     const { id, badge_number } = deleteConfirm
+    
+    // Clear FK references first
+    await supabase.from('attendance_sessions').update({ in_id: null, out_id: null }).eq('id', id)
+    
+    // Delete attendance records
+    await supabase.from('attendance').delete().eq('session_id', id)
     
     const { error } = await supabase.from('attendance_sessions').delete().eq('id', id)
     if (error) {
       showError('Delete failed: ' + error.message)
     } else {
-      // Also delete associated attendance records
-      await supabase.from('attendance').delete().eq('session_id', id)
-      
-      await supabase.from('logs').insert({
-        user_badge: profile.badge_number,
-        action: 'DELETE_SESSION',
-        details: `Deleted session ${id} for ${badge_number}`,
-        timestamp: new Date().toISOString(),
-      }).catch(console.warn)
+      try {
+        await supabase.from('logs').insert({
+          user_badge: profile.badge_number,
+          action: 'DELETE_SESSION',
+          details: `Deleted session ${id} for ${badge_number}`,
+          timestamp: new Date().toISOString(),
+        })
+      } catch (_) { /* logging failure is non-critical */ }
       
       showSuccess('Session deleted')
       fetchRecords()
@@ -209,6 +244,7 @@ function AttendanceTab() {
         </select>
 
         <button className="btn btn-ghost" onClick={fetchRecords}><RefreshCw size={14} /></button>
+        <button className="btn btn-excel" onClick={exportAttendanceCSV} disabled={!records.length}><Download size={14} /> Export</button>
       </div>
 
       {/* Stats */}
@@ -230,45 +266,54 @@ function AttendanceTab() {
           <table className="records-table">
             <thead>
               <tr>
-                <th style={{ width: '110px' }}>Badge</th>
-                <th style={{ width: '180px' }}>Name</th>
-                {isAso && <th style={{ width: '150px' }}>Centre</th>}
-                <th style={{ width: '130px' }}>Duty Type</th>
-                <th style={{ width: '100px' }}>Date</th>
-                <th style={{ width: '80px' }}>IN</th>
-                <th style={{ width: '80px' }}>OUT</th>
-                <th style={{ width: '80px' }}>Duration</th>
-                <th style={{ width: '100px' }}>Status</th>
-                <th style={{ width: '60px' }}></th>
+                <th style={{ width: '100px' }}>Badge</th>
+                <th style={{ width: '150px' }}>Name</th>
+                {isAso && <th style={{ width: '100px' }}>Centre</th>}
+                <th style={{ width: '80px' }}>Duty</th>
+                <th style={{ width: '85px' }}>IN Date</th>
+                <th style={{ width: '70px' }}>IN Time</th>
+                <th style={{ width: '80px' }}>IN By</th>
+                <th style={{ width: '85px' }}>OUT Date</th>
+                <th style={{ width: '70px' }}>OUT Time</th>
+                <th style={{ width: '80px' }}>OUT By</th>
+                <th style={{ width: '60px' }}>Duration</th>
+                <th style={{ width: '60px' }}>Status</th>
+                <th style={{ width: '40px' }}></th>
               </tr>
             </thead>
             <tbody>
               {records.map(r => {
-                const dateLabel = r.out_time && scanTimeToISTDate(r.out_time) !== r.date_ist
-                  ? `${formatDateStr(r.date_ist)} → ${formatDateStr(scanTimeToISTDate(r.out_time))}`
-                  : formatDateStr(r.date_ist)
+                const inDate = formatDateStr(r.date_ist)
+                const outDate = r.out_time ? formatDateStr(scanTimeToISTDate(r.out_time)) : ''
                 
                 return (
                   <tr key={r.id}>
                     <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.85rem', fontWeight: 700 }}>{r.badge_number}</td>
-                    <td style={{ fontWeight: 500, fontSize: '0.9rem' }}>{r.sewadar_name}</td>
-                    {isAso && <td style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{r.centre}</td>}
+                    <td style={{ fontWeight: 500, fontSize: '0.85rem' }}>{r.sewadar_name}</td>
+                    {isAso && <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{r.centre}</td>}
                     <td>
                       <span style={{ 
-                        fontSize: '0.7rem', 
+                        fontSize: '0.6rem', 
                         background: r.duty_type === 'satsang' ? 'rgba(168,85,247,0.15)' : r.duty_type === 'watch_ward' ? 'rgba(59,130,246,0.15)' : 'rgba(107,114,128,0.15)',
                         color: r.duty_type === 'satsang' ? '#9333ea' : r.duty_type === 'watch_ward' ? '#3b82f6' : '#6b7280',
                         border: '1px solid',
                         borderColor: r.duty_type === 'satsang' ? 'rgba(168,85,247,0.3)' : r.duty_type === 'watch_ward' ? 'rgba(59,130,246,0.3)' : 'rgba(107,114,128,0.3)',
-                        borderRadius: 6, padding: '2px 8px', fontWeight: 700 
+                        borderRadius: 6, padding: '2px 6px', fontWeight: 700 
                       }}>
-                        {DUTY_TYPE_LABEL[r.duty_type] || r.duty_type}
+                        {r.duty_type === 'watch_ward' ? 'W&W' : r.duty_type === 'satsang' ? 'Satsang' : 'Gate'}
                       </span>
                     </td>
-                    <td style={{ fontSize: '0.82rem', fontFamily: 'monospace' }}>{dateLabel}</td>
-                    <td style={{ fontSize: '0.82rem' }}>{formatTime(r.in_time)}</td>
-                    <td style={{ fontSize: '0.82rem' }}>{formatTime(r.out_time)}</td>
-                    <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>{formatDuration(r.in_time, r.out_time) || '—'}</td>
+                    <td style={{ fontSize: '0.78rem', fontFamily: 'monospace' }}>{inDate}</td>
+                    <td style={{ fontSize: '0.8rem' }}>{formatTime(r.in_time)}</td>
+                    <td style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      {r.in_scanner_name || r.scanner_name || '—'}
+                    </td>
+                    <td style={{ fontSize: '0.78rem', fontFamily: 'monospace' }}>{outDate}</td>
+                    <td style={{ fontSize: '0.8rem' }}>{formatTime(r.out_time)}</td>
+                    <td style={{ fontSize: '0.7rem', color: r.out_scanner_name ? 'var(--gold)' : 'var(--text-muted)' }}>
+                      {r.out_scanner_name || '—'}
+                    </td>
+                    <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{formatDuration(r.in_time, r.out_time) || '—'}</td>
                     <td>{getStatusBadge(r)}</td>
                     <td>
                       {canEdit && (

@@ -22,7 +22,7 @@ import SkeletonRows from '../components/SkeletonRows'
 import TablePagination from '../components/TablePagination'
 import EmptyState from '../components/EmptyState'
 import ConfirmModal from '../components/ConfirmModal'
-import { showSuccess, _showError } from '../components/Toast'
+import { showSuccess, showError } from '../components/Toast'
 
 const PAGE_SIZE = 50
 const SEARCH_DEBOUNCE = 300

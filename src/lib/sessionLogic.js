@@ -65,6 +65,7 @@ export async function getOpenSession(supabase, badgeNumber) {
     .select('id, in_time, in_id, duty_type, centre, date_ist, sewadar_name')
     .eq('badge_number', badgeNumber)
     .eq('is_open', true)
+    .order('in_time', { ascending: false })
     .limit(1)
     .maybeSingle()
   
@@ -163,39 +164,49 @@ export async function evaluateScan(supabase, {
   
   // Step 5: Apply ladder logic
   if (type === 'IN') {
-    if (openSession) {
-      // Centre users: hard block
-      if (isCentreUser) {
-        return {
-          status: 'blocked',
-          reason: 'open_session_exists',
-          openSession,
-          todaySessions,
-          canOverride: false,
-        }
-      }
-      // ASO: can override with reason
+    // Check if open session exists on the SAME date
+    const openSessionDate = openSession?.date_ist ? String(openSession.date_ist) : null
+    const isSameDay = openSessionDate === scanDateIST
+    
+    if (openSession && isSameDay) {
+      // Same day with open session → block (must scan OUT first)
       return {
         status: 'blocked',
-        reason: 'open_session_exists',
+        reason: 'open_session_same_day',
         openSession,
         todaySessions,
-        canOverride: isAso,
-        overrideType: 'force_close_and_new_in',
+        canOverride: false,
+        message: 'Cannot create new IN on same day. Scan OUT first.',
       }
     }
     
+    if (openSession && !isSameDay) {
+      // Different day with open session → check if Watch & Ward
+      if (!watchWard) {
+        return {
+          status: 'needs_watch_ward_confirmation',
+          reason: 'cross_midnight_session',
+          openSession,
+          todaySessions,
+          message: 'This appears to be a Watch & Ward session (overnight duty). Please confirm.',
+        }
+      }
+      // W&W confirmed → allow new session
+    }
+    
+    // No open session OR W&W confirmed → allow new IN
     return {
       status: 'allowed',
       action: 'new_in',
       dutyType,
       todaySessions,
+      existingOpenSession: openSession, // for info
     }
   }
   
   if (type === 'OUT') {
     if (!openSession) {
-      // Centre users: hard block
+      // No open session - ASO can create standalone OUT, others blocked
       if (isCentreUser) {
         return {
           status: 'blocked',
@@ -204,13 +215,11 @@ export async function evaluateScan(supabase, {
           canOverride: false,
         }
       }
-      // ASO: can create standalone OUT
       return {
-        status: 'blocked',
-        reason: 'no_open_session',
+        status: 'allowed',
+        action: 'standalone_out',
         todaySessions,
         canOverride: isAso,
-        overrideType: 'standalone_out',
       }
     }
     
@@ -273,6 +282,10 @@ export async function executeScan(supabase, {
         date_ist: scanDateIST,
         is_open: true,
         manual_in: manual_entry,
+        scanner_badge,
+        scanner_name,
+        scanner_centre,
+        in_scanner_name: scanner_name,
       })
       .select('id')
       .single()
@@ -307,6 +320,9 @@ export async function executeScan(supabase, {
     
     if (attError) {
       await supabase.from('attendance_sessions').delete().eq('id', session.id)
+      if (attError.code === '23505') {
+        throw new Error('Duplicate entry. This attendance record may already exist.')
+      }
       throw new Error('Failed to record IN: ' + attError.message)
     }
     
@@ -324,6 +340,17 @@ export async function executeScan(supabase, {
       throw new Error('executeScan OUT called with no openSession')
     }
     
+    // Check if this is a Watch & Ward session (IN at late night, OUT next morning)
+    // If IN was done after 9 PM and OUT is on different date, auto-set to WATCH_WARD
+    let finalDutyType = openSession.duty_type
+    if (openSession.in_time && isLateNightScan(openSession.in_time)) {
+      const inDate = scanTimeToISTDate(openSession.in_time)
+      const outDate = scanTimeToISTDate(scanTimeISO)
+      if (inDate !== outDate) {
+        finalDutyType = DUTY_TYPES.WATCH_WARD
+      }
+    }
+    
     // 1. Create attendance row
     const { data: att, error: attError } = await supabase
       .from('attendance')
@@ -334,7 +361,7 @@ export async function executeScan(supabase, {
         department,
         type: 'OUT',
         scan_time: scanTimeISO,
-        duty_type: openSession.duty_type,
+        duty_type: finalDutyType,
         session_id: openSession.id,
         scanner_badge,
         scanner_name,
@@ -349,10 +376,13 @@ export async function executeScan(supabase, {
       .single()
     
     if (attError) {
+      if (attError.code === '23505') {
+        throw new Error('Duplicate entry. This attendance record may already exist.')
+      }
       throw new Error('Failed to record OUT: ' + attError.message)
     }
     
-    // 2. Close session
+    // 2. Close session and update duty_type if needed
     const { error: closeError } = await supabase
       .from('attendance_sessions')
       .update({
@@ -360,6 +390,8 @@ export async function executeScan(supabase, {
         out_time: scanTimeISO,
         is_open: false,
         manual_out: manual_entry,
+        out_scanner_name: scanner_name,
+        duty_type: finalDutyType, // Update duty_type for Watch & Ward
         updated_at: new Date().toISOString(),
       })
       .eq('id', openSession.id)
@@ -403,12 +435,14 @@ export async function asoForceCloseSession(supabase, {
   }
   
   // Log the override
-  await supabase.from('logs').insert({
-    user_badge: asobadge,
-    action: 'FORCE_CLOSE_SESSION',
-    details: `Force closed session ${sessionId} - Reason: ${reason}`,
-    timestamp: new Date().toISOString(),
-  }).catch(console.warn)
+  try {
+    await supabase.from('logs').insert({
+      user_badge: asobadge,
+      action: 'FORCE_CLOSE_SESSION',
+      details: `Force closed session ${sessionId} - Reason: ${reason}`,
+      timestamp: new Date().toISOString(),
+    })
+  } catch (_) { /* logging failure is non-critical */ }
 }
 
 /**
@@ -489,12 +523,14 @@ export async function executeStandaloneOut(supabase, {
     .eq('id', session.id)
   
   // Log the action
-  await supabase.from('logs').insert({
-    user_badge: asobadge,
-    action: 'STANDALONE_OUT',
-    details: `Created standalone OUT for ${badge_number} - Reason: ${reason}`,
-    timestamp: new Date().toISOString(),
-  }).catch(console.warn)
+  try {
+    await supabase.from('logs').insert({
+      user_badge: asobadge,
+      action: 'STANDALONE_OUT',
+      details: `Created standalone OUT for ${badge_number} - Reason: ${reason}`,
+      timestamp: new Date().toISOString(),
+    })
+  } catch (_) { /* logging failure is non-critical */ }
   
   return { attendanceId: att.id, sessionId: session.id }
 }

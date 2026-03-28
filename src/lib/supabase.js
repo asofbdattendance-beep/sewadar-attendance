@@ -132,7 +132,8 @@ export const LOG_ACTIONS = {
   LOGOUT: 'LOGOUT',
   MARK_IN: 'MARK_IN',
   MARK_OUT: 'MARK_OUT',
-  MANUAL_ENTRY: 'MANUAL_ENTRY',
+  MANUAL_IN: 'MANUAL_IN',
+  MANUAL_OUT: 'MANUAL_OUT',
   FORCE_CLOSE: 'FORCE_CLOSE_SESSION',
   STANDALONE_OUT: 'STANDALONE_OUT',
   DELETE_SESSION: 'DELETE_SESSION',
@@ -144,4 +145,21 @@ export const LOG_ACTIONS = {
   JATHA_CREATE: 'JATHA_CREATE',
   JATHA_UPDATE: 'JATHA_UPDATE',
   JATHA_DELETE: 'JATHA_DELETE',
+  JATHA_FLAG: 'JATHA_FLAG',
+  JATHA_FLAG_REMOVE: 'JATHA_FLAG_REMOVE',
+}
+
+export async function logAction(profile, action, details, extra = {}) {
+  try {
+    await supabase.from('logs').insert({
+      user_badge: profile?.badge_number || 'SYSTEM',
+      action,
+      details,
+      timestamp: new Date().toISOString(),
+      device_id: navigator.userAgent.slice(0, 50),
+      ...extra,
+    })
+  } catch (_) {
+    // Logging failure is non-critical
+  }
 }

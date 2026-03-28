@@ -1,6 +1,6 @@
 // JathaPage.jsx — Three tabs: Mark Jatha + View Jatha Records + Table View
 import { useState, useEffect, useRef } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, logAction, LOG_ACTIONS } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
 import {
@@ -79,6 +79,8 @@ function MarkJathaTab() {
 
   const isAso        = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE
+  const canJatha     = isAso || profile?.can_jatha
+  const canEditJatha = isAso || profile?.can_edit_jatha
   const [childCentres, setChildCentres] = useState([])
 
   useEffect(() => {
@@ -227,11 +229,7 @@ function MarkJathaTab() {
       remarks: remarks.trim() || null, flag: false, flag_reason: null,
       submitted_by: profile.badge_number, submitted_name: profile.name, submitted_centre: profile.centre,
     })
-    await supabase.from('logs').insert({
-      user_badge: profile.badge_number, action: 'JATHA_CREATE',
-      details: `Jatha for ${selected.badge_number} → ${jathaCentre} (${jathaType}) ${dateFrom}–${dateTo}`,
-      timestamp: new Date().toISOString()
-    })
+    await logAction(profile, LOG_ACTIONS.JATHA_CREATE, `Jatha for ${selected.badge_number} → ${jathaCentre} (${jathaType}) ${dateFrom}–${dateTo}`)
     setSubmitting(false)
     if (dbErr) { setError(dbErr.message); return }
     setSuccess(true)
@@ -477,6 +475,7 @@ function MarkJathaTab() {
 // ─────────────────────────────────────────────
 function ViewJathaTab() {
   const { profile } = useAuth()
+  const isAso        = profile?.role === ROLES.ASO
   const [records, setRecords]       = useState([])
   const [loading, setLoading]       = useState(true)
   const [totalCount, setTotalCount] = useState(0)
@@ -495,7 +494,7 @@ function ViewJathaTab() {
   const flagTimerRef = useRef(null)
 
   const isAdmin = [ROLES.ASO, ROLES.CENTRE].includes(profile?.role)
-  const isAso   = profile?.role === ROLES.ASO
+  const canEditJatha = isAso || profile?.can_edit_jatha
 
   useEffect(() => { fetchRecords().catch(console.error) }, [typeFilter, monthFilter, page])
 
@@ -566,14 +565,17 @@ function ViewJathaTab() {
       date_to: updated.date_to, satsang_days: updated.satsang_days, remarks: updated.remarks,
     }).eq('id', updated.id)
     setEditSaving(false)
-    if (!error) { setEditModal(null); fetchRecords() }
+    if (!error) {
+      await logAction(profile, LOG_ACTIONS.JATHA_UPDATE, `Updated jatha id=${updated.id} for ${updated.badge_number}: ${updated.jatha_type} at ${updated.jatha_centre}`)
+      setEditModal(null); fetchRecords()
+    }
     else showError('Save failed: ' + error.message)
   }
 
   async function doDeleteRecord(record) {
     const { error } = await supabase.from('jatha_attendance').delete().eq('id', record.id)
     if (!error) {
-      await supabase.from('logs').insert({ user_badge: profile.badge_number, action: 'DELETE_JATHA', details: `Deleted jatha id=${record.id} for ${record.badge_number}`, timestamp: new Date().toISOString() })
+      await logAction(profile, LOG_ACTIONS.JATHA_DELETE, `Deleted jatha id=${record.id} for ${record.badge_number}`)
       fetchRecords()
     } else showError('Delete failed: ' + error.message)
   }
@@ -582,7 +584,7 @@ function ViewJathaTab() {
     if (!flagModal || !flagReason.trim()) return
     setFlagSubmitting(true)
     await supabase.from('jatha_attendance').update({ flag: true, flag_reason: flagReason.trim() }).eq('id', flagModal.id)
-    await supabase.from('logs').insert({ user_badge: profile.badge_number, action: 'FLAG_JATHA', details: `Flagged jatha id=${flagModal.id}: ${flagReason.trim()}`, timestamp: new Date().toISOString() })
+    await logAction(profile, LOG_ACTIONS.JATHA_FLAG, `Flagged jatha id=${flagModal.id}: ${flagReason.trim()}`)
     setFlagSubmitting(false); setFlagSuccess(true)
     clearTimeout(flagTimerRef.current)
     flagTimerRef.current = setTimeout(() => { setFlagModal(null); setFlagReason(''); setFlagSuccess(false); fetchRecords() }, 1200)
@@ -591,6 +593,7 @@ function ViewJathaTab() {
   async function removeFlag(record) {
     if (!isAdmin) return
     await supabase.from('jatha_attendance').update({ flag: false, flag_reason: null }).eq('id', record.id)
+    await logAction(profile, LOG_ACTIONS.JATHA_FLAG_REMOVE, `Removed flag from jatha id=${record.id}`)
     fetchRecords()
   }
 
@@ -688,13 +691,13 @@ function ViewJathaTab() {
 
               <div className="jatha-actions">
                 <div className="jatha-action-group">
-                  {isAso && (
+                  {canEditJatha && (
                     <button onClick={() => setEditModal({ ...r })}
                       style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '0.25rem 0.65rem', fontSize: '0.75rem', color: 'var(--blue)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
                         <Pencil size={11} /> Edit
                     </button>
                   )}
-                  {isAso && (
+                  {canEditJatha && (
                     <button onClick={() => setDeleteConfirm(r)}
                       style={{ background: 'none', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 6, padding: '0.25rem 0.65rem', fontSize: '0.75rem', color: 'var(--red)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
                         <Trash2 size={11} /> Delete
@@ -789,6 +792,7 @@ function JathaTableTab() {
   const isAso        = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE
   const isAdmin      = isAso || isCentreUser
+  const canEditJatha = isAso || profile?.can_edit_jatha
 
   // Reactive desktop detection
   const [isDesktop, setIsDesktop] = useState(() => window.innerWidth >= 1024)

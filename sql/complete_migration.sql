@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS public.attendance_sessions (
   force_closed_by text,
   manual_in      boolean NOT NULL DEFAULT false,
   manual_out     boolean NOT NULL DEFAULT false,
+  scanner_badge  text,
+  scanner_name    text,
+  scanner_centre  text,
+  in_scanner_badge text,
+  in_scanner_name  text,
+  out_scanner_badge text,
+  out_scanner_name  text,
   created_at     timestamptz NOT NULL DEFAULT now(),
   updated_at     timestamptz NOT NULL DEFAULT now()
 );
@@ -94,6 +101,57 @@ BEGIN
   ) THEN
     ALTER TABLE public.attendance
       ADD COLUMN session_id bigint REFERENCES public.attendance_sessions(id);
+  END IF;
+END $$;
+
+-- =====================================================
+-- STEP 6b: Drop overly restrictive unique constraint on attendance
+-- Allows multiple IN/OUT per badge per day (ladder pattern)
+-- =====================================================
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'attendance_unique_daily'
+  ) THEN
+    ALTER TABLE public.attendance DROP CONSTRAINT attendance_unique_daily;
+  END IF;
+END $$;
+
+-- =====================================================
+-- STEP 6c: Add scanner columns to attendance_sessions
+-- =====================================================
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'attendance_sessions' AND column_name = 'scanner_badge') THEN
+    ALTER TABLE public.attendance_sessions ADD COLUMN scanner_badge text;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'attendance_sessions' AND column_name = 'scanner_name') THEN
+    ALTER TABLE public.attendance_sessions ADD COLUMN scanner_name text;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'attendance_sessions' AND column_name = 'scanner_centre') THEN
+    ALTER TABLE public.attendance_sessions ADD COLUMN scanner_centre text;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'attendance_sessions' AND column_name = 'in_scanner_name') THEN
+    ALTER TABLE public.attendance_sessions ADD COLUMN in_scanner_name text;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'attendance_sessions' AND column_name = 'out_scanner_name') THEN
+    ALTER TABLE public.attendance_sessions ADD COLUMN out_scanner_name text;
   END IF;
 END $$;
 
@@ -201,6 +259,11 @@ CREATE POLICY "permissions_read" ON public.user_permissions
 DROP POLICY IF EXISTS "permissions_update" ON public.user_permissions;
 CREATE POLICY "permissions_update" ON public.user_permissions
   FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
+-- ASO can insert permissions for users
+DROP POLICY IF EXISTS "permissions_insert" ON public.user_permissions;
+CREATE POLICY "permissions_insert" ON public.user_permissions
+  FOR INSERT TO authenticated WITH CHECK (true);
 
 -- =====================================================
 -- STEP 13: Create default permissions for existing centre users
