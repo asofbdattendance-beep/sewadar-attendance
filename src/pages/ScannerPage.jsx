@@ -240,25 +240,25 @@ export default function ScannerPage() {
         return
       }
 
-      const scopeCentres = [profile?.centre, ...childCentresRef.current]
-      const inScope = scopeCentres.includes(found.centre)
-      const isException = isExceptionDept(found.department)
+    const scopeCentres = [profile?.centre, ...childCentresRef.current]
+    const inScope = scopeCentres.includes(found.centre)
+    const isException = isExceptionDept(found.department)
 
-      if (!isException && !inScope && !isAso) {
+    if (!isException && !inScope && !isAso) {
+      release()
+      openPopup({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
+      return
+    }
+
+    if (!isAso && location && cfg?.geo_enabled === true && cfg?.latitude != null && cfg?.longitude != null) {
+      const dist = getDistanceMetres(location.lat, location.lng, cfg.latitude, cfg.longitude)
+      const radius = cfg.geo_radius || 200
+      if (dist > radius) {
         release()
-        openPopup({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
+        openPopup({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
         return
       }
-
-      if (location && cfg?.geo_enabled === true && cfg?.latitude != null && cfg?.longitude != null) {
-        const dist = getDistanceMetres(location.lat, location.lng, cfg.latitude, cfg.longitude)
-        const radius = cfg.geo_radius || 200
-        if (dist > radius) {
-          release()
-          openPopup({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
-          return
-        }
-      }
+    }
 
       const scanTime = nowIST()
       const isLateNight = isLateNightScan(scanTime)
