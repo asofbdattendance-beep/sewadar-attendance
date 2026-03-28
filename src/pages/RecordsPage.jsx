@@ -302,37 +302,41 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
   return (
     <div>
       {/* Filters */}
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center', padding: '0.75rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10 }}>
-        <div className="search-box" style={{ flex: 1, minWidth: 200 }}>
+      <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.75rem', flexWrap: 'wrap', alignItems: 'center', padding: '0.6rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10 }}>
+        <div className="search-box" style={{ flex: '1 1 100%', minWidth: 0 }}>
           <Search size={14} />
           <input type="text" placeholder="Search badge or name…" value={searchInput}
-            onChange={e => setSearchInput(e.target.value)} />
+            onChange={e => setSearchInput(e.target.value)} style={{ minWidth: 0 }} />
           {searchInput && <button onClick={() => setSearchInput('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}><X size={13} /></button>}
         </div>
 
-        {isAso && (
-          <CentreComboBox value={centreFilter} onChange={val => { setCentreFilter(val); setPage(1) }} centres={centres} includeAll={true} />
-        )}
+        <div style={{ flex: '1 1 auto', display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          {isAso && (
+            <CentreComboBox value={centreFilter} onChange={val => { setCentreFilter(val); setPage(1) }} centres={centres} includeAll={true} />
+          )}
 
-        <DateRangePicker value={dateRange} onChange={val => { setDateRange(val); setPage(1) }} />
+          <DateRangePicker value={dateRange} onChange={val => { setDateRange(val); setPage(1) }} />
 
-        <select value={dutyFilter} onChange={e => { setDutyFilter(e.target.value); setPage(1) }}
-          style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.6rem', background: 'var(--bg)', fontSize: '0.8rem' }}>
-          <option value="">All Duty Types</option>
-          <option value="satsang">Satsang Duty</option>
-          <option value="gate_entry">Gate Entry</option>
-          <option value="watch_ward">Watch & Ward</option>
-        </select>
+          <select value={dutyFilter} onChange={e => { setDutyFilter(e.target.value); setPage(1) }}
+            style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.6rem', background: 'var(--bg)', fontSize: '0.8rem', minHeight: 36 }}>
+            <option value="">Duty</option>
+            <option value="satsang">Satsang</option>
+            <option value="gate_entry">Gate</option>
+            <option value="watch_ward">W&W</option>
+          </select>
 
-        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
-          style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.6rem', background: 'var(--bg)', fontSize: '0.8rem' }}>
-          <option value="">All Status</option>
-          <option value="open">Open</option>
-          <option value="closed">Closed</option>
-        </select>
+          <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
+            style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.6rem', background: 'var(--bg)', fontSize: '0.8rem', minHeight: 36 }}>
+            <option value="">Status</option>
+            <option value="open">Open</option>
+            <option value="closed">Closed</option>
+          </select>
+        </div>
 
-        <button className="btn btn-ghost" onClick={fetchRecords}><RefreshCw size={14} /></button>
-        <button className="btn btn-excel" onClick={exportAttendanceCSV} disabled={!records.length}><Download size={14} /> Export</button>
+        <div style={{ display: 'flex', gap: '0.4rem', flexShrink: 0 }}>
+          <button className="btn btn-ghost" onClick={fetchRecords}><RefreshCw size={14} /></button>
+          <button className="btn btn-excel" onClick={exportAttendanceCSV} disabled={!records.length}><Download size={14} /></button>
+        </div>
       </div>
 
       {/* Stats */}

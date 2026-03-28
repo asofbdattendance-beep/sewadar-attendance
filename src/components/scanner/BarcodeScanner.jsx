@@ -8,8 +8,8 @@
  * Same code path for all devices — polyfill just fills the gap where native isn't available.
  */
 
-import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
-import { CameraOff, RefreshCw, Zap, Flashlight } from 'lucide-react'
+import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react'
+import { CameraOff, RefreshCw, Zap, Lightbulb } from 'lucide-react'
 
 // Matches: FB or BH + 4 digits + 1-2 uppercase letters + 4+ digits
 // e.g. FB5991GA0070, FB5991LA0028, BH1234GA0001
@@ -41,17 +41,21 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const detectorRef     = useRef(null)
   const mountedRef      = useRef(true)
   const lastScanRef     = useRef({ badge: null, time: 0 })
-  const isDetectingRef = useRef(false)
+  const isDetectingRef  = useRef(false)
   const scanTimerRef    = useRef(null)
   const fpsRef          = useRef({ frames: 0, last: Date.now() })
   const lastDetectRef   = useRef(0)
   const torchRef        = useRef(false)
   const callbackRef     = useRef(onScan)
+  // FIX: store startScanner in a ref so the visibilitychange handler always calls
+  // the latest version without stale closures.
+  const startScannerRef = useRef(null)
+
   const [status, setStatus]           = useState('starting')
   const [errorMsg, setErrorMsg]       = useState('')
   const [lastScanned, setLastScanned] = useState('')
   const [engineLabel, setEngineLabel] = useState('')
-  const [fps, setFps]               = useState(0)
+  const [fps, setFps]                 = useState(0)
   const [torchOn, setTorchOn]         = useState(false)
 
   // Keep callback ref in sync with latest onScan
@@ -59,15 +63,15 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     callbackRef.current = onScan
   }, [onScan])
 
-  const stopScanner = () => {
+  const stopScanner = useCallback(() => {
     if (rafRef.current)        { cancelAnimationFrame(rafRef.current); rafRef.current = null }
     if (scanTimerRef.current)  { clearTimeout(scanTimerRef.current); scanTimerRef.current = null }
     if (streamRef.current)     { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
     if (videoRef.current)       videoRef.current.srcObject = null
     isDetectingRef.current = false
-  }
+  }, [])
 
-  const applyTorch = (on) => {
+  const applyTorch = useCallback((on) => {
     const track = streamRef.current?.getVideoTracks()[0]
     if (!track) return
     try {
@@ -77,20 +81,20 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       torchRef.current = on
       setTorchOn(on)
     } catch (_) { /* device doesn't support torch */ }
-  }
+  }, [])
 
-  const toggleTorch = () => applyTorch(!torchRef.current)
+  const toggleTorch = useCallback(() => applyTorch(!torchRef.current), [applyTorch])
 
-  const startScanner = async () => {
+  const startScanner = useCallback(async () => {
     if (!mountedRef.current) return
     stopScanner()
     setStatus('loading')
     setErrorMsg('')
     setLastScanned('')
     lastScanRef.current    = { badge: null, time: 0 }
-    fpsRef.current        = { frames: 0, last: Date.now() }
-    lastDetectRef.current = 0
-    torchRef.current = false
+    fpsRef.current         = { frames: 0, last: Date.now() }
+    lastDetectRef.current  = 0
+    torchRef.current       = false
     setTorchOn(false)
 
     // Preload polyfill if needed (non-blocking)
@@ -204,13 +208,18 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
         rafRef.current = requestAnimationFrame(detect)
       }).catch(err => {
         isDetectingRef.current = false
-        if (import.meta.env.DEV) console.warn('[Scanner] detect error:', err)
+        if (import.meta.env?.DEV) console.warn('[Scanner] detect error:', err)
         rafRef.current = requestAnimationFrame(detect)
       })
     }
 
     rafRef.current = requestAnimationFrame(detect)
-  }
+  }, [stopScanner])
+
+  // Keep startScannerRef in sync so the visibilitychange listener never goes stale
+  useEffect(() => {
+    startScannerRef.current = startScanner
+  }, [startScanner])
 
   useEffect(() => {
     mountedRef.current = true
@@ -219,23 +228,27 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       mountedRef.current = false
       stopScanner()
     }
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps — intentionally run once on mount
 
   useEffect(() => {
     const onVisibility = () => {
-      if (document.hidden) stopScanner()
-      else if (mountedRef.current) startScanner()
+      if (document.hidden) {
+        stopScanner()
+      } else if (mountedRef.current) {
+        // FIX: call via ref to always use the latest startScanner without a stale closure
+        startScannerRef.current?.()
+      }
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [])
+  }, [stopScanner])
 
   useImperativeHandle(ref, () => ({
     stop:    stopScanner,
-    resume:  () => { if (mountedRef.current) startScanner() },
-    restart: () => { stopScanner(); setTimeout(() => { if (mountedRef.current) startScanner() }, 100) },
+    resume:  () => { if (mountedRef.current) startScannerRef.current?.() },
+    restart: () => { stopScanner(); setTimeout(() => { if (mountedRef.current) startScannerRef.current?.() }, 100) },
     toggleTorch,
-  }), [])
+  }), [stopScanner, toggleTorch])
 
   if (status === 'error') {
     return (
@@ -270,13 +283,14 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             <div className="scan-line" />
           </div>
 
+          {/* FIX: replaced non-existent 'Flashlight' icon with 'Lightbulb' from lucide-react */}
           <button
             className="scanner-torch-btn"
             onClick={toggleTorch}
             style={{ background: torchOn ? 'rgba(255,220,0,0.9)' : 'rgba(0,0,0,0.5)' }}
             title={torchOn ? 'Flash off' : 'Flash on'}
           >
-            <Flashlight size={18} color={torchOn ? '#000' : '#fff'} />
+            <Lightbulb size={18} color={torchOn ? '#000' : '#fff'} />
           </button>
 
           <div className="scanner-fps-badge">
