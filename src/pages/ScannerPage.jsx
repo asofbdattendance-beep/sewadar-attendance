@@ -38,6 +38,7 @@ export default function ScannerPage() {
   const pendingScanRef = useRef(null)
   const safetyTimerRef = useRef(null)
   const sewadarCacheRef = useRef(new Map())
+  const popupStateRef = useRef(null)
 
   const isAso = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE
@@ -93,6 +94,7 @@ export default function ScannerPage() {
 
   useEffect(() => {
     console.log('[POPUP STATE UPDATED]', popupState?.type || 'null')
+    popupStateRef.current = popupState
     if (popupState && safetyTimerRef.current) {
       clearTimeout(safetyTimerRef.current)
       safetyTimerRef.current = null
@@ -377,29 +379,26 @@ export default function ScannerPage() {
     }
   }
 
-  const markAttendance = async (type, overrideData = null) => {
-    try {
-      if (!popupState?.sewadar || !profile) {
-        showError('Something went wrong. Please try again.')
-        return
-      }
+  const markAttendance = async (type, data, overrideData = null) => {
+    if (!data?.found) {
+      console.warn('[markAttendance] no data.found, data:', data)
+      showError('Something went wrong. Please try again.')
+      return
+    }
+    const found = data.found
+    const badge = data.badge || found.badge_number
+    const openSession = data.openSession || null
+    const watchWard = data.watchWard || false
 
+    try {
       const scanTime = nowIST()
       const scanTimeISO = new Date(scanTime.replace(' ', 'T')).toISOString()
-      const { found, badge: _badge, openSession, dutyType: _dutyType, todaySessions: _todaySessions } = popupState
 
-      // If override, handle it first
       if (overrideData?.isOverride) {
         const { asobadge, reason, overrideType } = overrideData
-        
         if (overrideType === 'force_close_and_new_in') {
-          await asoForceCloseSession(supabase, {
-            sessionId: openSession.id,
-            asobadge,
-            reason,
-          })
+          await asoForceCloseSession(supabase, { sessionId: openSession.id, asobadge, reason })
         } else if (overrideType === 'standalone_out') {
-          // Create standalone OUT
           await executeStandaloneOut(supabase, {
             badge_number: found.badge_number,
             sewadar_name: found.sewadar_name,
@@ -414,7 +413,6 @@ export default function ScannerPage() {
             reason,
             asobadge,
           })
-          
           playBeep('OUT')
           setPopupState({ type: 'success', sewadar: found, attendanceType: 'OUT', time: scanTime })
           setTimeout(closePopup, 1200)
@@ -424,18 +422,15 @@ export default function ScannerPage() {
         }
       }
 
-      // Get open session for OUT
       let currentOpenSession = null
       if (type === 'OUT') {
         currentOpenSession = await getOpenSession(supabase, found.badge_number)
       }
 
-      // Determine duty type
-      const finalDutyType = overrideData?.dutyType || 
-        (popupState.watchWard ? DUTY_TYPES.WATCH_WARD : computeDutyType(scanTimeISO, popupState.watchWard))
+      const finalDutyType = overrideData?.dutyType ||
+        (watchWard ? DUTY_TYPES.WATCH_WARD : computeDutyType(scanTimeISO, watchWard))
 
-      // Execute the scan
-      const _result = await executeScan(supabase, {
+      await executeScan(supabase, {
         badge_number: found.badge_number,
         sewadar_name: found.sewadar_name,
         centre: found.centre,
@@ -457,7 +452,6 @@ export default function ScannerPage() {
       setPopupState({ type: 'success', sewadar: found, attendanceType: type, time: scanTime })
       setTimeout(closePopup, 1200)
 
-      // Log the action
       try {
         await supabase.from('logs').insert({
           user_badge: profile.badge_number,
@@ -470,10 +464,9 @@ export default function ScannerPage() {
 
       fetchTodayCount()
       fetchRecentScans()
-
     } catch (err) {
-      console.error('markAttendance error:', err)
-      showError('Error: ' + err.message)
+      console.error('[markAttendance]', err?.message || err, err?.stack)
+      showError('Error: ' + (err?.message || String(err)))
     }
   }
 
@@ -613,9 +606,12 @@ export default function ScannerPage() {
             {popupState.type === 'found' && (
               <SewadarFoundCard
                 sewadar={popupState.sewadar}
+                badge={popupState.badge}
                 allowedAction={popupState.allowedAction}
                 todaySessions={popupState.todaySessions}
                 dutyType={popupState.dutyType}
+                watchWard={popupState.watchWard}
+                openSession={popupState.openSession}
                 onMark={markAttendance}
                 onClose={closePopup}
               />
@@ -625,7 +621,7 @@ export default function ScannerPage() {
               <div className="popup-error">
                 <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
                 <div className="error-title">On Jatha Duty</div>
-                <div className="error-name">{popupState.sewadar.sewadar_name}</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
                 <div className="error-badge">{popupState.jatha?.jatha_centre}</div>
                 <div className="error-msg">
                   Cannot mark attendance. Sewadar is on {popupState.jatha?.jatha_type} from {popupState.jatha?.date_from} to {popupState.jatha?.date_to}
@@ -638,7 +634,7 @@ export default function ScannerPage() {
               <div className="popup-error">
                 <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
                 <div className="error-title">Already Checked In</div>
-                <div className="error-name">{popupState.sewadar.sewadar_name}</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
                 <div className="error-msg">
                   Already has an open session. Scan OUT first before a new IN.
                 </div>
@@ -664,7 +660,7 @@ export default function ScannerPage() {
               <div className="popup-error">
                 <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
                 <div className="error-title">Not Checked In</div>
-                <div className="error-name">{popupState.sewadar.sewadar_name}</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
                 <div className="error-msg">
                   No open session found. Scan IN first.
                 </div>
@@ -698,10 +694,10 @@ export default function ScannerPage() {
               <div className="popup-error">
                 <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
                 <div className="error-title">Badge Ineligible</div>
-                <div className="error-name">{popupState.sewadar.sewadar_name}</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
                 <div className="error-badge">{popupState.badge}</div>
                 <div style={{ margin: '8px auto', display: 'inline-block', background: 'rgba(198,40,40,0.1)', border: '1px solid rgba(198,40,40,0.3)', borderRadius: 6, padding: '3px 12px', fontSize: 13, fontWeight: 700, color: '#dc2626' }}>
-                  Status: {popupState.sewadar.badge_status || 'Unknown'}
+                  Status: {popupState.sewadar?.badge_status || 'Unknown'}
                 </div>
                 <div className="error-msg">Only Open, Permanent & Elderly badges can be marked</div>
                 <button className="btn-cancel" onClick={closePopup}>Dismiss</button>
@@ -712,8 +708,8 @@ export default function ScannerPage() {
               <div className="popup-error">
                 <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
                 <div className="error-title">Not Authorised</div>
-                <div className="error-name">{popupState.sewadar.sewadar_name}</div>
-                <div className="error-msg">{popupState.message || `${popupState.sewadar.centre} — Different centre`}</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
+                <div className="error-msg">{popupState.message || `${popupState.sewadar?.centre || 'Unknown'} — Different centre`}</div>
                 <button className="btn-cancel" onClick={closePopup}>Try Another</button>
               </div>
             )}
@@ -736,7 +732,7 @@ export default function ScannerPage() {
                 <div className="success-title" style={{ color: popupState.attendanceType === 'IN' ? '#16a34a' : '#dc2626' }}>
                   {popupState.attendanceType}
                 </div>
-                <div className="success-name">{popupState.sewadar.sewadar_name}</div>
+                <div className="success-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
                 <div className="success-type">
                   {popupState.time ? new Date(popupState.time.replace(' ', 'T')).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}
                 </div>
@@ -767,7 +763,7 @@ export default function ScannerPage() {
   )
 }
 
-function SewadarFoundCard({ sewadar, allowedAction, todaySessions, _dutyType, onMark, onClose }) {
+function SewadarFoundCard({ sewadar, badge, allowedAction, todaySessions, dutyType, watchWard, openSession, onMark, onClose }) {
   const statusStyle = (s) => {
     const status = (s || '').toLowerCase()
     if (status === 'permanent') return { bg: 'rgba(33,115,70,0.12)', color: 'var(--green)' }
@@ -775,24 +771,26 @@ function SewadarFoundCard({ sewadar, allowedAction, todaySessions, _dutyType, on
     if (status === 'elderly') return { bg: 'rgba(201,168,76,0.15)', color: 'var(--gold)' }
     return { bg: 'rgba(198,40,40,0.1)', color: 'var(--red)' }
   }
-  const st = statusStyle(sewadar.badge_status)
+  const st = statusStyle(sewadar?.badge_status)
+
+  const data = { found: sewadar, badge, openSession, dutyType, todaySessions, watchWard }
 
   return (
     <>
       <div className="popup-header">
         <div className="sewadar-info">
-          <div className="name">{sewadar.sewadar_name}</div>
-          <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>{sewadar.badge_number}</div>
+          <div className="name">{sewadar?.sewadar_name}</div>
+          <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>{sewadar?.badge_number}</div>
         </div>
-        <span className={`gender-badge ${sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>{sewadar.gender}</span>
+        <span className={`gender-badge ${sewadar?.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>{sewadar?.gender}</span>
       </div>
       <div className="popup-details">
-        <div className="detail"><span>Centre</span><span>{sewadar.centre}</span></div>
-        <div className="detail"><span>Dept</span><span>{sewadar.department || '—'}</span></div>
+        <div className="detail"><span>Centre</span><span>{sewadar?.centre}</span></div>
+        <div className="detail"><span>Dept</span><span>{sewadar?.department || '—'}</span></div>
         <div className="detail">
           <span>Status</span>
           <span style={{ background: st.bg, color: st.color, border: '1px solid currentColor', borderRadius: 5, padding: '1px 8px', fontSize: 12, fontWeight: 700 }}>
-            {sewadar.badge_status || 'Unknown'}
+            {sewadar?.badge_status || 'Unknown'}
           </span>
         </div>
       </div>
@@ -808,12 +806,12 @@ function SewadarFoundCard({ sewadar, allowedAction, todaySessions, _dutyType, on
       )}
       <div className="popup-actions">
         {allowedAction === 'IN' && (
-          <button type="button" className="btn-in" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMark('IN') }}>
+          <button type="button" className="btn-in" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMark('IN', data) }}>
             IN
           </button>
         )}
         {allowedAction === 'OUT' && (
-          <button type="button" className="btn-out" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMark('OUT') }}>
+          <button type="button" className="btn-out" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMark('OUT', data) }}>
             OUT
           </button>
         )}
@@ -823,7 +821,7 @@ function SewadarFoundCard({ sewadar, allowedAction, todaySessions, _dutyType, on
   )
 }
 
-function OverridePopup({ type, sewadar, badge, openSession: _openSession, todaySessions: _todaySessions, onMark, onClose, isAso, profile }) {
+function OverridePopup({ type, sewadar, badge, openSession, todaySessions, onMark, onClose, isAso, profile }) {
   const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -832,7 +830,7 @@ function OverridePopup({ type, sewadar, badge, openSession: _openSession, todayS
       <div className="popup-error">
         <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
         <div className="error-title">{type === 'open_session' ? 'Already Checked In' : 'Not Checked In'}</div>
-        <div className="error-name">{sewadar.sewadar_name}</div>
+        <div className="error-name">{sewadar?.sewadar_name || 'Unknown'}</div>
         <div className="error-msg">
           {type === 'open_session' 
             ? 'Cannot mark IN. Already has open session. Contact ASO for help.'
@@ -855,14 +853,15 @@ function OverridePopup({ type, sewadar, badge, openSession: _openSession, todayS
       overrideType: type === 'open_session' ? 'force_close_and_new_in' : 'standalone_out',
     }
 
-    await onMark(type === 'open_session' ? 'IN' : 'OUT', overrideData)
+    const data = { found: sewadar, badge, openSession, dutyType: null, todaySessions, watchWard: false }
+    await onMark(type === 'open_session' ? 'IN' : 'OUT', data, overrideData)
     setSubmitting(false)
   }
 
   return (
     <div className="popup-recent">
       <div className="popup-recent-icon"><AlertTriangle size={28} color="#f59e0b" /></div>
-      <div className="recent-name">{sewadar.sewadar_name}</div>
+      <div className="recent-name">{sewadar?.sewadar_name || 'Unknown'}</div>
       <div className="recent-badge">{badge}</div>
       <div className="recent-msg">
         {type === 'open_session' 
