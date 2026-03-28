@@ -201,18 +201,24 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
     const { id, badge_number } = deleteConfirm
 
     try {
-      await supabase.from('attendance').delete().eq('session_id', id)
+      // Step 1: Clear session_id on attendance records (removes FK reference, allows session delete)
+      await supabase.from('attendance').update({ session_id: null }).eq('session_id', id)
 
+      // Step 2: Clear session_id on flags (preserve flags, just unlink the session)
       await supabase.from('flags').update({ session_id: null }).eq('session_id', id)
 
-      await supabase.from('attendance_sessions').update({
-        in_id: null,
-        out_id: null,
-        flagged: false,
-      }).eq('id', id)
-
+      // Step 3: Delete the session
       const { error } = await supabase.from('attendance_sessions').delete().eq('id', id)
-      if (error) throw new Error(error.message)
+      if (error) {
+        // If still failing (e.g. ON DELETE RESTRICT), try clearing in_id/out_id first
+        if (error.code === '23503') {
+          await supabase.from('attendance_sessions').update({ in_id: null, out_id: null }).eq('id', id)
+          const retry = await supabase.from('attendance_sessions').delete().eq('id', id)
+          if (retry.error) throw new Error(retry.error.message)
+        } else {
+          throw new Error(error.message)
+        }
+      }
 
       await supabase.from('logs').insert({
         user_badge: profile.badge_number,
@@ -221,7 +227,7 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
         timestamp: new Date().toISOString(),
       })
 
-      showSuccess('Session deleted — flag preserved if any')
+      showSuccess('Session deleted')
       fetchRecords()
     } catch (err) {
       showError('Delete failed: ' + err.message)
@@ -448,6 +454,74 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
               })}
             </tbody>
           </table>
+        )}
+      </div>
+
+      {/* Mobile card view */}
+      <div className="rec-mobile-cards" style={{ marginTop: '0.75rem' }}>
+        {loading ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {[1,2,3].map(i => (
+              <div key={i} style={{ height: 100, background: 'var(--bg-elevated)', borderRadius: 10, border: '1px solid var(--border)' }} />
+            ))}
+          </div>
+        ) : records.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+            No records found
+          </div>
+        ) : (
+          records.map(r => (
+            <div key={r.id} className="rec-mobile-card" style={{ marginBottom: '0.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>{r.sewadar_name}</div>
+                  <div style={{ fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--gold)', fontWeight: 700 }}>{r.badge_number}</div>
+                </div>
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    {r.is_open ? '🟡 OPEN' : r.force_closed ? '⚪ CORRECTED' : '🟢 COMPLETE'}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 2 }}>{r.centre}</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.7rem', background: r.duty_type === 'satsang' ? 'rgba(168,85,247,0.15)' : r.duty_type === 'watch_ward' ? 'rgba(59,130,246,0.15)' : 'rgba(107,114,128,0.15)', color: r.duty_type === 'satsang' ? '#9333ea' : r.duty_type === 'watch_ward' ? '#3b82f6' : '#6b7280', border: '1px solid', borderColor: r.duty_type === 'satsang' ? 'rgba(168,85,247,0.3)' : r.duty_type === 'watch_ward' ? 'rgba(59,130,246,0.3)' : 'rgba(107,114,128,0.3)', borderRadius: 6, padding: '2px 6px', fontWeight: 700 }}>
+                  {r.duty_type === 'watch_ward' ? 'W&W' : r.duty_type === 'satsang' ? 'Satsang' : 'Gate'}
+                </span>
+                <span style={{ fontSize: '0.72rem', fontFamily: 'monospace', background: 'var(--bg)', color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 5, padding: '2px 8px' }}>
+                  IN {formatTime(r.in_time)}
+                </span>
+                {r.out_time && (
+                  <span style={{ fontSize: '0.72rem', fontFamily: 'monospace', background: 'rgba(220,38,38,0.08)', color: 'var(--red)', border: '1px solid rgba(220,38,38,0.2)', borderRadius: 5, padding: '2px 8px' }}>
+                    OUT {formatTime(r.out_time)}
+                  </span>
+                )}
+                {r.flagged && (
+                  <span style={{ fontSize: '0.65rem', background: 'rgba(220,38,38,0.1)', color: 'var(--red)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 5, padding: '2px 6px', fontWeight: 700 }}>
+                    🚩 Flagged
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.5rem' }}>
+                {canFlag && !r.flagged && (
+                  <button
+                    onClick={() => { setFlagModal(r); setFlagReason('') }}
+                    style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: '0.72rem', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
+                  >
+                    <Flag size={11} /> Flag
+                  </button>
+                )}
+                {canEdit && (
+                  <button
+                    onClick={() => deleteSession(r)}
+                    style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: '0.72rem', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
+                  >
+                    <Trash2 size={11} /> Delete
+                  </button>
+                )}
+              </div>
+            </div>
+          ))
         )}
       </div>
 

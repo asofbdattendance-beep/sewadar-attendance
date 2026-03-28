@@ -88,7 +88,7 @@ export default function CentreComboBox({ value, onChange, centres = [], includeA
   }
 
   return (
-    <div ref={ref} style={{ position: 'relative', flex: 1, minWidth: 160 }}>
+    <div ref={ref} style={{ position: 'relative', flex: '1 1 auto', minWidth: 0, maxWidth: '100%' }}>
       <button
         onClick={() => setOpen(o => !o)}
         onKeyDown={handleKeyDown}

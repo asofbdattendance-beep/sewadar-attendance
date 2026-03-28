@@ -34,12 +34,14 @@ export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
     <div style={{
       display: 'flex',
       alignItems: 'center',
-      gap: '0.5rem',
+      gap: '0.4rem',
       background: 'white',
       border: '1.5px solid var(--border)',
       borderRadius: 'var(--radius)',
-      padding: '0.4rem 0.75rem',
+      padding: '0.35rem 0.6rem',
       flexShrink: 0,
+      flexWrap: 'wrap',
+      minWidth: 0,
     }}>
       <Calendar size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
       
@@ -59,7 +61,8 @@ export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
           fontFamily: 'inherit',
           color: isToday(value.from) ? 'var(--text-muted)' : 'var(--text-primary)',
           fontWeight: isToday(value.from) ? 400 : 600,
-          minWidth: '95px',
+          minWidth: '80px',
+          width: '80px',
           cursor: 'pointer',
         }}
       />
@@ -82,7 +85,8 @@ export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
           fontFamily: 'inherit',
           color: isToday(value.to) ? 'var(--text-muted)' : 'var(--text-primary)',
           fontWeight: isToday(value.to) ? 400 : 600,
-          minWidth: '95px',
+          minWidth: '80px',
+          width: '80px',
           cursor: 'pointer',
         }}
       />
