@@ -37,6 +37,7 @@ export default function ScannerPage() {
   const childCentresRef = useRef([])
   const pendingScanRef = useRef(null)
   const safetyTimerRef = useRef(null)
+  const sewadarCacheRef = useRef(new Map())
 
   const isAso = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE
@@ -61,7 +62,7 @@ export default function ScannerPage() {
       setGpsStatus('success')
     }
     const fail = () => setGpsStatus(s => s !== 'success' ? 'failed' : s)
-    const opts = { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 }
+    const opts = { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 }
     navigator.geolocation.getCurrentPosition(success, fail, opts)
     watchIdRef.current = navigator.geolocation.watchPosition(success, fail, opts)
     return () => { if (watchIdRef.current != null) navigator.geolocation.clearWatch(watchIdRef.current) }
@@ -69,14 +70,21 @@ export default function ScannerPage() {
 
   useEffect(() => {
     fetchTodayCount().catch(console.error)
+    let debounceTimer = null
     const channel = supabase.channel('scanner-count')
       .on('postgres_changes', { 
         event: 'INSERT', 
         schema: 'public', 
         table: 'attendance',
-      }, () => fetchTodayCount().catch(console.error))
+      }, () => {
+        clearTimeout(debounceTimer)
+        debounceTimer = setTimeout(() => fetchTodayCount().catch(console.error), 500)
+      })
       .subscribe()
-    return () => supabase.removeChannel(channel)
+    return () => {
+      clearTimeout(debounceTimer)
+      supabase.removeChannel(channel)
+    }
   }, [profile?.centre, profile?.role, profile])
 
   useEffect(() => {
@@ -125,7 +133,16 @@ export default function ScannerPage() {
   }
 
   useEffect(() => {
+    const warmup = () => {
+      if (!audioCtxRef.current) {
+        try { audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)() } catch (_) { /* AudioContext not available */ }
+      }
+    }
+    document.addEventListener('click', warmup, { once: true })
+    document.addEventListener('touchstart', warmup, { once: true })
     return () => {
+      document.removeEventListener('click', warmup)
+      document.removeEventListener('touchstart', warmup)
       if (audioCtxRef.current) {
         audioCtxRef.current.close()
         audioCtxRef.current = null
@@ -165,12 +182,7 @@ export default function ScannerPage() {
   }
 
   const handleScan = useCallback(async (badge) => {
-    console.log('[Scanner] handleScan called with:', badge)
-    if (busyRef.current) { console.log('[Scanner] BLOCKED: busyRef is true'); return }
-
-    const now = Date.now()
-    if (now - lastScanRef.current.time < 800) { console.log('[Scanner] BLOCKED: debounce 800ms'); return }
-    if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) { console.log('[Scanner] BLOCKED: same badge within 2s'); return }
+    if (busyRef.current) return
 
     busyRef.current = true
 
@@ -180,40 +192,56 @@ export default function ScannerPage() {
       safetyTimerRef.current = null
     }, 5000)
 
-    const { profile: _userProfile, userLocation: location, centreConfig: cfg } = { profile, userLocation, centreConfig }
-
-    let found = null
-    let lookupError = null
-    try {
-      const { data, error } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
-      if (error) throw error
-      found = data
-    } catch (e) {
-      lookupError = e?.message || 'Database error'
+    const openPopup = (state) => {
+      if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
+      if (scannerRef.current) scannerRef.current.stop()
+      const now = Date.now()
+      lastScanRef.current = { badge, time: now }
+      setPopupState(state)
     }
 
-    console.log('[Scanner] Sewadar lookup:', found ? 'FOUND' : 'NOT FOUND', lookupError || '')
+    const release = () => {
+      busyRef.current = false
+      if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
+    }
+
+    const { profile: _userProfile, userLocation: location, centreConfig: cfg } = { profile, userLocation, centreConfig }
+
+    let found = sewadarCacheRef.current.get(badge)
+    let lookupError = null
 
     if (!found) {
-      setPopupState({ type: 'not_found', badge, message: lookupError ? `Lookup failed: ${lookupError}` : null })
+      try {
+        const { data, error } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
+        if (error) throw error
+        found = data
+        if (found) sewadarCacheRef.current.set(badge, found)
+      } catch (e) {
+        lookupError = e?.message || 'Database error'
+      }
+    }
+
+    if (!found) {
+      release()
+      openPopup({ type: 'not_found', badge, message: lookupError ? `Lookup failed: ${lookupError}` : null })
       return
     }
 
     const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
     const badgeStatus = (found.badge_status || '').toLowerCase().trim()
-    console.log('[Scanner] Badge status:', badgeStatus)
     if (!ALLOWED_STATUSES.includes(badgeStatus)) {
-      setPopupState({ type: 'invalid_status', sewadar: found, badge })
+      release()
+      openPopup({ type: 'invalid_status', sewadar: found, badge })
       return
     }
 
     const scopeCentres = [profile?.centre, ...childCentresRef.current]
     const inScope = scopeCentres.includes(found.centre)
     const isException = isExceptionDept(found.department)
-    console.log('[Scanner] Scope check:', { inScope, isException, isAso, centre: found.centre })
 
     if (!isException && !inScope && !isAso) {
-      setPopupState({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
+      release()
+      openPopup({ type: 'auth_fail', sewadar: found, badge, message: `${found.centre} — not in your scope` })
       return
     }
 
@@ -221,25 +249,24 @@ export default function ScannerPage() {
       const dist = getDistanceMetres(location.lat, location.lng, cfg.latitude, cfg.longitude)
       const radius = cfg.geo_radius || 200
       if (dist > radius) {
-        console.log('[Scanner] Geo fail:', dist + 'm')
-        setPopupState({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
+        release()
+        openPopup({ type: 'geo_fail', sewadar: found, message: `${Math.round(dist)}m away (limit: ${radius}m)`, badge })
         return
       }
     }
 
     const scanTime = nowIST()
     const isLateNight = isLateNightScan(scanTime)
-    console.log('[Scanner] Late night:', isLateNight)
 
     if (isLateNight) {
-      pendingScanRef.current = { found, badge: badge, scanTime }
+      pendingScanRef.current = { found, badge, scanTime }
+      release()
       setWatchWardConfirm({ sewadar: found, badge })
       return
     }
 
-    console.log('[Scanner] Calling processSewadar...')
+    release()
     await processSewadar(found, badge, scanTime)
-    console.log('[Scanner] processSewadar returned')
   }, [profile, userLocation, centreConfig, childCentres, isAso])
 
   async function handleWatchWardConfirm(isWatchWard) {
@@ -254,113 +281,71 @@ export default function ScannerPage() {
 
   async function processSewadar(found, badge, scanTime, watchWardConfirm = false) {
     const scanTimeISO = new Date(scanTime.replace(' ', 'T')).toISOString()
-    console.log('[Scanner] processSewadar started for:', badge)
-    
+    const today = todayDateStr()
+
+    const openPopup = (state) => {
+      if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
+      if (scannerRef.current) scannerRef.current.stop()
+      lastScanRef.current = { badge, time: Date.now() }
+      setPopupState(state)
+    }
+
     let result
     try {
-      result = await evaluateScan(supabase, {
-        badgeNumber: badge,
-        type: 'IN',
-        scanTimeISO,
-        watchWard: watchWardConfirm,
-        isAso,
-        isCentreUser,
-      })
-      console.log('[Scanner] evaluateScan result:', JSON.stringify(result))
+      const [evalResult, todaySessions] = await Promise.all([
+        evaluateScan(supabase, {
+          badgeNumber: badge,
+          type: 'IN',
+          scanTimeISO,
+          watchWard: watchWardConfirm,
+          isAso,
+          isCentreUser,
+        }),
+        getSessionsForDate(supabase, badge, today),
+      ])
+      result = evalResult
+
+      const openSession = todaySessions.find(s => s.is_open)
+      const nextType = openSession ? 'OUT' : 'IN'
+
+      if (result.status === 'blocked' || result.status === 'needs_watch_ward_confirmation') {
+        if (result.reason === 'jatha_active') {
+          openPopup({ type: 'jatha_block', sewadar: found, badge, jatha: result.jatha })
+          return
+        }
+        if (result.reason === 'cross_midnight_session') {
+          openPopup({ type: 'open_session_block', sewadar: found, badge, openSession: result.openSession, todaySessions })
+          return
+        }
+        if (result.reason === 'open_session_same_day') {
+          if (!result.canOverride) {
+            openPopup({ type: 'open_session_block', sewadar: found, badge, openSession: result.openSession, todaySessions })
+          } else {
+            openPopup({ type: 'open_session_override', sewadar: found, badge, openSession: result.openSession, todaySessions, dutyType: result.dutyType })
+          }
+          return
+        }
+        if (result.reason === 'no_open_session') {
+          if (!result.canOverride) {
+            openPopup({ type: 'no_session_block', sewadar: found, badge, todaySessions })
+          } else {
+            openPopup({ type: 'no_session_override', sewadar: found, badge, todaySessions })
+          }
+          return
+        }
+        if (result.reason === 'system_error') {
+          openPopup({ type: 'not_found', badge, message: result.message })
+        } else {
+          openPopup({ type: 'open_session_block', sewadar: found, badge, openSession: result.openSession || null, todaySessions })
+        }
+        return
+      }
+
+      openPopup({ type: 'found', sewadar: found, badge, allowedAction: nextType, todaySessions, dutyType: result.dutyType, watchWard: watchWardConfirm })
     } catch (err) {
-      console.error('[Scanner] evaluateScan threw:', err)
-      result = { status: 'blocked', reason: 'system_error', message: err.message }
+      console.error('[Scanner] processSewadar threw:', err)
+      openPopup({ type: 'not_found', badge, message: err.message })
     }
-
-    const today = todayDateStr()
-    const todaySessions = await getSessionsForDate(supabase, badge, today)
-    console.log('[Scanner] Today sessions:', todaySessions.length, 'Open session:', todaySessions.find(s => s.is_open) ? 'YES' : 'NO')
-
-    const openSession = todaySessions.find(s => s.is_open)
-    const nextType = openSession ? 'OUT' : 'IN'
-    console.log('[Scanner] Result status:', result.status, '| Next type:', nextType)
-
-    if (result.status === 'blocked' || result.status === 'needs_watch_ward_confirmation') {
-      if (result.reason === 'jatha_active') {
-        setPopupState({ 
-          type: 'jatha_block', 
-          sewadar: found, 
-          badge, 
-          jatha: result.jatha 
-        })
-        return
-      }
-
-      if (result.reason === 'cross_midnight_session') {
-        setPopupState({ 
-          type: 'open_session_block', 
-          sewadar: found, 
-          badge, 
-          openSession: result.openSession,
-          todaySessions 
-        })
-        return
-      }
-
-      if (result.reason === 'open_session_same_day') {
-        if (!result.canOverride) {
-          // Centre user - hard block
-          setPopupState({ 
-            type: 'open_session_block', 
-            sewadar: found, 
-            badge, 
-            openSession: result.openSession,
-            todaySessions 
-          })
-        } else {
-          // ASO - can override
-          setPopupState({ 
-            type: 'open_session_override', 
-            sewadar: found, 
-            badge, 
-            openSession: result.openSession,
-            todaySessions,
-            dutyType: result.dutyType
-          })
-        }
-        return
-      }
-
-      if (result.reason === 'no_open_session') {
-        if (!result.canOverride) {
-          setPopupState({ type: 'no_session_block', sewadar: found, badge, todaySessions })
-        } else {
-          setPopupState({ type: 'no_session_override', sewadar: found, badge, todaySessions })
-        }
-        return
-      }
-
-      // Fallback for any unhandled blocked reason
-      console.warn('[Scanner] Unhandled blocked reason:', result.reason, result)
-      if (result.reason === 'system_error') {
-        setPopupState({ type: 'not_found', badge, message: result.message })
-      } else {
-        setPopupState({ 
-          type: 'open_session_block', 
-          sewadar: found, 
-          badge, 
-          openSession: result.openSession || null,
-          todaySessions 
-        })
-      }
-      return
-    }
-
-    // Allowed - show confirmation
-    setPopupState({ 
-      type: 'found', 
-      sewadar: found, 
-      badge, 
-      allowedAction: nextType,
-      todaySessions,
-      dutyType: result.dutyType,
-      watchWard: watchWardConfirm,
-    })
   }
 
   const markAttendance = async (type, overrideData = null) => {
