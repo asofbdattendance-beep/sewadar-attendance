@@ -17,8 +17,6 @@ serve(async (req) => {
   }
 
   const authHeader = req.headers.get("Authorization") || ""
-  const apikey = req.headers.get("apikey") || ""
-
   if (!authHeader.startsWith("Bearer ")) {
     return new Response(JSON.stringify({ error: "Missing authorization header" }), {
       status: 401,
@@ -26,40 +24,56 @@ serve(async (req) => {
     })
   }
 
-  const token = authHeader.slice(7)
-
   try {
-    // Verify JWT with Supabase
-    const userClient = createClient(SUPABASE_URL, apikey, {
-      global: { headers: { Authorization: `Bearer ${token}` } }
-    })
-    
-    const { data: { user }, error: userError } = await userClient.auth.getUser(token)
-    if (userError || !user) {
-      return new Response(JSON.stringify({ error: "Invalid or expired token" }), {
+    // Decode JWT manually to get user ID
+    const token = authHeader.slice(7)
+    const parts = token.split('.')
+    if (parts.length !== 3) {
+      return new Response(JSON.stringify({ error: "Invalid token format" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       })
     }
     
-    // Get caller's profile to verify ASO role
-    const { data: profile } = await userClient
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+    const userId = payload.sub
+    const userRole = payload.role
+    
+    console.log("Token payload:", { sub: userId, role: userRole })
+    
+    if (!userId) {
+      return new Response(JSON.stringify({ error: "Invalid token - no user ID" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
+    }
+
+    // Use service role for all operations
+    const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+
+    // Verify caller's profile is ASO
+    const { data: profile, error: profileError } = await adminClient
       .from("users")
       .select("role, is_active")
-      .eq("auth_id", user.id)
+      .eq("auth_id", userId)
       .single()
     
-    if (!profile || profile.role !== "aso" || !profile.is_active) {
+    if (profileError || !profile) {
+      console.error("Profile fetch error:", profileError)
+      return new Response(JSON.stringify({ error: "User profile not found" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
+    }
+    
+    if (profile.role !== "aso" || !profile.is_active) {
       return new Response(JSON.stringify({ error: "Only active ASO users can create new users" }), {
         status: 403,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       })
     }
-
-    // Use service role for operations
-    const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    })
 
     const body = await req.json()
     const { email, password, name, badge_number, role, centre } = body
