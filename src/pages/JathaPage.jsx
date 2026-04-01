@@ -78,7 +78,7 @@ function MarkJathaTab() {
   const { profile } = useAuth()
 
   const isAso        = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE
+  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
   const canJatha     = isAso || profile?.can_jatha
   const canEditJatha = isAso || profile?.can_edit_jatha
   const [childCentres, setChildCentres] = useState([])
@@ -493,7 +493,7 @@ function ViewJathaTab() {
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const flagTimerRef = useRef(null)
 
-  const isAdmin = [ROLES.ASO, ROLES.CENTRE].includes(profile?.role)
+  const isAdmin = [ROLES.ASO].includes(profile?.role)
   const canEditJatha = isAso || profile?.can_edit_jatha
 
   useEffect(() => { fetchRecords().catch(() => {}) }, [typeFilter, monthFilter, page])
@@ -512,7 +512,7 @@ function ViewJathaTab() {
       const end   = new Date(year, month, 0).toISOString().split('T')[0]
       q = q.gte('date_from', start).lte('date_from', end)
     }
-    if (profile?.role === ROLES.CENTRE) {
+    if (profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER) {
       const { data: cd } = await supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       q = q.in('centre', cd?.map(c => c.centre_name) || [profile.centre])
@@ -555,7 +555,7 @@ function ViewJathaTab() {
         const end   = new Date(year, month, 0).toISOString().split('T')[0]
         q = q.gte('date_from', start).lte('date_from', end)
       }
-      if (profile?.role === ROLES.CENTRE) {
+      if (profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER) {
         const { data: cd } = await supabase.from('centres').select('centre_name')
           .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
         q = q.in('centre', cd?.map(c => c.centre_name) || [profile.centre])
@@ -821,8 +821,8 @@ function ViewJathaTab() {
 function JathaTableTab() {
   const { profile } = useAuth()
   const isAso        = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE
-  const isAdmin      = isAso || isCentreUser
+  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
+  const isAdmin      = isAso
   const canEditJatha = isAso || profile?.can_edit_jatha
 
   // Reactive desktop detection

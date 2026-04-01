@@ -14,7 +14,8 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 
 export const ROLES = {
   ASO: 'aso',
-  CENTRE: 'centre'
+  CENTRE: 'centre',
+  SC_SP_USER: 'sc_sp_user'
 }
 
 export const DUTY_TYPES = {
@@ -99,7 +100,7 @@ export async function getCentreScope(centreName, role) {
 export async function getViewableCentres(profile) {
   if (!profile) return []
   if (profile.role === ROLES.ASO) return null
-  if (profile.role === ROLES.CENTRE) return getCentreScope(profile.centre, ROLES.CENTRE)
+  if (profile.role === ROLES.CENTRE || profile.role === ROLES.SC_SP_USER) return getCentreScope(profile.centre, profile.role)
   return [profile.centre]
 }
 

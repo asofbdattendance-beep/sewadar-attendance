@@ -6,10 +6,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? ""
 const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY") ?? ""
 const ANON_KEY = Deno.env.get("ANON_KEY") ?? ""
-const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") || "https://sewadar-attendance.netlify.app"
+const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") || "https://sewadar-attendance.netlify.app").split(",").map(s => s.trim())
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 }
 
@@ -47,13 +47,16 @@ serve(async (req) => {
   }
 
   const origin = req.headers.get("origin") || ""
-  if (origin !== ALLOWED_ORIGIN) {
-    return forbidden("Unauthorized origin")
+  if (!ALLOWED_ORIGINS.includes(origin)) {
+    return forbidden("Unauthorized origin: " + origin)
   }
 
   const providedKey = req.headers.get("apikey") || ""
   if (ANON_KEY && providedKey !== ANON_KEY) {
-    return unauthorized("Invalid API key")
+    return unauthorized("Invalid API key: " + providedKey)
+  }
+  if (!ANON_KEY) {
+    console.warn("ANON_KEY not set in env - skipping API key check")
   }
 
   // Verify caller is authorized ASO via Authorization header
@@ -102,7 +105,7 @@ serve(async (req) => {
       return badRequest("Password must be at least 6 characters")
     }
 
-    const validRoles = ['aso', 'centre']
+    const validRoles = ['aso', 'centre', 'sc_sp_user']
     if (!validRoles.includes(role)) {
       return badRequest("Invalid role")
     }

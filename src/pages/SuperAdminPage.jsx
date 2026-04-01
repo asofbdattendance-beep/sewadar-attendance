@@ -218,7 +218,7 @@ export default function SuperAdminPage() {
       showMsg('ASO has all permissions by default', 'info')
       return
     }
-    if (u.role !== ROLES.CENTRE) {
+    if (u.role !== ROLES.CENTRE && u.role !== ROLES.SC_SP_USER) {
       showMsg('Only Centre users can have permissions managed', 'info')
       return
     }
@@ -692,8 +692,8 @@ export default function SuperAdminPage() {
     children: centres.filter(c => c.parent_centre === p),
     config: centres.find(c => c.centre_name === p)
   }))
-  const roleColor = { aso: 'var(--gold)', centre: 'var(--blue)' }
-  const roleName  = { aso: 'ASO', centre: 'CENTRE' }
+  const roleColor = { aso: 'var(--gold)', centre: 'var(--blue)', sc_sp_user: 'var(--purple)' }
+  const roleName  = { aso: 'ASO', centre: 'CENTRE', sc_sp_user: 'SC/SP' }
 
   const TAB_BTN = (key, label, Icon) => (
     <button key={key} onClick={() => setTab(key)}
@@ -1275,6 +1275,7 @@ export default function SuperAdminPage() {
                     <select className="input" value={newUserRole} onChange={e => setNewUserRole(e.target.value)}>
                       <option value="aso">ASO</option>
                       <option value="centre">CENTRE</option>
+                      <option value="sc_sp_user">SC/SP USER</option>
                     </select>
                   </div>
                   <div>
@@ -1291,6 +1292,9 @@ export default function SuperAdminPage() {
                 )}
                 {newUserRole === ROLES.CENTRE && (
                   <div className="super-admin-note mb-2">Centre user governs <strong>{newUserCentre}</strong> and all its sub-centres. Permissions can be configured after creation.</div>
+                )}
+                {newUserRole === ROLES.SC_SP_USER && (
+                  <div className="super-admin-note mb-2">SC/SP User has limited access to own centre data only. Permissions can be configured after creation.</div>
                 )}
               </>
             )}

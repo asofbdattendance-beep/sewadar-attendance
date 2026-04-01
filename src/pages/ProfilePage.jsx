@@ -21,8 +21,8 @@ export default function ProfilePage() {
     window.dispatchEvent(new Event('storage'))
   }
 
-  const roleColor = { aso: 'var(--gold)', centre: 'var(--blue)' }
-  const roleName = {aso: 'ASO', centre: 'CENTRE'}
+  const roleColor = { aso: 'var(--gold)', centre: 'var(--blue)', sc_sp_user: 'var(--purple)' }
+  const roleName = {aso: 'ASO', centre: 'CENTRE', sc_sp_user: 'SC/SP'}
 
   return (
     <div className="page pb-nav">

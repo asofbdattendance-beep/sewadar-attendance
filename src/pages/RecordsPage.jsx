@@ -49,7 +49,7 @@ function csvEscape(val) {
 function AttendanceTab({ onFlagRaised, onViewFlag }) {
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE
+  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
   const canEdit = isAso
   const canFlag = isAso || profile?.can_flags
 
@@ -751,7 +751,7 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
 function ReportsTab() {
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE
+  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
 
   const [loading, setLoading] = useState(false)
   const [year, setYear] = useState(new Date().getFullYear().toString())
@@ -979,7 +979,7 @@ function ReportsTab() {
 function FlagsTab() {
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE
+  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
 
   const [flags, setFlags] = useState([])
   const [loading, setLoading] = useState(true)

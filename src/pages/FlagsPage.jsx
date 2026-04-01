@@ -17,7 +17,7 @@ const SEARCH_DEBOUNCE = 300
 export default function FlagsPage() {
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE
+  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
 
   const [allFlags, setAllFlags] = useState([])
   const [loading, setLoading] = useState(true)
@@ -555,7 +555,7 @@ export default function FlagsPage() {
                                         {reply.replied_by_name}
                                         {reply.replied_by_role && (
                                           <span style={{ marginLeft: 6, fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400, background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
-                                            {reply.replied_by_role === 'aso' ? 'ASO' : reply.replied_by_role === 'centre' ? 'Centre' : reply.replied_by_role}
+                                            {reply.replied_by_role === 'aso' ? 'ASO' : reply.replied_by_role === 'centre' ? 'Centre' : reply.replied_by_role === 'sc_sp_user' ? 'SC/SP' : reply.replied_by_role}
                                           </span>
                                         )}
                                       </span>

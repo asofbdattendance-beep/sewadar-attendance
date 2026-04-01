@@ -86,7 +86,7 @@ function AppLayout() {
       if (!profile) return
       let query = supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open')
       
-      if (profile.role === ROLES.CENTRE && profile.centre) {
+      if ((profile.role === ROLES.CENTRE || profile.role === ROLES.SC_SP_USER) && profile.centre) {
         const { data: children } = await supabase.from('centres').select('centre_name').eq('parent_centre', profile.centre)
         const scope = [profile.centre, ...(children?.map(c => c.centre_name) || [])]
         query = query.in('raised_by_centre', scope)
@@ -125,7 +125,7 @@ function AppLayout() {
 
   if (!profile.is_active) return <InactiveScreen />
 
-  const _isCentreUser = profile.role === ROLES.CENTRE
+  const _isCentreUser = profile.role === ROLES.CENTRE || profile.role === ROLES.SC_SP_USER
   const isAso = profile.role === ROLES.ASO
   
   const canScan = isAso || profile.can_scan

@@ -47,7 +47,7 @@ export default function ScannerPage() {
   const lastScanTimeRef = useRef(0)
 
   const isAso = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE
+  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
 
   useEffect(() => {
     if (!profile?.centre) return
@@ -114,7 +114,7 @@ export default function ScannerPage() {
       .gte('in_time', start)
       .eq('is_open', true)
 
-    if (profile?.role === ROLES.CENTRE && profile?.centre) {
+    if ((profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER) && profile?.centre) {
       const scope = [profile.centre, ...childCentresRef.current]
       q = q.in('centre', scope)
     }
@@ -132,7 +132,7 @@ export default function ScannerPage() {
       .order('scan_time', { ascending: false })
       .limit(5)
 
-    if (profile?.role === ROLES.CENTRE && profile?.centre) {
+    if ((profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER) && profile?.centre) {
       const scope = [profile.centre, ...childCentresRef.current]
       q = q.in('centre', scope)
     }
@@ -1134,7 +1134,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
           .or(`badge_number.ilike.%${search.toUpperCase()}%,sewadar_name.ilike.%${search.toUpperCase()}%`)
           .limit(10)
 
-        if (profile?.role === ROLES.CENTRE) {
+        if (profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER) {
           const scope = [profile.centre, ...childCentres]
           q = q.in('centre', scope)
         }

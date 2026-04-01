@@ -39,7 +39,7 @@ export function AuthProvider({ children }) {
       can_edit_jatha: false,
     }
 
-    if (userData.role === ROLES.CENTRE) {
+    if (userData.role === ROLES.CENTRE || userData.role === ROLES.SC_SP_USER) {
       const { data: permData } = await supabase
         .from('user_permissions')
         .select('*')
