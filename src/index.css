@@ -70,9 +70,9 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
     max-width: 100%;
   }
 }
-.page-wide { min-height:100vh; padding:1.5rem; max-width:1100px; margin:0 auto; }
+.page-wide { min-height:100vh; padding:1.5rem; max-width:100%; margin:0 auto; }
 @media (min-width: 1280px) {
-  .page-wide { max-width: 1600px; padding: 2rem 3rem; }
+  .page-wide { max-width: 100%; padding: 2rem 3rem; }
 }
 .pb-nav { padding-bottom: 5.5rem; }
 @media (min-width: 768px) {
@@ -394,13 +394,14 @@ tr:hover td { background:#FAFCFF; }
 .btn-export:hover { background:#1a5c38; }
 .records-table-wrap { 
   background: white; 
-  border-radius: 12px; 
+  border-radius: var(--radius-lg); 
   overflow-x: auto;
   overflow-y: auto;
-  max-height: 60vh;
+  max-height: calc(100vh - 310px);
   box-shadow: 0 1px 3px rgba(0,0,0,0.08); 
   border: 1px solid var(--border);
   -webkit-overflow-scrolling: touch;
+  width: 100%;
 }
   
 @media (min-width: 768px) {
@@ -424,8 +425,9 @@ tr:hover td { background:#FAFCFF; }
   border-collapse: collapse; 
 }
 @media (min-width: 768px) {
-  .records-table { table-layout: fixed; }
-  .records-table th, .records-table td { overflow: hidden; text-overflow: ellipsis; }
+  .records-table { table-layout: auto; width: 100%; }
+  .records-table th, .records-table td { white-space: nowrap; }
+  .records-table-wrap { max-height: calc(100vh - 260px); overflow-x: auto; }
 }
 .records-table th { 
   background: #f9fafb; 
@@ -451,12 +453,7 @@ tr:hover td { background:#FAFCFF; }
 .records-table tbody tr:last-child td { border-bottom: none; }
 @media (min-width: 768px) {
   .records-table-desktop {
-    table-layout: fixed;
-  }
-  .records-table-desktop th,
-  .records-table-desktop td {
-    overflow: hidden;
-    text-overflow: ellipsis;
+    table-layout: auto;
   }
   .records-table th { padding: 13px 16px; font-size: 11.5px; }
   .records-table td { padding: 12px 16px; }
@@ -1014,4 +1011,254 @@ tr:hover td { background:#FAFCFF; }
 @keyframes skeletonFade {
   from { opacity: 0.4; }
   to { opacity: 0.9; }
+}
+/* ════════════════════════════════════════════════════════════
+   LAPTOP / DESKTOP OPTIMISATIONS
+   Appended — does NOT change colours, fonts, or mobile UI
+   ════════════════════════════════════════════════════════════ */
+
+/* ── Page containers: give more breathing room on wide screens ── */
+@media (min-width: 1024px) {
+  .page      { padding: 1.75rem 2.5rem; }
+  .page-wide { padding: 1.75rem 2.5rem; max-width: 100%; }
+}
+@media (min-width: 1440px) {
+  .page      { padding: 2rem 3.5rem; }
+  .page-wide { padding: 2rem 3.5rem; }
+}
+
+/* ── Navbar: taller, slightly more spacing on large screens ── */
+@media (min-width: 1024px) {
+  .navbar { height: 56px; padding: 0 2.5rem; }
+  .navbar-brand { font-size: 1rem; gap: 0.6rem; }
+  .navbar-pill { font-size: 0.73rem; padding: 0.18rem 0.6rem; }
+}
+
+/* ── Desktop nav: better active indicator, less cramped ── */
+@media (min-width: 768px) {
+  .desktop-nav { padding: 0 2.5rem; }
+  .desktop-nav-item {
+    padding: 0.85rem 1.4rem;
+    font-size: 0.84rem;
+    gap: 0.45rem;
+    border-bottom-width: 2.5px;
+    letter-spacing: 0.01em;
+  }
+  .desktop-nav-item.active {
+    background: rgba(33,115,70,0.06);
+    border-bottom-color: var(--excel-green);
+  }
+  .desktop-nav-item:hover {
+    background: rgba(33,115,70,0.05);
+  }
+}
+
+/* ── TABLE CORE — tighter, more scannable rows on desktop ── */
+@media (min-width: 768px) {
+  /* Full-width, uncapped tables on desktop */
+  .table-wrap {
+    max-height: calc(100vh - 200px);
+    width: 100%;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    overflow-x: auto;
+  }
+  .records-table-wrap {
+    max-height: calc(100vh - 220px);
+    width: 100%;
+  }
+  .table-wrap table,
+  .records-table-wrap table,
+  .records-table {
+    width: 100% !important;
+  }
+
+  /* Slightly tighter header rows */
+  th {
+    padding: 0.65rem 1rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.09em;
+    background: #f5f7f9;
+    border-bottom: 1.5px solid var(--border);
+  }
+
+  /* Data rows: comfortable but compact */
+  td {
+    padding: 0.7rem 1rem;
+    font-size: 0.845rem;
+    border-bottom: 1px solid #eef1f5;
+  }
+
+  /* Subtle zebra striping */
+  tbody tr:nth-child(even) td { background: #fafbfc; }
+  tbody tr:nth-child(even) td:first-child { background: #f7f9fb; }
+
+  /* Crisper row hover */
+  tr:hover td { background: #f0f7f2 !important; }
+  tr:hover td:first-child { background: #eaf4ed !important; }
+
+  /* Records table desktop tweaks */
+  .records-table th {
+    padding: 0.65rem 1rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.09em;
+    background: #f5f7f9;
+    border-bottom: 2px solid var(--border);
+  }
+  .records-table td {
+    padding: 0.7rem 1rem;
+    font-size: 0.845rem;
+    border-bottom: 1px solid #eef1f5;
+  }
+  .records-table tbody tr:hover td { background: #f0f7f2; }
+}
+
+/* ── ACTION BUTTONS in table cells — icon-only, elegant on desktop ── */
+@media (min-width: 768px) {
+  /* Override the heavy mobile touch targets inside tables */
+  .table-wrap .btn,
+  .table-wrap .btn-ghost {
+    min-height: 32px;
+    min-width: 32px;
+    padding: 0.3rem 0.5rem;
+  }
+
+  /* Small icon action buttons (edit / delete / shield) */
+  .tbl-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    background: transparent;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: all 0.14s;
+    padding: 0;
+  }
+  .tbl-action-btn:hover { background: var(--bg); border-color: var(--border); color: var(--text-primary); }
+  .tbl-action-btn.edit:hover  { background: var(--blue-bg); border-color: rgba(21,101,192,0.2); color: var(--blue); }
+  .tbl-action-btn.danger:hover{ background: var(--red-bg);  border-color: rgba(198,40,40,0.2);  color: var(--red);  }
+  .tbl-action-btn.perm:hover  { background: var(--gold-bg); border-color: rgba(201,168,76,0.3); color: var(--gold); }
+}
+
+/* ── SUPER ADMIN page — tab bar on desktop ── */
+@media (min-width: 768px) {
+  /* Tab bar: pill style, inline, no wrapping */
+  .super-admin-tabs {
+    display: flex;
+    gap: 4px;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 4px;
+    margin-bottom: 1.25rem;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .super-admin-tabs::-webkit-scrollbar { display: none; }
+}
+
+/* ── SUPER ADMIN — two-column action bar ── */
+@media (min-width: 768px) {
+  .sa-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .sa-toolbar-left  { display: flex; align-items: center; gap: 0.6rem; flex: 1; }
+  .sa-toolbar-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+}
+
+/* ── REPORTS GRID — 4 cols on wide screens ── */
+@media (min-width: 1024px) {
+  .reports-grid { grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .report-card { padding: 18px 20px; }
+  .report-count { font-size: 26px; }
+}
+
+/* ── CENTRES TREE — wider geo-config grid on large screens ── */
+@media (min-width: 1024px) {
+  .centre-geo-fields { grid-template-columns: repeat(4, 1fr); gap: 12px; }
+}
+
+/* ── STATS grid — up to 4 cols on desktop ── */
+@media (min-width: 900px) {
+  .stats-grid   { grid-template-columns: repeat(4, 1fr); }
+  .stats-grid-3 { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* ── Time / mono cells look crisper at desktop sizes ── */
+@media (min-width: 768px) {
+  .time-cell { font-size: 12px; padding: 3px 9px; border-radius: 5px; letter-spacing: 0.02em; }
+  .time-cell.has-time { background: #dcfce7; color: #16a34a; }
+  .time-cell.out-time { background: #fee2e2; color: #dc2626; }
+}
+
+/* ── Badge sizing consistent on desktop ── */
+@media (min-width: 768px) {
+  .badge { font-size: 0.68rem; padding: 0.18rem 0.6rem; }
+  .status-complete, .status-in-only, .status-out-only { font-size: 11px; padding: 3px 10px; }
+}
+
+/* ── Search box — slightly taller on desktop for click comfort ── */
+@media (min-width: 768px) {
+  .search-box { padding: 8px 14px; }
+  .search-box input { font-size: 13.5px; }
+  .filter-group { padding: 8px 14px; }
+}
+
+/* ── Buttons in toolbars — consistent height on desktop ── */
+@media (min-width: 768px) {
+  .btn { min-height: 36px; padding: 0.5rem 1.1rem; font-size: 0.855rem; }
+  .btn-sm { min-height: 30px; padding: 0.3rem 0.75rem; font-size: 0.78rem; }
+  .btn-gold { box-shadow: 0 1px 6px rgba(201,168,76,0.28); }
+}
+
+/* ── page-wide: full width, no max-width cap on desktop ── */
+.page-wide { max-width: 100% !important; }
+@media (min-width: 1024px) {
+  .page-wide { max-width: 100% !important; padding: 1.75rem 2.5rem; }
+}
+@media (min-width: 1440px) {
+  .page-wide { padding: 2rem 3.5rem; }
+}
+
+/* ── Sticky first-col: sharper separator ── */
+@media (min-width: 768px) {
+  .table-wrap th:first-child,
+  .table-wrap td:first-child {
+    border-right: 1px solid var(--border);
+  }
+  .table-wrap thead th:first-child { background: #f5f7f9; }
+}
+
+/* ── Records page content stretch ── */
+@media (min-width: 1024px) {
+  .records-page-content {
+    margin-left: -2.5rem;
+    margin-right: -2.5rem;
+    padding-left: 2.5rem;
+    padding-right: 2.5rem;
+  }
+}
+@media (min-width: 1440px) {
+  .records-page-content {
+    margin-left: -3.5rem;
+    margin-right: -3.5rem;
+    padding-left: 3.5rem;
+    padding-right: 3.5rem;
+  }
+}
+
+/* ── Scrollbar: slightly more visible on desktop ── */
+@media (min-width: 768px) {
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { border-radius: 4px; }
 }

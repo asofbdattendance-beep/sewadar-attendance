@@ -389,39 +389,37 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
   return (
     <div>
       {/* Filters */}
-      <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.75rem', flexWrap: 'wrap', alignItems: 'center', padding: '0.6rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10 }}>
-        <div className="search-box" style={{ flex: '1 1 100%', minWidth: 0 }}>
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap', alignItems: 'center', padding: '0.6rem 0.75rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10 }}>
+        <div className="search-box" style={{ flex: '1 1 220px', minWidth: 180 }}>
           <Search size={14} />
           <input type="text" placeholder="Search badge or name…" value={searchInput}
             onChange={e => setSearchInput(e.target.value)} style={{ minWidth: 0 }} />
           {searchInput && <button onClick={() => setSearchInput('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}><X size={13} /></button>}
         </div>
 
-        <div style={{ flex: '1 1 auto', display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
-          {isAso && (
-            <CentreComboBox value={centreFilter} onChange={val => { setCentreFilter(val); setPage(1) }} centres={centres} includeAll={true} />
-          )}
+        {isAso && (
+          <CentreComboBox value={centreFilter} onChange={val => { setCentreFilter(val); setPage(1) }} centres={centres} includeAll={true} />
+        )}
 
-          <DateRangePicker value={dateRange} onChange={val => { setDateRange(val); setPage(1) }} />
+        <DateRangePicker value={dateRange} onChange={val => { setDateRange(val); setPage(1) }} />
 
-          <select value={dutyFilter} onChange={e => { setDutyFilter(e.target.value); setPage(1) }}
-            style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.6rem', background: 'var(--bg)', fontSize: '0.8rem', minHeight: 36 }}>
-            <option value="">Duty</option>
-            <option value="satsang">Satsang</option>
-            <option value="gate_entry">Gate</option>
-            <option value="watch_ward">W&W</option>
-          </select>
+        <select value={dutyFilter} onChange={e => { setDutyFilter(e.target.value); setPage(1) }}
+          style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.6rem', background: 'var(--bg)', fontSize: '0.8rem', minHeight: 36 }}>
+          <option value="">Duty</option>
+          <option value="satsang">Satsang</option>
+          <option value="gate_entry">Gate</option>
+          <option value="watch_ward">W&W</option>
+        </select>
 
-          <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
-            style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.6rem', background: 'var(--bg)', fontSize: '0.8rem', minHeight: 36 }}>
-            <option value="">Status</option>
-            <option value="open">Open</option>
-            <option value="closed">Closed</option>
-          </select>
-        </div>
+        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
+          style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.6rem', background: 'var(--bg)', fontSize: '0.8rem', minHeight: 36 }}>
+          <option value="">Status</option>
+          <option value="open">Open</option>
+          <option value="closed">Closed</option>
+        </select>
 
-        <div style={{ display: 'flex', gap: '0.4rem', flexShrink: 0 }}>
-          <button className="btn btn-ghost" onClick={fetchRecords}><RefreshCw size={14} /></button>
+        <div style={{ display: 'flex', gap: '0.4rem', flexShrink: 0, marginLeft: 'auto' }}>
+          <button className="btn btn-ghost" onClick={fetchRecords} title="Refresh"><RefreshCw size={14} /></button>
           <button className="btn btn-excel" onClick={exportAttendanceCSV} disabled={!records.length}><Download size={14} /></button>
         </div>
       </div>
@@ -434,7 +432,7 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
       </div>
 
       {/* Table */}
-      <div className="records-table-wrap">
+      <div className="records-table-wrap" style={{ width: "100%" }}>
         {loading ? (
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <tbody><SkeletonRows rows={15} cols={7} /></tbody>
@@ -442,21 +440,20 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
         ) : records.length === 0 ? (
           <EmptyState icon={FileText} title={searchTerm ? `No results for "${searchTerm}"` : 'No records found'} message="No attendance sessions in selected date range" />
         ) : (
-          <table className="records-table">
+          <table className="records-table" style={{ width: "100%" }}>
             <thead>
               <tr>
-                <th style={{ width: '80px' }}>Badge</th>
-                <th style={{ width: '110px' }}>Name</th>
-                {isAso && <th style={{ width: '100px' }}>Centre</th>}
-                <th style={{ width: '55px' }}>Duty</th>
-                <th style={{ width: '90px' }}>Date</th>
-                <th style={{ width: '50px' }}>IN</th>
-                <th style={{ width: '50px' }}>OUT</th>
-                <th style={{ width: '45px' }}>Dur</th>
-                <th style={{ width: '50px' }}>Status</th>
-                <th style={{ width: '90px' }}>Remarks</th>
-                <th style={{ width: '50px' }}></th>
-                <th style={{ width: '40px' }}></th>
+                <th>Badge</th>
+                <th>Name</th>
+                {isAso && <th>Centre</th>}
+                <th>Duty</th>
+                <th>Date</th>
+                <th>IN</th>
+                <th>OUT</th>
+                <th>Dur</th>
+                <th>Status</th>
+                <th>Remarks</th>
+                <th style={{ width: '90px' }}></th>
               </tr>
             </thead>
             <tbody>
@@ -468,9 +465,9 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                 
                 return (
                   <tr key={r.id}>
-                    <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.85rem', fontWeight: 700 }}>{r.badge_number}</td>
-                    <td style={{ fontWeight: 500, fontSize: '0.85rem' }}>{r.sewadar_name}</td>
-                    {isAso && <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{r.centre}</td>}
+                    <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.82rem', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.badge_number}</td>
+                    <td style={{ fontWeight: 600, fontSize: '0.875rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.sewadar_name}</td>
+                    {isAso && <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.centre}</td>}
                     <td>
                       <span style={{ 
                         fontSize: '0.6rem', 
@@ -494,15 +491,15 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                         <span>{inDate}</span>
                       )}
                     </td>
-                    <td style={{ fontSize: '0.8rem', lineHeight: 1.3 }}>
-                      <div>{formatTime(r.in_time)}</div>
-                      <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{r.in_scanner_name || r.scanner_name || ''}</div>
+                    <td style={{ fontSize: '0.82rem', lineHeight: 1.35 }}>
+                      <div style={{ fontWeight: 500 }}>{formatTime(r.in_time)}</div>
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.in_scanner_name || r.scanner_name || ''}</div>
                     </td>
-                    <td style={{ fontSize: '0.8rem', lineHeight: 1.3 }}>
-                      <div>{formatTime(r.out_time)}</div>
-                      <div style={{ fontSize: '0.65rem', color: r.out_scanner_name ? 'var(--gold)' : 'var(--text-muted)' }}>{r.out_scanner_name || ''}</div>
+                    <td style={{ fontSize: '0.82rem', lineHeight: 1.35 }}>
+                      <div style={{ fontWeight: 500 }}>{formatTime(r.out_time)}</div>
+                      <div style={{ fontSize: '0.68rem', color: r.out_scanner_name ? 'var(--gold)' : 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.out_scanner_name || ''}</div>
                     </td>
-                    <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{formatDuration(r.in_time, r.out_time) || '—'}</td>
+                    <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 500 }}>{formatDuration(r.in_time, r.out_time) || '—'}</td>
                     <td>{getStatusBadge(r)}</td>
                     <td style={{ maxWidth: '120px' }}>
                       {r.flagged ? (
@@ -521,14 +518,14 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                       )}
                     </td>
                     <td>
-                      <div style={{ display: 'flex', gap: '0.25rem' }}>
+                      <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
                         {canFlag && !r.flagged && (
                           <button 
                             className="records-delete-btn" 
                             title="Flag this session" 
                             onClick={() => { setFlagModal(r); setFlagReason('') }}
                           >
-                            <Flag size={12} color="var(--text-muted)" />
+                            <Flag size={13} color="var(--text-muted)" />
                           </button>
                         )}
                         {canEdit && (
@@ -540,10 +537,10 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                               setEditOutDate(r.out_time ? r.out_time.split('T')[0] : '')
                               setEditOutTime(r.out_time ? r.out_time.slice(11, 16) : '')
                             }}>
-                              <PenLine size={12} color="var(--blue)" />
+                              <PenLine size={13} color="var(--blue)" />
                             </button>
                             <button className="records-delete-btn" title="Delete session" onClick={() => deleteSession(r)}>
-                              <Trash2 size={12} />
+                              <Trash2 size={13} />
                             </button>
                           </>
                         )}
@@ -935,8 +932,8 @@ function ReportsTab() {
       ) : data.length === 0 ? (
         <EmptyState icon={BarChart2} title="No data" message="No records found for selected filters" />
       ) : (
-        <div className="records-table-wrap">
-          <table className="records-table">
+        <div className="records-table-wrap" style={{ width: "100%" }}>
+          <table className="records-table" style={{ width: "100%" }}>
             <thead>
               <tr>
                 <th>Badge</th>
@@ -1388,7 +1385,7 @@ export default function RecordsPage() {
   const canFlags = isAso || profile?.can_flags
 
   return (
-    <div>
+    <div className="page-wide pb-nav">
       <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '1rem', borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem' }}>
         <button
           onClick={() => setActiveTab('attendance')}

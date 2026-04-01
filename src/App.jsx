@@ -137,7 +137,7 @@ function AppLayout() {
   const navItems = [
     { path: '/scan', label: 'Scanner', icon: Scan, show: canScan },
     { path: '/jatha', label: 'Jatha', icon: Plane, show: canJatha },
-    { path: '/records', label: 'Records', icon: FileText, show: canRecords, badge: (isAso || profile?.can_flags) ? openFlagCount : 0 },
+    { path: '/records', label: 'Records', icon: FileText, show: canRecords },
     ...(isAso ? [{ path: '/super-admin', label: 'Control', icon: Shield, show: true }] : []),
     { path: '/profile', label: 'Profile', icon: User, show: true },
   ].filter(item => item.show !== false)

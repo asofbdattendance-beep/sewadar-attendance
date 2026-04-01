@@ -710,7 +710,7 @@ export default function SuperAdminPage() {
   )
 
   return (
-    <div className="page-wide pb-nav" style={{ maxWidth: 960 }}>
+    <div className="page-wide pb-nav">
       <div className="mt-2 mb-3">
         <h2 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', fontSize:'1.2rem' }}>Control Panel</h2>
         <p className="text-muted text-xs mt-1">Area Secretary · Write access only</p>
