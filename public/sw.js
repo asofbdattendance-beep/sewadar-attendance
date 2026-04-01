@@ -66,9 +66,14 @@ async function cacheFirst(request) {
 async function networkFirst(request) {
   try {
     const response = await fetch(request);
-    if (response.ok) {
-      const cache = await caches.open(CACHE_NAME);
-      cache.put(request, response.clone());
+    // Only cache successful, complete responses (not 206 Partial Content)
+    if (response.ok && response.status === 200 && response.headers.get('content-range') === null) {
+      try {
+        const cache = await caches.open(CACHE_NAME);
+        cache.put(request, response.clone());
+      } catch (cacheErr) {
+        // Cache put can fail for streaming/partial responses - ignore
+      }
     }
     return response;
   } catch {

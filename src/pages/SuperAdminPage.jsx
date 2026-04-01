@@ -355,7 +355,21 @@ export default function SuperAdminPage() {
       }
 
       const { data: { session } } = await supabase.auth.getSession()
-      const token = session?.access_token || ''
+      const token = session?.access_token
+
+      console.log('[createUser] session:', !!session, 'token length:', token?.length || 0)
+
+      if (!token) {
+        // Try to get the current user instead
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          showMsg('Session issue. Try refreshing the page and logging in again.', 'error')
+        } else {
+          showMsg('Session expired. Please log in again.', 'error')
+        }
+        setSaving(false)
+        return
+      }
 
       const res = await fetch(`${supabaseUrl}/functions/v1/create-user`, {
         method: 'POST',

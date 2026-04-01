@@ -5,40 +5,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? ""
 const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY") ?? ""
-const ANON_KEY = Deno.env.get("ANON_KEY") ?? ""
-const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") || "https://sewadar-attendance.netlify.app").split(",").map(s => s.trim())
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-}
-
-function unauthorized(msg: string) {
-  return new Response(
-    JSON.stringify({ error: msg }),
-    { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  )
-}
-
-function forbidden(msg: string) {
-  return new Response(
-    JSON.stringify({ error: msg }),
-    { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  )
-}
-
-function badRequest(msg: string) {
-  return new Response(
-    JSON.stringify({ error: msg }),
-    { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  )
-}
-
-function serverError(msg: string) {
-  return new Response(
-    JSON.stringify({ error: msg }),
-    { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  )
 }
 
 async function hashPassword(password: string): Promise<string> {
@@ -54,31 +24,29 @@ serve(async (req) => {
     return new Response(null, { status: 204, headers: corsHeaders })
   }
 
-  const origin = req.headers.get("origin") || ""
-  if (!ALLOWED_ORIGINS.includes(origin)) {
-    return forbidden("Unauthorized origin: " + origin)
-  }
-
-  const providedKey = req.headers.get("apikey") || ""
-  if (ANON_KEY && providedKey !== ANON_KEY) {
-    return unauthorized("Invalid API key")
-  }
-
   const authHeader = req.headers.get("Authorization") || ""
+  const apikey = req.headers.get("apikey") || ""
+
   if (!authHeader.startsWith("Bearer ")) {
-    return unauthorized("Missing authorization token")
+    return new Response(JSON.stringify({ error: "Missing authorization header" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    })
   }
+
+  const token = authHeader.slice(7)
 
   try {
-    const token = authHeader.slice(7)
-    
-    const userClient = createClient(SUPABASE_URL, ANON_KEY, {
+    const userClient = createClient(SUPABASE_URL, apikey, {
       global: { headers: { Authorization: `Bearer ${token}` } }
     })
     
     const { data: { user }, error: userError } = await userClient.auth.getUser(token)
     if (userError || !user) {
-      return unauthorized("Invalid or expired token")
+      return new Response(JSON.stringify({ error: "Invalid or expired token" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
     }
     
     const { data: profile } = await userClient
@@ -88,7 +56,10 @@ serve(async (req) => {
       .single()
     
     if (!profile || profile.role !== "aso" || !profile.is_active) {
-      return forbidden("Only active ASO users can save credentials")
+      return new Response(JSON.stringify({ error: "Only active ASO users can save credentials" }), {
+        status: 403,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
     }
 
     const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
@@ -99,11 +70,17 @@ serve(async (req) => {
     const { name, badge_number, email, password, role, centre, created_by } = body
 
     if (!name || !badge_number || !email || !password || !role || !centre) {
-      return badRequest("All fields are required")
+      return new Response(JSON.stringify({ error: "All fields are required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
     }
 
     if (password.length < 6) {
-      return badRequest("Password must be at least 6 characters")
+      return new Response(JSON.stringify({ error: "Password must be at least 6 characters" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
     }
 
     const hashedPassword = await hashPassword(password)
@@ -121,21 +98,24 @@ serve(async (req) => {
 
     if (insertError) {
       if (insertError.message.includes("duplicate")) {
-        return badRequest("Credentials already exist for this badge number")
+        return new Response(JSON.stringify({ error: "Credentials already exist for this badge number" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        })
       }
       throw insertError
     }
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        message: "Credential stored securely"
-      }),
+      JSON.stringify({ success: true, message: "Credential stored securely" }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     )
 
   } catch (err) {
     console.error("Save credential error:", err)
-    return serverError("Internal server error")
+    return new Response(JSON.stringify({ error: "Internal server error: " + err.message }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    })
   }
 })

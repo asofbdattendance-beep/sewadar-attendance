@@ -5,40 +5,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? ""
 const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY") ?? ""
-const ANON_KEY = Deno.env.get("ANON_KEY") ?? ""
-const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") || "https://sewadar-attendance.netlify.app").split(",").map(s => s.trim())
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-}
-
-function unauthorized(msg: string) {
-  return new Response(
-    JSON.stringify({ error: msg }),
-    { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  )
-}
-
-function forbidden(msg: string) {
-  return new Response(
-    JSON.stringify({ error: msg }),
-    { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  )
-}
-
-function badRequest(msg: string) {
-  return new Response(
-    JSON.stringify({ error: msg }),
-    { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  )
-}
-
-function serverError(msg: string) {
-  return new Response(
-    JSON.stringify({ error: msg }),
-    { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  )
 }
 
 serve(async (req) => {
@@ -46,39 +16,33 @@ serve(async (req) => {
     return new Response(null, { status: 204, headers: corsHeaders })
   }
 
-  const origin = req.headers.get("origin") || ""
-  if (!ALLOWED_ORIGINS.includes(origin)) {
-    return forbidden("Unauthorized origin: " + origin)
-  }
-
-  const providedKey = req.headers.get("apikey") || ""
-  if (ANON_KEY && providedKey !== ANON_KEY) {
-    return unauthorized("Invalid API key: " + providedKey)
-  }
-  if (!ANON_KEY) {
-    console.warn("ANON_KEY not set in env - skipping API key check")
-  }
-
-  // Verify caller is authorized ASO via Authorization header
   const authHeader = req.headers.get("Authorization") || ""
+  const apikey = req.headers.get("apikey") || ""
+
   if (!authHeader.startsWith("Bearer ")) {
-    return unauthorized("Missing authorization token")
+    return new Response(JSON.stringify({ error: "Missing authorization header" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    })
   }
+
+  const token = authHeader.slice(7)
 
   try {
-    const token = authHeader.slice(7)
-    
-    // Create client with user's JWT to verify their role
-    const userClient = createClient(SUPABASE_URL, ANON_KEY, {
+    // Verify JWT with Supabase
+    const userClient = createClient(SUPABASE_URL, apikey, {
       global: { headers: { Authorization: `Bearer ${token}` } }
     })
     
     const { data: { user }, error: userError } = await userClient.auth.getUser(token)
     if (userError || !user) {
-      return unauthorized("Invalid or expired token")
+      return new Response(JSON.stringify({ error: "Invalid or expired token" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
     }
     
-    // Get the caller's profile to verify ASO role
+    // Get caller's profile to verify ASO role
     const { data: profile } = await userClient
       .from("users")
       .select("role, is_active")
@@ -86,10 +50,13 @@ serve(async (req) => {
       .single()
     
     if (!profile || profile.role !== "aso" || !profile.is_active) {
-      return forbidden("Only active ASO users can create new users")
+      return new Response(JSON.stringify({ error: "Only active ASO users can create new users" }), {
+        status: 403,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
     }
 
-    // Now use service role for operations
+    // Use service role for operations
     const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
     })
@@ -98,16 +65,25 @@ serve(async (req) => {
     const { email, password, name, badge_number, role, centre } = body
 
     if (!email || !password || !name || !badge_number || !role || !centre) {
-      return badRequest("All fields are required")
+      return new Response(JSON.stringify({ error: "All fields are required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
     }
 
     if (password.length < 6) {
-      return badRequest("Password must be at least 6 characters")
+      return new Response(JSON.stringify({ error: "Password must be at least 6 characters" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
     }
 
     const validRoles = ['aso', 'centre', 'sc_sp_user']
     if (!validRoles.includes(role)) {
-      return badRequest("Invalid role")
+      return new Response(JSON.stringify({ error: "Invalid role" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      })
     }
 
     const { data: authData, error: authError } = await adminClient.auth.admin.createUser({
@@ -118,9 +94,12 @@ serve(async (req) => {
 
     if (authError) {
       if (authError.message.includes("already been registered")) {
-        return badRequest("Email already registered")
+        return new Response(JSON.stringify({ error: "Email already registered" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        })
       }
-      throw new Error("Failed to create auth user")
+      throw new Error("Failed to create auth user: " + authError.message)
     }
 
     const { error: insertError } = await adminClient.from("users").insert({
@@ -137,9 +116,12 @@ serve(async (req) => {
     if (insertError) {
       await adminClient.auth.admin.deleteUser(authData.user.id)
       if (insertError.message.includes("duplicate")) {
-        return badRequest("Badge number already exists")
+        return new Response(JSON.stringify({ error: "Badge number already exists" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        })
       }
-      throw new Error("Failed to create user profile")
+      throw new Error("Failed to create user profile: " + insertError.message)
     }
 
     return new Response(
@@ -153,6 +135,9 @@ serve(async (req) => {
 
   } catch (err) {
     console.error("Create user error:", err)
-    return serverError("Internal server error")
+    return new Response(JSON.stringify({ error: "Internal server error: " + err.message }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    })
   }
 })
