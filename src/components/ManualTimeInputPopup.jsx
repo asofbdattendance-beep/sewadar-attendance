@@ -4,18 +4,29 @@ import { Clock, X } from 'lucide-react'
 export default function ManualTimeInputPopup({ sessionData, sewadar, badge, onSubmit, onClose }) {
   const inTime = sessionData?.in_time ? new Date(sessionData.in_time) : null
   const maxHours = sessionData?.max_hours || 12
+  const mode = sessionData?.mode || 'exceeded_duration'
   
-  // Calculate default out time (IN time + max hours)
-  const defaultOutTime = inTime 
-    ? new Date(inTime.getTime() + maxHours * 60 * 60 * 1000)
-    : new Date()
+  // For Satsang day: default to 23:59 on same day
+  // For regular day: default to IN time + max hours
+  const getDefaultDateTime = () => {
+    if (mode === 'satsang' && sessionData?.inDate) {
+      const date = sessionData.inDate
+      return { date, time: '23:59' }
+    } else {
+      const defaultDateTime = inTime 
+        ? new Date(inTime.getTime() + maxHours * 60 * 60 * 1000)
+        : new Date()
+      return { 
+        date: defaultDateTime.toISOString().split('T')[0],
+        time: defaultDateTime.toTimeString().slice(0, 5)
+      }
+    }
+  }
   
-  const [dateStr, setDateStr] = useState(
-    defaultOutTime.toISOString().split('T')[0]
-  )
-  const [timeStr, setTimeStr] = useState(
-    defaultOutTime.toTimeString().slice(0, 5)
-  )
+  const defaults = getDefaultDateTime()
+  
+  const [dateStr, setDateStr] = useState(defaults.date)
+  const [timeStr, setTimeStr] = useState(defaults.time)
   const [error, setError] = useState('')
   
   const handleSubmit = () => {

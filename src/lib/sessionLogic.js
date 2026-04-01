@@ -76,6 +76,31 @@ export async function getOpenSession(supabase, badgeNumber) {
 }
 
 /**
+ * Check for recent duplicate scan to prevent race conditions
+ * Returns true if a scan of same type occurred within last 30 seconds
+ */
+export async function checkDuplicateScan(supabase, badgeNumber, type, scanTimeISO) {
+  const thirtySecondsAgo = new Date(new Date(scanTimeISO).getTime() - 30000).toISOString()
+  
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('id, scan_time, type')
+    .eq('badge_number', badgeNumber)
+    .eq('type', type)
+    .gte('scan_time', thirtySecondsAgo)
+    .order('scan_time', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  
+  if (error) {
+    if (import.meta.env.DEV) console.warn('[Session] Duplicate check failed:', error.message)
+    return false // On error, allow the scan (fail open)
+  }
+  
+  return !!data // Return true if duplicate found
+}
+
+/**
  * Get all sessions for a badge on a specific date
  */
 export async function getSessionsForDate(supabase, badgeNumber, dateIST) {
@@ -146,6 +171,21 @@ export async function evaluateScan(supabase, {
   if (!scanTimeISO || isNaN(new Date(scanTimeISO).getTime())) {
     throw new Error('Invalid scan time: ' + scanTimeISO)
   }
+  
+  // Step 0: Check for recent duplicate scan (race condition prevention)
+  // Skip for ASO users to allow override, but check for centre users
+  if (!isAso) {
+    const isDuplicate = await checkDuplicateScan(supabase, badgeNumber, type, scanTimeISO)
+    if (isDuplicate) {
+      return {
+        status: 'blocked',
+        reason: 'duplicate_scan',
+        canOverride: false,
+        message: 'Duplicate scan detected. Please wait before scanning again.',
+      }
+    }
+  }
+  
   const scanDateIST = scanTimeToISTDate(scanTimeISO)
   
   // Step 1: Check for active jatha (hard block for all)
@@ -287,8 +327,9 @@ export async function executeScan(supabase, {
   longitude,
   manual_entry = false,
   submitted_by,
-  closePreviousSession = false, // When user denies W&W
-  closePreviousOutTime = null, // User-provided OUT time for closing previous session
+  closePreviousSession = false,
+  closePreviousOutTime = null,
+  remark = null,
 }) {
   const scanDateIST = scanTimeToISTDate(scanTimeISO)
   
@@ -402,6 +443,7 @@ export async function executeScan(supabase, {
         scanner_name,
         scanner_centre,
         in_scanner_name: scanner_name,
+        remark: remark || null,
       })
       .select('id')
       .single()
@@ -435,7 +477,11 @@ export async function executeScan(supabase, {
       .single()
     
     if (attError) {
-      await supabase.from('attendance_sessions').delete().eq('id', session.id)
+      await deleteSessionWithAttendance(supabase, {
+        sessionId: session.id,
+        deletedByBadge: scanner_badge,
+        reason: 'Failed to create IN attendance - rollback'
+      })
       if (attError.code === '23505') {
         throw new Error('Duplicate entry. This attendance record may already exist.')
       }
@@ -538,6 +584,8 @@ export async function executeScan(supabase, {
       .eq('id', openSession.id)
     
     if (closeError) {
+      // Rollback: delete the attendance we just created to prevent orphan
+      await supabase.from('attendance').delete().eq('id', att.id)
       throw new Error('Failed to close session: ' + closeError.message)
     }
     
@@ -599,7 +647,6 @@ export async function closeSessionWithTime(supabase, {
   reason = 'Closed with manual OUT time',
 }) {
   const outTimeDate = new Date(outTimeISO)
-  const inTimeDate = null // Will be fetched
   
   // First get the session to validate
   const { data: session, error: fetchError } = await supabase
@@ -843,4 +890,310 @@ export function formatSessionDate(dateIST, outTime) {
     return `${dateIST} → ${outDate}`
   }
   return dateIST
+}
+
+// =====================================================
+// SAFE DELETE FUNCTIONS - Data Integrity
+// =====================================================
+
+/**
+ * Delete session with all associated attendance records (atomic)
+ * Ensures NO orphan records are left behind
+ * Logs detailed deletion information
+ */
+export async function deleteSessionWithAttendance(supabase, {
+  sessionId,
+  deletedByBadge,
+  reason = 'Manual deletion'
+}) {
+  // Step 1: Get session details for logging
+  const { data: session, error: sessionError } = await supabase
+    .from('attendance_sessions')
+    .select('*')
+    .eq('id', sessionId)
+    .single()
+  
+  if (sessionError || !session) {
+    throw new Error('Session not found: ' + (sessionError?.message || 'No session with this ID'))
+  }
+  
+  // Step 2: Get all attendance records for logging
+  const { data: attendanceRecords } = await supabase
+    .from('attendance')
+    .select('id, type, scan_time, badge_number, duty_type')
+    .eq('session_id', sessionId)
+  
+  const attendanceCount = attendanceRecords?.length || 0
+  
+  // Step 3: Delete attendance records first
+  if (attendanceCount > 0) {
+    const { error: attError } = await supabase
+      .from('attendance')
+      .delete()
+      .eq('session_id', sessionId)
+    
+    if (attError) {
+      throw new Error('Failed to delete attendance records: ' + attError.message)
+    }
+  }
+  
+  // Step 4: Delete session
+  const { error: sessError } = await supabase
+    .from('attendance_sessions')
+    .delete()
+    .eq('id', sessionId)
+  
+  if (sessError) {
+    throw new Error('Failed to delete session: ' + sessError.message)
+  }
+  
+  // Step 5: Log the deletion with full details
+  try {
+    await supabase.from('logs').insert({
+      user_badge: deletedByBadge || 'SYSTEM',
+      action: 'DELETE_SESSION_CASCADE',
+      details: JSON.stringify({
+        deleted_session: {
+          id: sessionId,
+          badge_number: session.badge_number,
+          sewadar_name: session.sewadar_name,
+          centre: session.centre,
+          department: session.department,
+          in_time: session.in_time,
+          out_time: session.out_time,
+          duty_type: session.duty_type,
+          date_ist: session.date_ist,
+          is_open: session.is_open
+        },
+        deleted_attendance_count: attendanceCount,
+        deleted_attendance_records: attendanceRecords?.map(a => ({
+          id: a.id,
+          type: a.type,
+          scan_time: a.scan_time,
+          badge_number: a.badge_number
+        })),
+        reason: reason,
+        deleted_at: new Date().toISOString()
+      }),
+      timestamp: new Date().toISOString()
+    })
+  } catch (_) { /* logging failure is non-critical */ }
+  
+  return {
+    deleted: true,
+    sessionId,
+    attendanceDeleted: attendanceCount
+  }
+}
+
+/**
+ * Delete single attendance record and update session links
+ * Use when you want to delete one attendance but keep the session
+ */
+export async function deleteAttendanceWithSessionUpdate(supabase, {
+  attendanceId,
+  deletedByBadge,
+  reason = 'Manual deletion'
+}) {
+  // Get attendance record
+  const { data: att, error: attError } = await supabase
+    .from('attendance')
+    .select('id, type, scan_time, badge_number, session_id')
+    .eq('id', attendanceId)
+    .single()
+  
+  if (attError || !att) {
+    throw new Error('Attendance not found: ' + (attError?.message || 'No record with this ID'))
+  }
+  
+  // Delete attendance
+  const { error: deleteError } = await supabase
+    .from('attendance')
+    .delete()
+    .eq('id', attendanceId)
+  
+  if (deleteError) {
+    throw new Error('Failed to delete attendance: ' + deleteError.message)
+  }
+  
+  // Update session links (clear in_id or out_id)
+  if (att.session_id) {
+    if (att.type === 'IN') {
+      await supabase
+        .from('attendance_sessions')
+        .update({ in_id: null })
+        .eq('id', att.session_id)
+    } else if (att.type === 'OUT') {
+      await supabase
+        .from('attendance_sessions')
+        .update({ out_id: null })
+        .eq('id', att.session_id)
+    }
+  }
+  
+  // Log deletion
+  try {
+    await supabase.from('logs').insert({
+      user_badge: deletedByBadge || 'SYSTEM',
+      action: 'DELETE_ATTENDANCE',
+      details: JSON.stringify({
+        attendance_id: attendanceId,
+        session_id: att.session_id,
+        badge_number: att.badge_number,
+        type: att.type,
+        scan_time: att.scan_time,
+        reason: reason,
+        deleted_at: new Date().toISOString()
+      }),
+      timestamp: new Date().toISOString()
+    })
+  } catch (_) { /* logging failure is non-critical */ }
+  
+  return { deleted: true, attendanceId }
+}
+
+// =====================================================
+// ORPHAN DETECTION & CLEANUP
+// =====================================================
+
+/**
+ * Find orphan records in database
+ * Returns list of sessions and attendance with broken references
+ */
+export async function findOrphanRecords(supabase) {
+  const results = {
+    orphanSessions: [],      // Sessions with no matching attendance
+    orphanAttendance: [],    // Attendance with invalid session_id
+    invalidSessionLinks: [] // Attendance where session_id points to non-existent session
+  }
+  
+  // Get all session IDs
+  const { data: allSessions } = await supabase
+    .from('attendance_sessions')
+    .select('id')
+  
+  const validSessionIds = new Set(allSessions?.map(s => s.id) || [])
+  
+  // Find attendance with session_id pointing to non-existent session
+  const { data: allAttendance } = await supabase
+    .from('attendance')
+    .select('id, badge_number, type, scan_time, session_id')
+    .not('session_id', 'is', null)
+  
+  for (const att of allAttendance || []) {
+    if (att.session_id && !validSessionIds.has(att.session_id)) {
+      results.invalidSessionLinks.push({
+        id: att.id,
+        badge_number: att.badge_number,
+        type: att.type,
+        scan_time: att.scan_time,
+        session_id: att.session_id
+      })
+    }
+  }
+  
+  // Find closed sessions with no attendance (might be orphans)
+  const { data: closedSessions } = await supabase
+    .from('attendance_sessions')
+    .select('id, badge_number, in_time, out_time')
+    .eq('is_open', false)
+  
+  // Check each closed session for attendance
+  for (const sess of closedSessions || []) {
+    const { count } = await supabase
+      .from('attendance')
+      .select('id', { count: 'exact', head: true })
+      .eq('session_id', sess.id)
+    
+    if (count === 0) {
+      results.orphanSessions.push({
+        id: sess.id,
+        badge_number: sess.badge_number,
+        in_time: sess.in_time,
+        out_time: sess.out_time
+      })
+    }
+  }
+  
+  return results
+}
+
+/**
+ * Cleanup orphan records
+ * Fixes invalid session_id references in attendance table
+ */
+export async function cleanupOrphanRecords(supabase, deletedByBadge = 'SYSTEM') {
+  const results = {
+    attendanceFixed: 0,
+    sessionsDeleted: 0,
+    errors: []
+  }
+  
+  // Get all session IDs
+  const { data: allSessions } = await supabase
+    .from('attendance_sessions')
+    .select('id')
+  
+  const validSessionIds = new Set(allSessions?.map(s => s.id) || [])
+  
+  // Get all attendance with session_id
+  const { data: allAttendance } = await supabase
+    .from('attendance')
+    .select('id, session_id')
+    .not('session_id', 'is', null)
+  
+  // Fix invalid session_ids
+  for (const att of allAttendance || []) {
+    if (att.session_id && !validSessionIds.has(att.session_id)) {
+      try {
+        await supabase
+          .from('attendance')
+          .update({ session_id: null })
+          .eq('id', att.id)
+        results.attendanceFixed++
+      } catch (e) {
+        results.errors.push(`Failed to fix attendance ${att.id}: ${e.message}`)
+      }
+    }
+  }
+  
+  // Delete closed sessions with no attendance (orphans)
+  const { data: closedSessions } = await supabase
+    .from('attendance_sessions')
+    .select('id')
+    .eq('is_open', false)
+  
+  for (const sess of closedSessions || []) {
+    const { count } = await supabase
+      .from('attendance')
+      .select('id', { count: 'exact', head: true })
+      .eq('session_id', sess.id)
+    
+    if (count === 0) {
+      try {
+        await supabase
+          .from('attendance_sessions')
+          .delete()
+          .eq('id', sess.id)
+        results.sessionsDeleted++
+      } catch (e) {
+        results.errors.push(`Failed to delete orphan session ${sess.id}: ${e.message}`)
+      }
+    }
+  }
+  
+  // Log cleanup
+  try {
+    await supabase.from('logs').insert({
+      user_badge: deletedByBadge,
+      action: 'CLEANUP_ORPHANS',
+      details: JSON.stringify({
+        ...results,
+        cleaned_at: new Date().toISOString()
+      }),
+      timestamp: new Date().toISOString()
+    })
+  } catch (_) { /* logging failure is non-critical */ }
+  
+  return results
 }

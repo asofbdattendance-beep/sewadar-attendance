@@ -17,6 +17,7 @@ import {
   asoForceCloseSession,
   executeStandaloneOut,
   closeSessionWithTime,
+  deleteSessionWithAttendance,
 } from '../lib/sessionLogic'
 
 export default function ScannerPage() {
@@ -281,13 +282,13 @@ export default function ScannerPage() {
       const isLateNight = isLateNightScan(scanTime)
 
       if (isLateNight) {
-        pendingScanRef.current = { found, badge, scanTime }
+        pendingScanRef.current = { found, badge, scanTime, release }
         release()
         setWatchWardConfirm({ sewadar: found, badge })
         return
       }
 
-      await processSewadar(found, badge, scanTime)
+      await processSewadar(found, badge, scanTime, false, release)
     } catch (e) {
       if (import.meta.env.DEV) console.error('[HANDLE SCAN ERROR]', e?.message || e, e?.stack)
       release()
@@ -298,15 +299,15 @@ export default function ScannerPage() {
   async function handleWatchWardConfirm(isWatchWard) {
     if (!pendingScanRef.current) return
     
-    const { found, badge, scanTime } = pendingScanRef.current
+    const { found, badge, scanTime, release } = pendingScanRef.current
     pendingScanRef.current = null
     setWatchWardConfirm(null)
     
-    await processSewadar(found, badge, scanTime, isWatchWard)
+    await processSewadar(found, badge, scanTime, isWatchWard, release)
   }
 
-  async function processSewadar(found, badge, scanTime, watchWardConfirm = false) {
-    if (import.meta.env.DEV) console.log('[PROC] start', { badge, scanTime, found: !!found })
+  async function processSewadar(found, badge, scanTime, watchWardConfirm = false, release = null) {
+    if (import.meta.env.DEV) console.log('[PROC] start', { badge, scanTime, found: !!found, release: !!release })
     let scanTimeISO
     try {
       const parsed = new Date(scanTime.replace(' ', 'T'))
@@ -356,11 +357,18 @@ export default function ScannerPage() {
       const result = evalResult
 
       if (result.status === 'blocked') {
+        if (result.reason === 'duplicate_scan') {
+          release?.()
+          openPopup({ type: 'error', badge, message: result.message || 'Duplicate scan detected. Please wait.' })
+          return
+        }
         if (result.reason === 'jatha_active') {
+          release?.()
           openPopup({ type: 'jatha_block', sewadar: found, badge, jatha: result.jatha })
           return
         }
         if (result.reason === 'cross_midnight_session') {
+          release?.()
           openPopup({ type: 'open_session_block', sewadar: found, badge, openSession: result.openSession, todaySessions })
           return
         }
@@ -1185,6 +1193,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
               scanner_name: profile.name,
               scanner_centre: profile.centre,
               in_scanner_name: profile.name,
+              remark: remark.trim() || null,
             })
             .select('id')
             .single()
@@ -1215,7 +1224,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
             .single()
 
           if (inError) {
-            await supabase.from('attendance_sessions').delete().eq('id', session.id)
+            await deleteSessionWithAttendance(supabase, { sessionId: session.id, deletedByBadge: profile.badge_number, reason: 'Failed to create IN attendance - rolling back' })
             throw new Error('Failed to record IN: ' + inError.message)
           }
 
@@ -1310,6 +1319,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
             scanner_name: profile.name,
             scanner_centre: profile.centre,
             in_scanner_name: profile.name,
+            remark: remark.trim() || null,
           })
           .select('id')
           .single()
@@ -1341,7 +1351,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
           .single()
 
         if (inError) {
-          await supabase.from('attendance_sessions').delete().eq('id', session.id)
+          await deleteSessionWithAttendance(supabase, { sessionId: session.id, deletedByBadge: profile.badge_number, reason: 'Failed to create IN attendance - rolling back' })
           throw new Error('Failed to record IN: ' + inError.message)
         }
 
@@ -1373,8 +1383,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
           .single()
 
         if (outError) {
-          await supabase.from('attendance').delete().eq('session_id', session.id)
-          await supabase.from('attendance_sessions').delete().eq('id', session.id)
+          await deleteSessionWithAttendance(supabase, { sessionId: session.id, deletedByBadge: profile.badge_number, reason: 'Failed to create OUT attendance - rolling back' })
           throw new Error('Failed to record OUT: ' + outError.message)
         }
 

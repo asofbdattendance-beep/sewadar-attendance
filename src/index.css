@@ -311,15 +311,12 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   background:white;
   -webkit-overflow-scrolling: touch;
 }
-@media (max-width: 767px) {
-  .table-wrap {
-    max-height: 65vh;
-  }
+@media (min-width: 768px) {
+  .table-wrap { overflow-x: hidden; }
 }
 table { 
   width:100%; 
   border-collapse:collapse; 
-  min-width:600px; /* Force minimum width for horizontal scroll */
 }
 thead { 
   background:#F8FAFB; 
@@ -425,6 +422,10 @@ tr:hover td { background:#FAFCFF; }
 .records-table { 
   width: 100%; 
   border-collapse: collapse; 
+}
+@media (min-width: 768px) {
+  .records-table { table-layout: fixed; }
+  .records-table th, .records-table td { overflow: hidden; text-overflow: ellipsis; }
 }
 .records-table th { 
   background: #f9fafb; 

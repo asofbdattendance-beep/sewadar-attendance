@@ -23,6 +23,7 @@ import TablePagination from '../components/TablePagination'
 import EmptyState from '../components/EmptyState'
 import ConfirmModal from '../components/ConfirmModal'
 import { showSuccess, showError } from '../components/Toast'
+import { deleteAttendanceWithSessionUpdate } from '../lib/sessionLogic'
 
 const PAGE_SIZE = 50
 const SEARCH_DEBOUNCE = 300
@@ -95,6 +96,7 @@ export default function SuperAdminPage() {
   const [editingAtt, setEditingAtt] = useState(null)
   const [editAttTime, setEditAttTime] = useState('')
   const [editAttType, setEditAttType] = useState('')
+  const [editAttDate, setEditAttDate] = useState('')
 
   // Jatha Centres
   const [jathaCentres, setJathaCentres] = useState([])
@@ -579,13 +581,11 @@ export default function SuperAdminPage() {
     setDeleteConfirm(null)
     if (!r) return
     try {
-      const { error, count } = await supabase.from('attendance').delete({ count: 'exact' }).eq('id', r.id)
-      if (error) { showMsg(`Delete failed: ${error.message}`, 'error'); return }
-      if (count === 0) {
-        const { data: checkData } = await supabase.from('attendance').select('id').eq('id', r.id).maybeSingle()
-        if (!checkData) { showMsg('Record already deleted or does not exist'); fetchAttendance(); return }
-        showMsg('Delete was blocked by RLS policy. Make sure you are logged in as ASO.', 'error'); return
-      }
+      await deleteAttendanceWithSessionUpdate(supabase, {
+        attendanceId: r.id,
+        deletedByBadge: profile?.badge_number,
+        reason: 'Manual deletion from admin panel'
+      })
       await logAction(profile, 'DELETE_ATTENDANCE', `Deleted ${r.type} id=${r.id} badge=${r.badge_number}`)
       showMsg('Record deleted successfully')
       fetchAttendance()
@@ -594,23 +594,39 @@ export default function SuperAdminPage() {
 
   async function saveAttEdit() {
     const updates = {}
-    if (editAttTime) {
-      if (!/^\d{2}:\d{2}$/.test(editAttTime)) {
-        showMsg('Invalid time format. Use HH:MM.', 'error')
-        return
-      }
-      const istDateTime = new Date(`${attDate}T${editAttTime}:00+05:30`)
-      if (isNaN(istDateTime.getTime())) {
-        showMsg('Invalid date/time combination.', 'error')
-        return
-      }
-      updates.scan_time = istDateTime.toISOString()
+    if (!editAttDate || !editAttTime) {
+      showMsg('Date and time are required.', 'error')
+      return
     }
+    if (!/^\d{2}:\d{2}$/.test(editAttTime)) {
+      showMsg('Invalid time format. Use HH:MM.', 'error')
+      return
+    }
+    const istDateTime = new Date(`${editAttDate}T${editAttTime}:00+05:30`)
+    if (isNaN(istDateTime.getTime())) {
+      showMsg('Invalid date/time combination.', 'error')
+      return
+    }
+    updates.scan_time = istDateTime.toISOString()
     if (editAttType && editAttType !== editingAtt.type) updates.type = editAttType
+
     if (!Object.keys(updates).length) { setEditingAtt(null); return }
+
     try {
+      // Update attendance record
       const { error } = await supabase.from('attendance').update(updates).eq('id', editingAtt.id)
       if (error) { showMsg('Update failed: ' + error.message, 'error'); return }
+
+      // If this attendance has a session, update session fields too
+      if (editingAtt.session_id) {
+        const isIn = editingAtt.type === 'IN'
+        const sessionUpdate = isIn 
+          ? { in_time: updates.scan_time, date_ist: editAttDate }
+          : { out_time: updates.scan_time }
+        
+        await supabase.from('attendance_sessions').update(sessionUpdate).eq('id', editingAtt.session_id)
+      }
+
       await logAction(profile, 'EDIT_ATTENDANCE', `Edited id=${editingAtt.id} badge=${editingAtt.badge_number}: ${JSON.stringify(updates)}`)
       showMsg('Record updated successfully')
       setEditingAtt(null); fetchAttendance()
@@ -1014,39 +1030,42 @@ export default function SuperAdminPage() {
           <p className="text-muted text-xs mb-2">{attRecords.length} records{attSearch ? ` matching "${attSearch}"` : ''} for {attDate}</p>
           {attLoading ? <div className="spinner" style={{ margin:'2rem auto' }}/> : (
             <div className="table-wrap"><table>
-              <thead><tr><th>Time</th><th>Type</th><th>Name</th><th>Badge</th><th>Centre</th><th>Scanned By</th><th></th></tr></thead>
+              <thead><tr><th style={{ width:'140px' }}>Time</th><th style={{ width:'50px' }}>Type</th><th style={{ width:'110px' }}>Name</th><th style={{ width:'80px' }}>Badge</th><th style={{ width:'90px' }}>Centre</th><th style={{ width:'80px' }}>Scanned By</th><th style={{ width:'60px' }}></th></tr></thead>
               <tbody>
                 {attRecords.map(r => (
                   <tr key={r.id} style={editingAtt?.id===r.id ? { background:'#fffbeb' } : {}}>
-                    <td style={{ fontSize:'0.82rem', whiteSpace:'nowrap' }}>
+                    <td style={{ fontSize:'0.8rem', whiteSpace:'nowrap' }}>
                       {editingAtt?.id===r.id
-                        ? <input type="time" value={editAttTime} onChange={e => setEditAttTime(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem 0.4rem', fontSize:'0.82rem', background:'white', color:'var(--text-primary)' }}/>
-                        : new Date(r.scan_time).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' })}
+                        ? <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+                            <input type="date" value={editAttDate} onChange={e => setEditAttDate(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem 0.3rem', fontSize:'0.7rem', background:'white', color:'var(--text-primary)', width:'90px' }}/>
+                            <input type="time" value={editAttTime} onChange={e => setEditAttTime(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem 0.3rem', fontSize:'0.75rem', background:'white', color:'var(--text-primary)', width:'70px' }}/>
+                          </div>
+                        : new Date(r.scan_time).toLocaleDateString('en-IN', { day:'2-digit', month:'2-digit' }) + ' ' + new Date(r.scan_time).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' })}
                     </td>
                     <td>
                       {editingAtt?.id===r.id
-                        ? <select value={editAttType} onChange={e => setEditAttType(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem 0.4rem', fontSize:'0.82rem', background:'white', color:'var(--text-primary)' }}><option value="IN">IN</option><option value="OUT">OUT</option></select>
+                        ? <select value={editAttType} onChange={e => setEditAttType(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem', fontSize:'0.75rem', background:'white', color:'var(--text-primary)' }}><option value="IN">IN</option><option value="OUT">OUT</option></select>
                         : <span className={`badge ${r.type==='IN' ? 'badge-green' : 'badge-red'}`}>{r.type}</span>}
                     </td>
-                    <td style={{ fontWeight:500 }}>{r.sewadar_name}</td>
+                    <td style={{ fontWeight:500, fontSize:'0.85rem' }}>{r.sewadar_name}</td>
                     <td style={{ fontFamily:'monospace', fontSize:'0.82rem', color:'var(--gold)' }}>{r.badge_number}</td>
-                    <td style={{ fontSize:'0.82rem', color:'var(--text-muted)' }}>{r.centre}</td>
-                    <td style={{ fontSize:'0.78rem', color:'var(--text-muted)' }}>{r.scanner_name||'—'}</td>
+                    <td style={{ fontSize:'0.78rem', color:'var(--text-muted)' }}>{r.centre}</td>
+                    <td style={{ fontSize:'0.75rem', color:'var(--text-muted)' }}>{r.scanner_name||'—'}</td>
                     <td>
                       <div style={{ display:'flex', gap:4, alignItems:'center' }}>
                         {editingAtt?.id===r.id ? (
                           <>
-                            <button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveAttEdit}><Check size={14}/></button>
-                            <button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => setEditingAtt(null)}><X size={14}/></button>
+                            <button style={{ background:'#22c55e', border:'none', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'white', display:'flex', alignItems:'center' }} onClick={saveAttEdit}><Check size={12}/></button>
+                            <button style={{ background:'#6b7280', border:'none', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'white', display:'flex', alignItems:'center' }} onClick={() => setEditingAtt(null)}><X size={12}/></button>
                           </>
                         ) : (
                           <>
-                            <button className="btn btn-ghost" style={{ color:'var(--blue)', padding:'0.2rem' }} title="Edit"
-                              onClick={() => { setEditingAtt(r);         setEditAttTime(new Date(r.scan_time).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})); setEditAttType(r.type) }}>
-                              <Pencil size={13}/>
+                            <button style={{ background:'none', border:'1px solid #3b82f6', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'#3b82f6', display:'flex', alignItems:'center' }} title="Edit"
+                              onClick={() => { setEditingAtt(r); setEditAttDate(r.scan_time.split('T')[0]); setEditAttTime(r.scan_time.slice(11, 16)); setEditAttType(r.type) }}>
+                              <Pencil size={12}/>
                             </button>
-                            <button className="btn btn-ghost" style={{ color:'var(--red)', padding:'0.2rem' }} title="Delete" onClick={() => deleteAttRecord(r)}>
-                              <Trash2 size={13}/>
+                            <button style={{ background:'none', border:'1px solid #dc2626', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'#dc2626', display:'flex', alignItems:'center' }} title="Delete" onClick={() => deleteAttRecord(r)}>
+                              <Trash2 size={12}/>
                             </button>
                           </>
                         )}

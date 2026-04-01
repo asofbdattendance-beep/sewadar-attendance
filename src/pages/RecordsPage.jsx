@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { todayDateStr, formatDateStr, scanTimeToISTDate } from '../lib/dateUtils'
 import {
   Search, Download, Flag, X, RefreshCw,
-  Trash2, FileText, BarChart2
+  Trash2, FileText, BarChart2, PenLine
 } from 'lucide-react'
 import DateRangePicker from '../components/DateRangePicker'
 import CentreComboBox from '../components/CentreComboBox'
@@ -12,6 +12,7 @@ import SkeletonRows from '../components/SkeletonRows'
 import EmptyState from '../components/EmptyState'
 import ConfirmModal from '../components/ConfirmModal'
 import { showSuccess, showError } from '../components/Toast'
+import { deleteSessionWithAttendance } from '../lib/sessionLogic'
 
 const PAGE_SIZE = 50
 
@@ -67,6 +68,11 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
   const [flagModal, setFlagModal] = useState(null)
   const [flagReason, setFlagReason] = useState('')
   const [flagSubmitting, setFlagSubmitting] = useState(false)
+  const [editingSession, setEditingSession] = useState(null)
+  const [editInTime, setEditInTime] = useState('')
+  const [editOutTime, setEditOutTime] = useState('')
+  const [editInDate, setEditInDate] = useState('')
+  const [editOutDate, setEditOutDate] = useState('')
 
   const searchTimerRef = useRef(null)
 
@@ -247,30 +253,10 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
     const { id, badge_number } = deleteConfirm
 
     try {
-      // Step 1: Clear session_id on attendance records (removes FK reference, allows session delete)
-      await supabase.from('attendance').update({ session_id: null }).eq('session_id', id)
-
-      // Step 2: Clear session_id on queries (preserve flags, just unlink the session)
-      await supabase.from('queries').update({ session_id: null }).eq('session_id', id)
-
-      // Step 3: Delete the session
-      const { error } = await supabase.from('attendance_sessions').delete().eq('id', id)
-      if (error) {
-        // If still failing (e.g. ON DELETE RESTRICT), try clearing in_id/out_id first
-        if (error.code === '23503') {
-          await supabase.from('attendance_sessions').update({ in_id: null, out_id: null }).eq('id', id)
-          const retry = await supabase.from('attendance_sessions').delete().eq('id', id)
-          if (retry.error) throw new Error(retry.error.message)
-        } else {
-          throw new Error(error.message)
-        }
-      }
-
-      await supabase.from('logs').insert({
-        user_badge: profile.badge_number,
-        action: 'DELETE_SESSION',
-        details: `Deleted session ${id} for ${badge_number}`,
-        timestamp: new Date().toISOString(),
+      await deleteSessionWithAttendance(supabase, {
+        sessionId: id,
+        deletedByBadge: profile.badge_number,
+        reason: 'Manual deletion from records page'
       })
 
       showSuccess('Session deleted')
@@ -343,6 +329,53 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
     setFlagReason('')
   }
 
+  async function saveSessionEdit() {
+    if (!editingSession) return
+
+    try {
+      const updates = {}
+
+      if (editInDate && editInTime) {
+        const inDateTime = new Date(`${editInDate}T${editInTime}:00+05:30`)
+        if (isNaN(inDateTime.getTime())) {
+          showError('Invalid IN date/time')
+          return
+        }
+        updates.in_time = inDateTime.toISOString()
+        updates.date_ist = editInDate
+      }
+
+      if (editOutDate && editOutTime) {
+        const outDateTime = new Date(`${editOutDate}T${editOutTime}:00+05:30`)
+        if (isNaN(outDateTime.getTime())) {
+          showError('Invalid OUT date/time')
+          return
+        }
+        updates.out_time = outDateTime.toISOString()
+      }
+
+      if (Object.keys(updates).length === 0) {
+        setEditingSession(null)
+        return
+      }
+
+      await supabase.from('attendance_sessions').update(updates).eq('id', editingSession.id)
+
+      if (editingSession.in_id && updates.in_time) {
+        await supabase.from('attendance').update({ scan_time: updates.in_time }).eq('id', editingSession.in_id)
+      }
+      if (editingSession.out_id && updates.out_time) {
+        await supabase.from('attendance').update({ scan_time: updates.out_time }).eq('id', editingSession.out_id)
+      }
+
+      showSuccess('Session updated')
+      setEditingSession(null)
+      fetchRecords()
+    } catch (err) {
+      showError('Update failed: ' + err.message)
+    }
+  }
+
   function getStatusBadge(session) {
     if (session.is_open) {
       return <span style={{ fontSize: '0.7rem', background: 'rgba(234,179,8,0.15)', color: '#ca8a04', border: '1px solid rgba(234,179,8,0.3)', borderRadius: 6, padding: '2px 8px', fontWeight: 700 }}>OPEN</span>
@@ -412,19 +445,16 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
           <table className="records-table">
             <thead>
               <tr>
-                <th style={{ width: '90px' }}>Badge</th>
-                <th style={{ width: '130px' }}>Name</th>
-                {isAso && <th style={{ width: '90px' }}>Centre</th>}
-                <th style={{ width: '65px' }}>Duty</th>
-                <th style={{ width: '75px' }}>IN Date</th>
-                <th style={{ width: '60px' }}>IN</th>
-                <th style={{ width: '70px' }}>IN By</th>
-                <th style={{ width: '75px' }}>OUT Date</th>
-                <th style={{ width: '60px' }}>OUT</th>
-                <th style={{ width: '70px' }}>OUT By</th>
-                <th style={{ width: '55px' }}>Duration</th>
-                <th style={{ width: '60px' }}>Status</th>
-                <th style={{ width: '100px' }}>Remarks</th>
+                <th style={{ width: '80px' }}>Badge</th>
+                <th style={{ width: '110px' }}>Name</th>
+                {isAso && <th style={{ width: '100px' }}>Centre</th>}
+                <th style={{ width: '55px' }}>Duty</th>
+                <th style={{ width: '90px' }}>Date</th>
+                <th style={{ width: '50px' }}>IN</th>
+                <th style={{ width: '50px' }}>OUT</th>
+                <th style={{ width: '45px' }}>Dur</th>
+                <th style={{ width: '50px' }}>Status</th>
+                <th style={{ width: '90px' }}>Remarks</th>
                 <th style={{ width: '50px' }}></th>
                 <th style={{ width: '40px' }}></th>
               </tr>
@@ -432,7 +462,9 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
             <tbody>
               {records.map(r => {
                 const inDate = formatDateStr(r.date_ist)
-                const outDate = r.out_time ? formatDateStr(scanTimeToISTDate(r.out_time)) : ''
+                const outDateIST = r.out_time ? scanTimeToISTDate(r.out_time) : ''
+                const outDate = outDateIST ? formatDateStr(outDateIST) : ''
+                const sameDay = outDateIST && r.date_ist === outDateIST
                 
                 return (
                   <tr key={r.id}>
@@ -451,15 +483,24 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                         {r.duty_type === 'watch_ward' ? 'W&W' : r.duty_type === 'satsang' ? 'Satsang' : 'Gate'}
                       </span>
                     </td>
-                    <td style={{ fontSize: '0.78rem', fontFamily: 'monospace' }}>{inDate}</td>
-                    <td style={{ fontSize: '0.8rem' }}>{formatTime(r.in_time)}</td>
-                    <td style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                      {r.in_scanner_name || r.scanner_name || '—'}
+                    <td style={{ fontSize: '0.7rem', fontFamily: 'monospace', lineHeight: 1.3 }}>
+                      {sameDay ? (
+                        <span>{inDate}</span>
+                      ) : outDate ? (
+                        <span style={{ color: r.duty_type === 'watch_ward' ? '#3b82f6' : 'var(--text-primary)' }}>
+                          {inDate} → {outDate}
+                        </span>
+                      ) : (
+                        <span>{inDate}</span>
+                      )}
                     </td>
-                    <td style={{ fontSize: '0.78rem', fontFamily: 'monospace' }}>{outDate}</td>
-                    <td style={{ fontSize: '0.8rem' }}>{formatTime(r.out_time)}</td>
-                    <td style={{ fontSize: '0.7rem', color: r.out_scanner_name ? 'var(--gold)' : 'var(--text-muted)' }}>
-                      {r.out_scanner_name || '—'}
+                    <td style={{ fontSize: '0.8rem', lineHeight: 1.3 }}>
+                      <div>{formatTime(r.in_time)}</div>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{r.in_scanner_name || r.scanner_name || ''}</div>
+                    </td>
+                    <td style={{ fontSize: '0.8rem', lineHeight: 1.3 }}>
+                      <div>{formatTime(r.out_time)}</div>
+                      <div style={{ fontSize: '0.65rem', color: r.out_scanner_name ? 'var(--gold)' : 'var(--text-muted)' }}>{r.out_scanner_name || ''}</div>
                     </td>
                     <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{formatDuration(r.in_time, r.out_time) || '—'}</td>
                     <td>{getStatusBadge(r)}</td>
@@ -475,7 +516,7 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                         </div>
                       ) : (
                         <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                          {r.manual_in || r.manual_out ? 'Manual' : '—'}
+                          {r.remark || (r.manual_in || r.manual_out ? 'Manual' : '—')}
                         </span>
                       )}
                     </td>
@@ -491,9 +532,20 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                           </button>
                         )}
                         {canEdit && (
-                          <button className="records-delete-btn" title="Delete session" onClick={() => deleteSession(r)}>
-                            <Trash2 size={12} />
-                          </button>
+                          <>
+                            <button className="records-delete-btn" title="Edit session" onClick={() => { 
+                              setEditingSession(r)
+                              setEditInDate(r.in_time ? r.in_time.split('T')[0] : '')
+                              setEditInTime(r.in_time ? r.in_time.slice(11, 16) : '')
+                              setEditOutDate(r.out_time ? r.out_time.split('T')[0] : '')
+                              setEditOutTime(r.out_time ? r.out_time.slice(11, 16) : '')
+                            }}>
+                              <PenLine size={12} color="var(--blue)" />
+                            </button>
+                            <button className="records-delete-btn" title="Delete session" onClick={() => deleteSession(r)}>
+                              <Trash2 size={12} />
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
@@ -560,12 +612,26 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                   </button>
                 )}
                 {canEdit && (
-                  <button
-                    onClick={() => deleteSession(r)}
-                    style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: '0.72rem', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
-                  >
-                    <Trash2 size={11} /> Delete
-                  </button>
+                  <>
+                    <button
+                      onClick={() => { 
+                        setEditingSession(r)
+                        setEditInDate(r.in_time ? r.in_time.split('T')[0] : '')
+                        setEditInTime(r.in_time ? r.in_time.slice(11, 16) : '')
+                        setEditOutDate(r.out_time ? r.out_time.split('T')[0] : '')
+                        setEditOutTime(r.out_time ? r.out_time.slice(11, 16) : '')
+                      }}
+                      style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: '0.72rem', color: 'var(--blue)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
+                    >
+                      <PenLine size={11} /> Edit
+                    </button>
+                    <button
+                      onClick={() => deleteSession(r)}
+                      style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: '0.72rem', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
+                    >
+                      <Trash2 size={11} /> Delete
+                    </button>
+                  </>
                 )}
               </div>
             </div>
@@ -586,6 +652,49 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
 
       <ConfirmModal open={!!deleteConfirm} onConfirm={doDelete} onCancel={() => setDeleteConfirm(null)}
         title="Delete Session?" message={`Delete attendance session for ${deleteConfirm?.sewadar_name}? This will also delete all associated attendance records.`} confirmLabel="Delete" danger />
+
+      {editingSession && (
+        <div className="overlay" onClick={() => setEditingSession(null)}>
+          <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <PenLine size={18} color="var(--blue)" />
+                <h3 style={{ fontWeight: 700, color: 'var(--blue)' }}>Edit Session Times</h3>
+              </div>
+              <button onClick={() => setEditingSession(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '1.2rem' }}>×</button>
+            </div>
+
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '0.85rem 1rem', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+                <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>{editingSession.sewadar_name}</span>
+                <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.78rem', fontWeight: 700 }}>{editingSession.badge_number}</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gap: '1rem', marginBottom: '1.5rem' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>IN Time</label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <input type="date" value={editInDate} onChange={e => setEditInDate(e.target.value)} style={{ flex: '0 0 140px', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.9rem' }} />
+                  <input type="time" value={editInTime} onChange={e => setEditInTime(e.target.value)} style={{ flex: '0 0 100px', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.9rem' }} />
+                </div>
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>OUT Time</label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <input type="date" value={editOutDate} onChange={e => setEditOutDate(e.target.value)} style={{ flex: '0 0 140px', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.9rem' }} />
+                  <input type="time" value={editOutTime} onChange={e => setEditOutTime(e.target.value)} style={{ flex: '0 0 100px', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.9rem' }} />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+              <button onClick={() => setEditingSession(null)} className="btn btn-secondary" style={{ padding: '0.5rem 1rem' }}>Cancel</button>
+              <button onClick={saveSessionEdit} className="btn btn-primary" style={{ padding: '0.5rem 1rem' }}>Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {flagModal && (
         <div className="overlay" onClick={() => setFlagModal(null)}>
