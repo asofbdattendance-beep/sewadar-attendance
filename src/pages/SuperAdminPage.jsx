@@ -117,7 +117,7 @@ export default function SuperAdminPage() {
         details,
         timestamp: new Date().toISOString(),
       })
-    } catch (e) { console.warn('Audit log failed:', e) }
+    } catch (e) { if (import.meta.env.DEV) console.warn('Audit log failed:', e) }
   }
 
   // Cleanup searchTimerRef on unmount
@@ -146,14 +146,13 @@ export default function SuperAdminPage() {
 
   // Fetch centres on mount
   useEffect(() => {
-    fetchCentresData().catch(console.error)
+    fetchCentresData().catch(() => {})
   }, [])
-
-  useEffect(() => { if (tab === 'users')        fetchUsers().catch(console.error)        }, [tab])
-  useEffect(() => { if (tab === 'sewadars')     fetchSewadars().catch(console.error)     }, [tab, sewadarPage, sewadarSearch, sewadarCentreFilter])
-  useEffect(() => { if (tab === 'attendance')   fetchAttendance().catch(console.error)   }, [tab, attDate, attSearch, attPage])
-  useEffect(() => { if (tab === 'jatha_centres')fetchJathaCentres().catch(console.error) }, [tab, jathaTypeFilter])
-  useEffect(() => { if (tab === 'reports')      fetchReports().catch(console.error)      }, [tab, dateRange])
+  useEffect(() => { if (tab === 'users')        fetchUsers().catch(() => {})        }, [tab])
+  useEffect(() => { if (tab === 'sewadars')     fetchSewadars().catch(() => {})     }, [tab, sewadarPage, sewadarSearch, sewadarCentreFilter])
+  useEffect(() => { if (tab === 'attendance')   fetchAttendance().catch(() => {})   }, [tab, attDate, attSearch, attPage])
+  useEffect(() => { if (tab === 'jatha_centres')fetchJathaCentres().catch(() => {}) }, [tab, jathaTypeFilter])
+  useEffect(() => { if (tab === 'reports')      fetchReports().catch(() => {})      }, [tab, dateRange])
 
   async function fetchCentresData() {
     const { data } = await supabase.from('centres').select('id, centre_name, parent_centre, geo_enabled, latitude, longitude, geo_radius').order('centre_name')
@@ -377,20 +376,42 @@ export default function SuperAdminPage() {
       if (!res.ok)   throw new Error(json.error || `Error: ${res.status}`)
       if (json.error) throw new Error(json.error)
 
+      // Store plain password for success card display (admin sees it once)
       const credRecord = {
         name:         lockedSewadar.sewadar_name,
         badge_number: lockedSewadar.badge_number,
         email:        newUserEmail,
-        password:     newUserPassword,
+        password:     newUserPassword,  // Plaintext shown to admin ONCE
         role:         newUserRole,
         centre:       newUserCentre || lockedSewadar.centre,
         created_by:   profile.badge_number,
         created_at:   new Date().toISOString(),
       }
 
-      // Save credentials to user_credentials table for later retrieval
-      const { error: ce } = await supabase.from('user_credentials').insert(credRecord)
-      if (ce) console.warn('[SuperAdmin] Could not save credentials:', ce.message)
+      // Save HASHED credentials via secure edge function for audit log
+      const credRes = await fetch(`${supabaseUrl}/functions/v1/save-credential`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name:         lockedSewadar.sewadar_name,
+          badge_number: lockedSewadar.badge_number,
+          email:        newUserEmail,
+          password:     newUserPassword,
+          role:         newUserRole,
+          centre:       newUserCentre || lockedSewadar.centre,
+          created_by:   profile.badge_number,
+        }),
+      })
+
+      const credJson = await credRes.json()
+      if (!credRes.ok) {
+        if (import.meta.env.DEV) console.warn('[SuperAdmin] Could not save hashed credentials:', credJson.error)
+        // Continue anyway - the user was created in Supabase Auth
+      }
 
       await logAction(profile, 'CREATE_USER',
         `Created ${newUserRole} ${lockedSewadar.badge_number.toUpperCase()} email=${newUserEmail}`)
@@ -449,12 +470,12 @@ export default function SuperAdminPage() {
   const exportLogs    = () => dlCSV(['Time,Badge,Action,Details', ...reportData.logs.map(l => [new Date(l.timestamp).toLocaleString('en-IN'), l.user_badge, l.action, csvEscape(l.details||'')].join(','))].join('\n'), 'logs_export.csv')
   const exportCredentials = () => {
     const rows = [
-      'Name,Badge,Email,Password,Role,Centre,Created By,Created At',
+      'Name,Badge,Email,Password (Hashed),Role,Centre,Created By,Created At',
       ...reportData.credentials.map(c => [
         csvEscape(c.name||''),
         c.badge_number,
         csvEscape(c.email),
-        csvEscape(c.password||''),
+        c.password_hash ? '[SECURED - SHA-256 HASHED]' : csvEscape(c.password||'[NOT SET]'),
         c.role,
         csvEscape(c.centre),
         csvEscape(c.created_by||''),
@@ -1066,11 +1087,11 @@ export default function SuperAdminPage() {
                     <div>
                       <h3 style={{ fontWeight:700, fontSize:'0.95rem' }}>User Credentials Log</h3>
                       <p style={{ fontSize:'0.75rem', color:'var(--text-muted)', marginTop:2 }}>
-                        Passwords stored at creation time. Export CSV to update your Google Sheet.
+                        Passwords are securely hashed. Use Supabase Auth for password resets.
                       </p>
                     </div>
                     <button className="btn btn-ghost" onClick={exportCredentials} style={{ fontSize:'0.82rem' }}>
-                      <Download size={14} /> Export for Google Sheets
+                      <Download size={14} /> Export Log
                     </button>
                   </div>
                   <div className="table-wrap">
@@ -1093,8 +1114,8 @@ export default function SuperAdminPage() {
                             <td style={{ fontFamily:'monospace', fontSize:'0.82rem', color:'var(--gold)' }}>{c.badge_number}</td>
                             <td style={{ fontSize:'0.82rem' }}>{c.email}</td>
                             <td>
-                              <span style={{ fontFamily:'monospace', fontSize:'0.82rem', background:'var(--bg-elevated)', border:'1px solid var(--border)', borderRadius:4, padding:'2px 6px', letterSpacing:'0.03em' }}>
-                                {c.password}
+                              <span style={{ fontFamily:'monospace', fontSize:'0.82rem', background:'var(--green-bg)', border:'1px solid rgba(22,163,74,0.3)', borderRadius:4, padding:'2px 6px', letterSpacing:'0.03em', color:'var(--green)' }}>
+                                {c.password_hash ? '✓ SECURED' : '[NOT SET]'}
                               </span>
                             </td>
                             <td><span className="badge" style={{ fontSize:'0.72rem' }}>{c.role}</span></td>

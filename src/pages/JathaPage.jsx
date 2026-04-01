@@ -8,7 +8,7 @@ import {
   X, RefreshCw, Plane, Download, Flag, Pencil, Trash2, FileText
 } from 'lucide-react'
 import ConfirmModal from '../components/ConfirmModal'
-import { showError } from '../components/Toast'
+import { showSuccess, showError } from '../components/Toast'
 
 const ALL_JATHA_TYPES = [
   { value: JATHA_TYPE.MAJOR_CENTRE, label: JATHA_TYPE_LABEL[JATHA_TYPE.MAJOR_CENTRE] },
@@ -496,7 +496,7 @@ function ViewJathaTab() {
   const isAdmin = [ROLES.ASO, ROLES.CENTRE].includes(profile?.role)
   const canEditJatha = isAso || profile?.can_edit_jatha
 
-  useEffect(() => { fetchRecords().catch(console.error) }, [typeFilter, monthFilter, page])
+  useEffect(() => { fetchRecords().catch(() => {}) }, [typeFilter, monthFilter, page])
 
   async function fetchRecords() {
     setLoading(true)
@@ -540,21 +540,52 @@ function ViewJathaTab() {
     return str
   }
 
-  function exportCSV() {
-    const header = ['Badge','Name','Centre','Department','Jatha Type','Destination','Dept at Jatha','From','To','Days','Remarks','Flagged','Flag Reason','Submitted By','Submitted Centre','Submitted On']
-    const rows = filtered.map(r => [
-      r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
-      getJathaLabel(r.jatha_type), csvEscape(r.jatha_centre), csvEscape(r.jatha_dept),
-      r.date_from, r.date_to, r.satsang_days, csvEscape(r.remarks || ''),
-      r.flag ? 'Yes' : 'No', csvEscape(r.flag_reason || ''),
-      csvEscape(r.submitted_name || r.submitted_by), csvEscape(r.submitted_centre),
-      r.created_at ? new Date(r.created_at).toLocaleDateString('en-IN') : ''
-    ])
-    const csv = [header, ...rows].map(r => r.join(',')).join('\n')
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = `jatha_records${monthFilter ? '_' + monthFilter : ''}.csv`
-    a.click()
+  async function exportCSV() {
+    showSuccess('Preparing export...')
+    
+    try {
+      let q = supabase.from('jatha_attendance')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (typeFilter) q = q.eq('jatha_type', typeFilter)
+      if (monthFilter) {
+        const [year, month] = monthFilter.split('-')
+        const start = `${year}-${month}-01`
+        const end   = new Date(year, month, 0).toISOString().split('T')[0]
+        q = q.gte('date_from', start).lte('date_from', end)
+      }
+      if (profile?.role === ROLES.CENTRE) {
+        const { data: cd } = await supabase.from('centres').select('centre_name')
+          .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
+        q = q.in('centre', cd?.map(c => c.centre_name) || [profile.centre])
+      }
+
+      const { data: allRecords } = await q
+
+      if (!allRecords?.length) {
+        showError('No data to export')
+        return
+      }
+
+      const header = ['Badge','Name','Centre','Department','Jatha Type','Destination','Dept at Jatha','From','To','Days','Remarks','Flagged','Flag Reason','Submitted By','Submitted Centre','Submitted On']
+      const rows = allRecords.map(r => [
+        r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
+        getJathaLabel(r.jatha_type), csvEscape(r.jatha_centre), csvEscape(r.jatha_dept),
+        r.date_from, r.date_to, r.satsang_days, csvEscape(r.remarks || ''),
+        r.flag ? 'Yes' : 'No', csvEscape(r.flag_reason || ''),
+        csvEscape(r.submitted_name || r.submitted_by), csvEscape(r.submitted_centre),
+        r.created_at ? new Date(r.created_at).toLocaleDateString('en-IN') : ''
+      ])
+      const csv = [header, ...rows].map(r => r.join(',')).join('\n')
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+      a.download = `jatha_records${monthFilter ? '_' + monthFilter : ''}.csv`
+      a.click()
+      showSuccess(`Exported ${allRecords.length} records`)
+    } catch (err) {
+      showError('Export failed: ' + err.message)
+    }
   }
 
   async function saveEdit(updated) {
@@ -856,7 +887,7 @@ function JathaTableTab() {
 
     const { data, count, error } = await q.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
     setLoading(false)
-    if (error) { console.warn('[JathaPage] fetchRecords failed:', error); return }
+    if (error) { if (import.meta.env.DEV) console.warn('[JathaPage] fetchRecords failed:', error); return }
     setRecords(data || [])
     setTotalCount(count || 0)
   }
@@ -888,18 +919,51 @@ function JathaTableTab() {
     return str
   }
 
-  function exportCSV() {
-    const header = ['Badge','Name','Centre','Dept','Jatha Type','Destination','Dept at Jatha','From','To','Days','Remarks','Flagged']
-    const rows = records.map(r => [
-      r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
-      getJathaLabel(r.jatha_type), csvEscape(r.jatha_centre), csvEscape(r.jatha_dept),
-      r.date_from, r.date_to, r.satsang_days, csvEscape(r.remarks || ''), r.flag ? 'Yes' : 'No'
-    ])
-    const csv = [header, ...rows].map(r => r.join(',')).join('\n')
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = `jatha_table_${dateRange.from || 'all'}.csv`
-    a.click()
+  async function exportCSV() {
+    showSuccess('Preparing export...')
+    
+    try {
+      let q = supabase.from('jatha_attendance')
+        .select('*')
+        .order(sortCol, { ascending: sortDir === 'asc' })
+
+      if (dateRange.from) q = q.gte('date_from', dateRange.from)
+      if (dateRange.to)   q = q.lte('date_to', dateRange.to)
+      if (typeFilter)     q = q.eq('jatha_type', typeFilter)
+
+      if (isCentreUser) {
+        const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
+        q = q.in('centre', scope)
+      } else if (centreFilter) {
+        q = q.eq('centre', centreFilter)
+      }
+
+      if (searchTerm.trim()) {
+        q = q.or(`badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`)
+      }
+
+      const { data: allRecords } = await q
+
+      if (!allRecords?.length) {
+        showError('No data to export')
+        return
+      }
+
+      const header = ['Badge','Name','Centre','Dept','Jatha Type','Destination','Dept at Jatha','From','To','Days','Remarks','Flagged']
+      const rows = allRecords.map(r => [
+        r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
+        getJathaLabel(r.jatha_type), csvEscape(r.jatha_centre), csvEscape(r.jatha_dept),
+        r.date_from, r.date_to, r.satsang_days, csvEscape(r.remarks || ''), r.flag ? 'Yes' : 'No'
+      ])
+      const csv = [header, ...rows].map(r => r.join(',')).join('\n')
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+      a.download = `jatha_table_${dateRange.from || 'all'}.csv`
+      a.click()
+      showSuccess(`Exported ${allRecords.length} records`)
+    } catch (err) {
+      showError('Export failed: ' + err.message)
+    }
   }
 
   const totalPages = Math.ceil(totalCount / PAGE_SIZE)

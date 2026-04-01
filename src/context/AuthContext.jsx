@@ -23,7 +23,7 @@ export function AuthProvider({ children }) {
       .single()
 
     if (error) {
-      console.warn('Failed to load profile:', error)
+      if (import.meta.env.DEV) console.warn('Failed to load profile:', error)
       setProfile(null)
       setLoading(false)
       return

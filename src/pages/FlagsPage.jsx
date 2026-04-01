@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { ROLES, FLAG_TYPES, FLAG_STATUS } from '../lib/supabase'
 import {
   Flag, MessageSquare, CheckCircle, RefreshCw,
-  ChevronDown, ChevronUp, Send, Search, X, ArrowUpDown, ArrowUp, ArrowDown, Plus
+  ChevronDown, ChevronUp, Send, Search, X, ArrowUpDown, ArrowUp, ArrowDown, Plus, Download
 } from 'lucide-react'
 import TablePagination from '../components/TablePagination'
 import SkeletonRows from '../components/SkeletonRows'
@@ -66,30 +66,19 @@ export default function FlagsPage() {
 
   async function fetchStats() {
     const scope = getScope()
-    let query = supabase.from('queries').select('status', { count: 'exact', head: true })
-    if (scope.length > 0) query = query.in('raised_by_centre', scope)
-    await query
-    const s = { open: 0, in_progress: 0, resolved: 0, total: 0 }
-    if (scope.length > 0) {
-      const [open, ip, res] = await Promise.all([
-        supabase.from('queries').select('id', { count: 'exact', head: true }).in('raised_by_centre', scope).eq('status', 'open'),
-        supabase.from('queries').select('id', { count: 'exact', head: true }).in('raised_by_centre', scope).eq('status', 'in_progress'),
-        supabase.from('queries').select('id', { count: 'exact', head: true }).in('raised_by_centre', scope).eq('status', 'resolved'),
-      ])
-      s.open = open.count || 0
-      s.in_progress = ip.count || 0
-      s.resolved = res.count || 0
-      s.total = (open.count || 0) + (ip.count || 0) + (res.count || 0)
-    } else {
-      const [open, ip, res] = await Promise.all([
-        supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open'),
-        supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'in_progress'),
-        supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'resolved'),
-      ])
-      s.open = open.count || 0
-      s.in_progress = ip.count || 0
-      s.resolved = res.count || 0
-      s.total = (open.count || 0) + (ip.count || 0) + (res.count || 0)
+    let q = supabase.from('queries').select('status', { count: 'exact' })
+    if (scope.length > 0) q = q.in('raised_by_centre', scope)
+    
+    // Get all statuses (up to 10000)
+    const { data, count } = await q.range(0, 9999)
+    
+    const s = { open: 0, in_progress: 0, resolved: 0, total: count || 0 }
+    if (data) {
+      for (const item of data) {
+        if (item.status === 'open') s.open++
+        else if (item.status === 'in_progress') s.in_progress++
+        else if (item.status === 'resolved') s.resolved++
+      }
     }
     setStats(s)
   }
@@ -108,12 +97,20 @@ export default function FlagsPage() {
       .select(`
         *,
         attendance(badge_number, sewadar_name, type, scan_time, centre, department, scanner_name),
-        query_replies(id, replied_by_badge, replied_by_name, replied_by_centre, replied_by_role, reply_text, created_at)
+        query_replies(id, replied_by_badge, replied_by_name, replied_by_centre, replied_by_role, message, created_at)
       `, { count: 'exact' })
       .order(sortCol === 'created_at' ? 'created_at' : sortCol, { ascending: sortDir === 'asc' })
 
     if (statusFilter !== 'all') query = query.eq('status', statusFilter)
     if (scope.length > 0) query = query.in('raised_by_centre', scope)
+    if (flagTypeFilter) query = query.eq('flag_type', flagTypeFilter)
+    
+    // Apply search filters on server for better performance
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      query = query.or(`raised_by_name.ilike.%${q}%,raised_by_badge.ilike.%${q}%,issue_description.ilike.%${q}%,raised_by_centre.ilike.%${q}%`)
+    }
+    
     query = query.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
 
     const { data, count, error } = await query
@@ -121,19 +118,8 @@ export default function FlagsPage() {
     setTotalCount(count || 0)
 
     let flags = data || []
-    if (flagTypeFilter) flags = flags.filter(f => f.flag_type === flagTypeFilter)
-    if (search.trim()) {
-      const q = search.toLowerCase()
-      flags = flags.filter(f =>
-        (f.raised_by_name || '').toLowerCase().includes(q) ||
-        (f.raised_by_badge || '').toLowerCase().includes(q) ||
-        (f.issue_description || '').toLowerCase().includes(q) ||
-        (f.attendance?.badge_number || '').toLowerCase().includes(q) ||
-        (f.attendance?.sewadar_name || '').toLowerCase().includes(q) ||
-        (f.raised_by_centre || '').toLowerCase().includes(q)
-      )
-    }
 
+    // Client-side sort for attendance-related columns (not directly queryable)
     flags.sort((a, b) => {
       let aVal, bVal
       if (sortCol === 'attendance.badge_number') {
@@ -184,7 +170,7 @@ export default function FlagsPage() {
       replied_by_name: profile.name,
       replied_by_centre: profile.centre,
       replied_by_role: profile.role,
-      reply_text: text,
+      message: text,
       created_at: new Date().toISOString()
     })
     if (error) { showError('Failed to send reply'); setSubmitting(false); return }
@@ -212,7 +198,7 @@ export default function FlagsPage() {
         details: `Resolved flag #${flagId}`, timestamp: new Date().toISOString()
       })
     } catch (e) {
-      console.warn('Log insert failed:', e)
+      if (import.meta.env.DEV) console.warn('Log insert failed:', e)
     }
     fetchFlags()
     fetchStats()
@@ -273,6 +259,63 @@ export default function FlagsPage() {
     setPage(1)
   }
 
+  async function exportFlagsCSV() {
+    showSuccess('Preparing export...')
+    
+    try {
+      const scope = getScope()
+      let q = supabase
+        .from('queries')
+        .select(`
+          *,
+          attendance(badge_number, sewadar_name, type, scan_time, centre, department, scanner_name)
+        `)
+        .order(sortCol === 'created_at' ? 'created_at' : sortCol, { ascending: sortDir === 'asc' })
+
+      if (statusFilter !== 'all') q = q.eq('status', statusFilter)
+      if (scope.length > 0) q = q.in('raised_by_centre', scope)
+      if (flagTypeFilter) q = q.eq('flag_type', flagTypeFilter)
+
+      const { data: allFlags } = await q
+
+      if (!allFlags?.length) {
+        showError('No flags to export')
+        return
+      }
+
+      const header = ['ID', 'Badge', 'Name', 'Centre', 'Raised By', 'Reason', 'Status', 'Flag Type', 'Created', 'Resolved At', 'Resolved By']
+      const rows = allFlags.map(f => [
+        f.id,
+        f.attendance?.badge_number || '',
+        f.attendance?.sewadar_name || '',
+        f.raised_by_centre || '',
+        f.raised_by_name || '',
+        f.issue_description || f.reason || '',
+        f.status || '',
+        f.flag_type || '',
+        dateFmt(f.created_at),
+        f.resolved_at ? dateFmt(f.resolved_at) : '',
+        f.resolved_by || ''
+      ])
+      
+      const csv = [header, ...rows].map(r => r.map(v => {
+        const str = String(v || '')
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return '"' + str.replace(/"/g, '""') + '"'
+        }
+        return str
+      }).join(',')).join('\n')
+      
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+      a.download = `flags_export_${new Date().toISOString().split('T')[0]}.csv`
+      a.click()
+      showSuccess(`Exported ${allFlags.length} flags`)
+    } catch (err) {
+      showError('Export failed: ' + err.message)
+    }
+  }
+
   function SortTh({ col, label, align = 'left' }) {
     const active = sortCol === col
     return (
@@ -301,12 +344,17 @@ export default function FlagsPage() {
           <h2 style={{ fontSize: '1.1rem', fontWeight: 600, margin: 0 }}>Flags</h2>
           <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '2px 0 0' }}>{scopeLabel}</p>
         </div>
-        <button className="btn btn-ghost" onClick={() => { fetchFlags(); fetchStats() }} style={{ padding: '0.4rem 0.6rem' }}>
-          <RefreshCw size={14} /> Refresh
-        </button>
-        <button className="btn btn-primary" onClick={() => setRaiseModal(true)} style={{ padding: '0.4rem 0.75rem', gap: '0.3rem', display: 'flex', alignItems: 'center' }}>
-          <Plus size={14} /> Raise Flag
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button className="btn btn-ghost" onClick={() => { fetchFlags(); fetchStats() }} style={{ padding: '0.4rem 0.6rem' }}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button className="btn btn-ghost" onClick={exportFlagsCSV} style={{ padding: '0.4rem 0.6rem' }}>
+            <Download size={14} /> Export
+          </button>
+          <button className="btn btn-primary" onClick={() => setRaiseModal(true)} style={{ padding: '0.4rem 0.75rem', gap: '0.3rem', display: 'flex', alignItems: 'center' }}>
+            <Plus size={14} /> Raise Flag
+          </button>
+        </div>
       </div>
 
       {/* Stats cards */}
@@ -513,7 +561,7 @@ export default function FlagsPage() {
                                       </span>
                                       <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{timeFmt(reply.created_at)}</span>
                                     </div>
-                                    <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>{reply.reply_text}</p>
+                                    <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>{reply.message}</p>
                                   </div>
                                 )
                               })}

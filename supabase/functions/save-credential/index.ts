@@ -1,5 +1,5 @@
-// supabase/functions/create-user/index.ts
-// SECURE: Creates new user accounts - ASO only via Authorization header
+// supabase/functions/save-credential/index.ts
+// SECURE: Stores hashed credentials - ASO only via Authorization header
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
@@ -41,6 +41,14 @@ function serverError(msg: string) {
   )
 }
 
+async function hashPassword(password: string): Promise<string> {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(password + "sewadar-salt-2024")
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders })
@@ -56,7 +64,6 @@ serve(async (req) => {
     return unauthorized("Invalid API key")
   }
 
-  // Verify caller is authorized ASO via Authorization header
   const authHeader = req.headers.get("Authorization") || ""
   if (!authHeader.startsWith("Bearer ")) {
     return unauthorized("Missing authorization token")
@@ -65,7 +72,6 @@ serve(async (req) => {
   try {
     const token = authHeader.slice(7)
     
-    // Create client with user's JWT to verify their role
     const userClient = createClient(SUPABASE_URL, ANON_KEY, {
       global: { headers: { Authorization: `Bearer ${token}` } }
     })
@@ -75,7 +81,6 @@ serve(async (req) => {
       return unauthorized("Invalid or expired token")
     }
     
-    // Get the caller's profile to verify ASO role
     const { data: profile } = await userClient
       .from("users")
       .select("role, is_active")
@@ -83,18 +88,17 @@ serve(async (req) => {
       .single()
     
     if (!profile || profile.role !== "aso" || !profile.is_active) {
-      return forbidden("Only active ASO users can create new users")
+      return forbidden("Only active ASO users can save credentials")
     }
 
-    // Now use service role for operations
     const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
     })
 
     const body = await req.json()
-    const { email, password, name, badge_number, role, centre } = body
+    const { name, badge_number, email, password, role, centre, created_by } = body
 
-    if (!email || !password || !name || !badge_number || !role || !centre) {
+    if (!name || !badge_number || !email || !password || !role || !centre) {
       return badRequest("All fields are required")
     }
 
@@ -102,54 +106,36 @@ serve(async (req) => {
       return badRequest("Password must be at least 6 characters")
     }
 
-    const validRoles = ['aso', 'centre']
-    if (!validRoles.includes(role)) {
-      return badRequest("Invalid role")
-    }
+    const hashedPassword = await hashPassword(password)
 
-    const { data: authData, error: authError } = await adminClient.auth.admin.createUser({
-      email: email.toLowerCase().trim(),
-      password,
-      email_confirm: true,
-    })
-
-    if (authError) {
-      if (authError.message.includes("already been registered")) {
-        return badRequest("Email already registered")
-      }
-      throw new Error("Failed to create auth user")
-    }
-
-    const { error: insertError } = await adminClient.from("users").insert({
-      auth_id: authData.user.id,
-      email: email.toLowerCase().trim(),
+    const { error: insertError } = await adminClient.from("user_credentials").insert({
       name: name.trim(),
       badge_number: badge_number.toUpperCase().trim(),
+      email: email.toLowerCase().trim(),
+      password_hash: hashedPassword,
       role,
       centre,
-      is_active: true,
+      created_by: created_by || null,
       created_at: new Date().toISOString(),
     })
 
     if (insertError) {
-      await adminClient.auth.admin.deleteUser(authData.user.id)
       if (insertError.message.includes("duplicate")) {
-        return badRequest("Badge number already exists")
+        return badRequest("Credentials already exist for this badge number")
       }
-      throw new Error("Failed to create user profile")
+      throw insertError
     }
 
     return new Response(
       JSON.stringify({
         success: true,
-        user_id: authData.user.id,
-        message: `User created: ${email} (${role})`
+        message: "Credential stored securely"
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     )
 
   } catch (err) {
-    console.error("Create user error:", err)
+    console.error("Save credential error:", err)
     return serverError("Internal server error")
   }
 })

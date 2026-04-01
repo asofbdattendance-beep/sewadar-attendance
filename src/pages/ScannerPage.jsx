@@ -3,6 +3,8 @@ import { supabase, getDistanceMetres, ROLES, isExceptionDept, DUTY_TYPES } from 
 import { nowIST, todayDateStr } from '../lib/dateUtils'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
+import ManualTimeInputPopup from '../components/ManualTimeInputPopup'
+import ManualCloseTimePopup from '../components/ManualCloseTimePopup'
 import { MapPin, AlertTriangle, CheckCircle, XCircle, PenLine, Moon } from 'lucide-react'
 import { showError } from '../components/Toast'
 import {
@@ -14,6 +16,7 @@ import {
   getOpenSession,
   asoForceCloseSession,
   executeStandaloneOut,
+  closeSessionWithTime,
 } from '../lib/sessionLogic'
 
 export default function ScannerPage() {
@@ -39,6 +42,8 @@ export default function ScannerPage() {
   const safetyTimerRef = useRef(null)
   const sewadarCacheRef = useRef(new Map())
   const popupStateRef = useRef(null)
+  const lastScanBadgeRef = useRef(null)
+  const lastScanTimeRef = useRef(0)
 
   const isAso = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE
@@ -53,7 +58,7 @@ export default function ScannerPage() {
       const children = childRes.data?.map(c => c.centre_name) || []
       setChildCentres(children)
       childCentresRef.current = children
-    }).catch(e => console.warn('Failed to load centre config:', e))
+    }).catch(e => { if (import.meta.env.DEV) console.warn('Failed to load centre config:', e) })
   }, [profile?.centre, isAso])
 
   useEffect(() => {
@@ -70,7 +75,7 @@ export default function ScannerPage() {
   }, [])
 
   useEffect(() => {
-    fetchTodayCount().catch(console.error)
+    fetchTodayCount().catch(() => {})
     let debounceTimer = null
     const channel = supabase.channel('scanner-count')
       .on('postgres_changes', { 
@@ -79,7 +84,7 @@ export default function ScannerPage() {
         table: 'attendance',
       }, () => {
         clearTimeout(debounceTimer)
-        debounceTimer = setTimeout(() => fetchTodayCount().catch(console.error), 500)
+        debounceTimer = setTimeout(() => fetchTodayCount().catch(() => {}), 500)
       })
       .subscribe()
     return () => {
@@ -89,11 +94,11 @@ export default function ScannerPage() {
   }, [profile?.centre, profile?.role, profile])
 
   useEffect(() => {
-    fetchRecentScans().catch(console.error)
+    fetchRecentScans().catch(() => {})
   }, [profile?.centre, profile?.role, profile])
 
   useEffect(() => {
-    console.log('[POPUP STATE UPDATED]', popupState?.type || 'null')
+    if (import.meta.env.DEV) console.log('[POPUP STATE UPDATED]', popupState?.type || 'null')
     popupStateRef.current = popupState
     if (popupState && safetyTimerRef.current) {
       clearTimeout(safetyTimerRef.current)
@@ -178,26 +183,36 @@ export default function ScannerPage() {
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2)
         osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.25)
       }
-    } catch (e) { console.warn('Beep failed:', e) }
+    } catch (e) { if (import.meta.env.DEV) console.warn('Beep failed:', e) }
     if (navigator.vibrate) {
       navigator.vibrate(type === 'IN' ? [30] : [30, 50, 30])
     }
   }
 
   const handleScan = useCallback(async (badge) => {
-    console.log('[SCAN FIRED]', badge)
-    if (busyRef.current) { console.log('[BLOCKED] busyRef'); return }
+    if (import.meta.env.DEV) console.log('[SCAN FIRED]', badge)
+    if (busyRef.current) { if (import.meta.env.DEV) console.log('[BLOCKED] busyRef'); return }
+
+    // Check for duplicate scan (same badge within 3 seconds)
+    const now = Date.now()
+    if (lastScanBadgeRef.current === badge && now - lastScanTimeRef.current < 3000) {
+      if (import.meta.env.DEV) console.log('[BLOCKED] duplicate scan')
+      return
+    }
 
     busyRef.current = true
+    lastScanBadgeRef.current = badge
+    lastScanTimeRef.current = now
+    
     if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
     safetyTimerRef.current = setTimeout(() => {
-      console.log('[TIMEOUT] releasing busyRef')
+      if (import.meta.env.DEV) console.log('[TIMEOUT] releasing busyRef')
       if (busyRef.current) busyRef.current = false
       safetyTimerRef.current = null
     }, 5000)
 
     const openPopup = (state) => {
-      console.log('[POPUP]', state.type)
+      if (import.meta.env.DEV) console.log('[POPUP]', state.type)
       if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
       if (scannerRef.current) scannerRef.current.stop()
       lastScanRef.current = { badge, time: Date.now() }
@@ -205,7 +220,7 @@ export default function ScannerPage() {
     }
 
     const release = () => {
-      console.log('[RELEASE]')
+      if (import.meta.env.DEV) console.log('[RELEASE]')
       busyRef.current = false
       if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
     }
@@ -274,7 +289,7 @@ export default function ScannerPage() {
 
       await processSewadar(found, badge, scanTime)
     } catch (e) {
-      console.error('[HANDLE SCAN ERROR]', e?.message || e, e?.stack)
+      if (import.meta.env.DEV) console.error('[HANDLE SCAN ERROR]', e?.message || e, e?.stack)
       release()
       openPopup({ type: 'not_found', badge, message: 'System error: ' + (e?.message || String(e)) })
     }
@@ -291,18 +306,18 @@ export default function ScannerPage() {
   }
 
   async function processSewadar(found, badge, scanTime, watchWardConfirm = false) {
-    console.log('[PROC] start', { badge, scanTime, found: !!found })
+    if (import.meta.env.DEV) console.log('[PROC] start', { badge, scanTime, found: !!found })
     let scanTimeISO
     try {
       const parsed = new Date(scanTime.replace(' ', 'T'))
       if (isNaN(parsed.getTime())) throw new Error('Invalid scanTime: ' + scanTime)
       scanTimeISO = parsed.toISOString()
     } catch (e) {
-      console.error('[PROC] scanTime parse failed:', e)
+      if (import.meta.env.DEV) console.error('[PROC] scanTime parse failed:', e)
       openPopup({ type: 'not_found', badge, message: 'System error: bad scan time' })
       return
     }
-    console.log('[PROC] scanTimeISO =', scanTimeISO)
+    if (import.meta.env.DEV) console.log('[PROC] scanTimeISO =', scanTimeISO)
     const today = todayDateStr()
 
     const openPopup = (state) => {
@@ -319,7 +334,7 @@ export default function ScannerPage() {
       ])
 
       const actionType = openSession ? 'OUT' : 'IN'
-      console.log('[PROC] actionType =', actionType, '| openSession =', !!openSession)
+      if (import.meta.env.DEV) console.log('[PROC] actionType =', actionType, '| openSession =', !!openSession)
 
       let evalResult
       try {
@@ -331,9 +346,9 @@ export default function ScannerPage() {
           isAso,
           isCentreUser,
         })
-        console.log('[PROC] evaluateScan result:', evalResult)
+        if (import.meta.env.DEV) console.log('[PROC] evaluateScan result:', evalResult)
       } catch (e) {
-        console.error('[PROC] evaluateScan threw:', e)
+        if (import.meta.env.DEV) console.error('[PROC] evaluateScan threw:', e)
         openPopup({ type: 'not_found', badge, message: 'System error: ' + (e?.message || String(e)) })
         return
       }
@@ -374,7 +389,24 @@ export default function ScannerPage() {
       }
 
       if (result.status === 'needs_watch_ward_confirmation') {
-        openPopup({ type: 'open_session_block', sewadar: found, badge, openSession: result.openSession || null, todaySessions })
+        // New behavior: Show popup asking if this is Watch & Ward or forgot to scan OUT
+        const oldSessionDate = result.openSession?.date_ist 
+          ? new Date(result.openSession.date_ist + 'T12:00:00+05:30').toLocaleDateString('en-IN', { 
+              day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' 
+            })
+          : 'previous day'
+          
+        openPopup({ 
+          type: 'watch_ward_confirm', 
+          sewadar: found, 
+          badge, 
+          openSession: result.openSession,
+          todaySessions,
+          oldSessionDate,
+          reason: result.reason,
+          oldSessionWasSatsang: result.oldSessionWasSatsang || false,
+          oldSessionInDate: result.oldSessionInDate || null,
+        })
         return
       }
 
@@ -382,14 +414,14 @@ export default function ScannerPage() {
         openPopup({ type: 'found', sewadar: found, badge, allowedAction: actionType, todaySessions, dutyType: result.dutyType, watchWard: watchWardConfirm, openSession })
       }
     } catch (err) {
-      console.error('[Scanner] processSewadar threw:', err)
+      if (import.meta.env.DEV) console.error('[Scanner] processSewadar threw:', err)
       openPopup({ type: 'not_found', badge, message: err.message })
     }
   }
 
   const markAttendance = async (type, data, overrideData = null) => {
     if (!data?.found) {
-      console.warn('[markAttendance] no data.found, data:', data)
+      if (import.meta.env.DEV) console.warn('[markAttendance] no data.found, data:', data)
       showError('Something went wrong. Please try again.')
       return
     }
@@ -454,6 +486,7 @@ export default function ScannerPage() {
         longitude: userLocation?.lng || null,
         manual_entry: false,
         submitted_by: profile.badge_number || 'UNKNOWN',
+        // Note: closePreviousSession is handled in ManualCloseTimePopup now
       })
 
       playBeep(type)
@@ -473,8 +506,36 @@ export default function ScannerPage() {
       fetchTodayCount()
       fetchRecentScans()
     } catch (err) {
-      console.error('[markAttendance]', err?.message || err, err?.stack)
-      showError('Error: ' + (err?.message || String(err)))
+      if (import.meta.env.DEV) console.error('[markAttendance]', err?.message || err, err?.stack)
+      
+      // Check for special error that needs manual time input
+      const errMsg = err?.message || String(err)
+      if (errMsg.startsWith('SESSION_EXCEEDS_LIMIT:')) {
+        try {
+          const data = JSON.parse(errMsg.replace('SESSION_EXCEEDS_LIMIT:', ''))
+          // Show popup to ask for manual OUT time
+          // Need to get current open session for the popup
+          const sessionData = type === 'OUT' 
+            ? await getOpenSession(supabase, found.badge_number)
+            : null
+          
+          setPopupState({
+            type: 'manual_time_input',
+            sewadar: found,
+            badge: badge,
+            sessionData: {
+              sessionId: sessionData?.id,
+              in_time: data.in_time,
+              max_hours: data.max_hours,
+            },
+          })
+          return
+        } catch (_) {
+          // If parsing fails, show generic error
+        }
+      }
+      
+      showError('Error: ' + errMsg)
     }
   }
 
@@ -590,6 +651,73 @@ export default function ScannerPage() {
                 onMark={markAttendance}
                 onClose={closePopup}
               />
+            )}
+
+            {/* Watch & Ward Confirmation - for previous day open session */}
+            {popupState.type === 'watch_ward_confirm' && (
+              <div className="popup-card" style={{ maxWidth: 380 }}>
+                <div style={{ textAlign: 'center', padding: '1.5rem' }}>
+                  <div style={{ width: 56, height: 56, background: 'rgba(59,130,246,0.15)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+                    <AlertTriangle size={28} color="#3b82f6" />
+                  </div>
+                  <h3 style={{ marginBottom: '0.5rem', color: 'var(--text-primary)' }}>Open Session Found</h3>
+                  <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', fontSize: '0.9rem' }}>
+                    You have an open session from <strong>{popupState.oldSessionDate}</strong>. What would you like to do?
+                  </p>
+                  <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.75rem', marginBottom: '1rem', textAlign: 'left' }}>
+                    <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>{popupState.sewadar?.sewadar_name}</div>
+                    <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>{popupState.badge}</div>
+                    {popupState.openSession?.in_time && (
+                      <div style={{ fontSize: '0.78rem', color: 'var(--gold)', marginTop: '0.25rem' }}>
+                        IN at {new Date(popupState.openSession.in_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: 'grid', gap: '0.75rem' }}>
+                    <button 
+                      className="btn btn-primary btn-full" 
+                      onClick={() => {
+                        // Yes - Watch & Ward - also ask for when they left, then compute duty type normally
+                        setPopupState({
+                          type: 'manual_close_time',
+                          sewadar: popupState.sewadar,
+                          badge: popupState.badge,
+                          openSession: popupState.openSession,
+                          isSatsangDay: popupState.oldSessionWasSatsang,
+                          oldInDate: popupState.oldSessionInDate,
+                          mode: 'watch_ward',
+                        })
+                      }}
+                    >
+                      Yes - Watch & Ward (Overnight)
+                    </button>
+                    <button 
+                      className="btn btn-outline btn-full" 
+                      onClick={() => {
+                        // No - forgot to scan OUT - show popup to enter time/date
+                        setPopupState({
+                          type: 'manual_close_time',
+                          sewadar: popupState.sewadar,
+                          badge: popupState.badge,
+                          openSession: popupState.openSession,
+                          isSatsangDay: popupState.oldSessionWasSatsang,
+                          oldInDate: popupState.oldSessionInDate,
+                          mode: 'forgot_out',
+                        })
+                      }}
+                    >
+                      No - Forgot to Scan OUT
+                    </button>
+                    <button 
+                      className="btn btn-ghost" 
+                      onClick={closePopup}
+                      style={{ fontSize: '0.85rem' }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
             )}
 
             {popupState.type === 'jatha_block' && (
@@ -712,6 +840,98 @@ export default function ScannerPage() {
                   {popupState.time ? new Date(popupState.time.replace(' ', 'T')).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}
                 </div>
               </div>
+            )}
+
+            {/* Manual Time Input Popup */}
+            {popupState.type === 'manual_time_input' && (
+              <ManualTimeInputPopup
+                sessionData={popupState.sessionData}
+                sewadar={popupState.sewadar}
+                badge={popupState.badge}
+                action={popupState.action}
+                onSubmit={async (outTime) => {
+                  try {
+                    await closeSessionWithTime(supabase, {
+                      sessionId: popupState.sessionData.sessionId,
+                      badge_number: popupState.badge,
+                      outTimeISO: outTime,
+                      scanner_badge: profile.badge_number,
+                      scanner_name: profile.name,
+                      scanner_centre: profile.centre,
+                      reason: 'Session exceeded ' + popupState.sessionData.max_hours + ' hours',
+                    })
+                    playBeep('OUT')
+                    setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: 'OUT', time: outTime })
+                    setTimeout(closePopup, 1200)
+                    fetchTodayCount()
+                    fetchRecentScans()
+                  } catch (err) {
+                    showError('Error: ' + (err?.message || String(err)))
+                  }
+                }}
+                onClose={closePopup}
+              />
+            )}
+
+            {/* Manual Close Time Popup - Forgot to Scan OUT */}
+            {popupState.type === 'manual_close_time' && (
+              <ManualCloseTimePopup
+                sessionData={{
+                  in_time: popupState.openSession?.in_time,
+                }}
+                sewadar={popupState.sewadar}
+                badge={popupState.badge}
+                isSatsangDay={popupState.isSatsangDay}
+                oldInDate={popupState.oldInDate}
+                mode={popupState.mode}
+                onSubmit={async (outTime) => {
+                  try {
+                    const isWatchWard = popupState.mode === 'watch_ward'
+                    
+                    // Close the previous session with user-provided time
+                    await closeSessionWithTime(supabase, {
+                      sessionId: popupState.openSession?.id,
+                      badge_number: popupState.badge,
+                      outTimeISO: outTime,
+                      scanner_badge: profile.badge_number,
+                      scanner_name: profile.name,
+                      scanner_centre: profile.centre,
+                      reason: isWatchWard ? 'Watch & Ward session closed' : 'User confirmed forgot to scan OUT',
+                    })
+                    
+                    // Now create new IN session - compute duty type based on CURRENT day/time
+                    const newInTime = nowIST()
+                    const newInTimeISO = new Date(newInTime.replace(' ', 'T')).toISOString()
+                    const newDutyType = computeDutyType(newInTimeISO, false)
+                    
+                    await executeScan(supabase, {
+                      badge_number: popupState.badge,
+                      sewadar_name: popupState.sewadar?.sewadar_name,
+                      centre: popupState.sewadar?.centre,
+                      department: popupState.sewadar?.department,
+                      type: 'IN',
+                      scanTimeISO: newInTimeISO,
+                      dutyType: newDutyType,
+                      openSession: null,
+                      scanner_badge: profile.badge_number,
+                      scanner_name: profile.name,
+                      scanner_centre: profile.centre,
+                      latitude: userLocation?.lat || null,
+                      longitude: userLocation?.lng || null,
+                      manual_entry: false,
+                      submitted_by: profile.badge_number,
+                    })
+                    playBeep('IN')
+                    setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: 'IN', time: newInTime })
+                    setTimeout(closePopup, 1200)
+                    fetchTodayCount()
+                    fetchRecentScans()
+                  } catch (err) {
+                    showError('Error: ' + (err?.message || String(err)))
+                  }
+                }}
+                onClose={closePopup}
+              />
             )}
           </div>
         </div>

@@ -95,11 +95,11 @@ function AppLayout() {
       const { count } = await query
       setOpenFlagCount(count || 0)
     }
-    fetchFlagCount().catch(console.warn)
+    fetchFlagCount().catch(() => {})
     let flagInterval = setInterval(() => {
-      if (document.visibilityState === 'visible') fetchFlagCount().catch(console.warn)
+      if (document.visibilityState === 'visible') fetchFlagCount().catch(() => {})
     }, 60000)
-    const onVisible = () => { if (document.visibilityState === 'visible') fetchFlagCount().catch(console.warn) }
+    const onVisible = () => { if (document.visibilityState === 'visible') fetchFlagCount().catch(() => {}) }
     document.addEventListener('visibilitychange', onVisible)
 
     const rtChannel = supabase.channel('global-status')

@@ -85,7 +85,7 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
 
   useEffect(() => {
     fetchRecords()
-  }, [page, dateRange, centreFilter, dutyFilter, statusFilter])
+  }, [page, dateRange, centreFilter, dutyFilter, statusFilter, searchTerm])
 
   async function fetchCentres() {
     let q = supabase.from('centres').select('centre_name, parent_centre').order('centre_name')
@@ -135,7 +135,7 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
     const { data, count, error } = await q.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
     setLoading(false)
     if (error) {
-      console.warn('[Records] fetch failed:', error)
+      if (import.meta.env.DEV) console.warn('[Records] fetch failed:', error)
       return
     }
 
@@ -144,8 +144,8 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
 
     if (flaggedIds.length > 0) {
       const { data: flagsData } = await supabase
-        .from('flags')
-        .select('id, session_id, reason, status')
+        .from('queries')
+        .select('id, session_id, issue_description, status')
         .in('session_id', flaggedIds)
         .neq('status', 'resolved')
 
@@ -153,7 +153,7 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
 
       for (const session of sessions) {
         if (session.flagged && flagsMap[session.id]) {
-          session.flag_reason = flagsMap[session.id].reason
+          session.flag_reason = flagsMap[session.id].issue_description
           session.flag_status = flagsMap[session.id].status
         }
       }
@@ -167,33 +167,79 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
     setDeleteConfirm(record)
   }
 
-  function exportAttendanceCSV() {
-    if (!records.length) return
-    const header = ['Badge', 'Name', 'Centre', 'Department', 'Duty Type', 'IN Date', 'IN Time', 'IN Scanner', 'OUT Date', 'OUT Time', 'OUT Scanner', 'Duration', 'Status']
-    const rows = records.map(r => {
-      const inDate = formatDateStr(r.date_ist)
-      const outDate = r.out_time ? formatDateStr(scanTimeToISTDate(r.out_time)) : ''
-      return [
-        csvEscape(r.badge_number),
-        csvEscape(r.sewadar_name),
-        csvEscape(r.centre),
-        csvEscape(r.department || ''),
-        csvEscape(DUTY_TYPE_LABEL[r.duty_type] || r.duty_type),
-        csvEscape(inDate),
-        formatTime(r.in_time),
-        csvEscape(r.in_scanner_name || r.scanner_name || ''),
-        csvEscape(outDate),
-        formatTime(r.out_time),
-        csvEscape(r.out_scanner_name || ''),
-        formatDuration(r.in_time, r.out_time) || '',
-        r.is_open ? 'Open' : r.force_closed ? 'Corrected' : 'Complete',
-      ]
-    })
-    const csv = [header, ...rows].map(r => r.join(',')).join('\n')
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = `attendance_${dateRange.from}_${dateRange.to}.csv`
-    a.click()
+  async function exportAttendanceCSV() {
+    showSuccess('Preparing export...')
+    
+    try {
+      let q = supabase
+        .from('attendance_sessions')
+        .select('*')
+        .gte('date_ist', dateRange.from)
+        .lte('date_ist', dateRange.to)
+        .order('date_ist', { ascending: false })
+        .order('in_time', { ascending: false })
+
+      // Centre scope
+      if (isCentreUser && profile?.centre) {
+        const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
+        q = q.in('centre', scope)
+      } else if (centreFilter) {
+        q = q.eq('centre', centreFilter)
+      }
+
+      // Search
+      if (searchTerm.trim()) {
+        q = q.or(`badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`)
+      }
+
+      // Duty type filter
+      if (dutyFilter) {
+        q = q.eq('duty_type', dutyFilter)
+      }
+
+      // Status filter
+      if (statusFilter === 'open') {
+        q = q.eq('is_open', true)
+      } else if (statusFilter === 'closed') {
+        q = q.eq('is_open', false)
+      }
+
+      const { data: allSessions } = await q
+
+      if (!allSessions?.length) {
+        showError('No data to export')
+        return
+      }
+
+      const header = ['Badge', 'Name', 'Centre', 'Department', 'Duty Type', 'IN Date', 'IN Time', 'IN Scanner', 'OUT Date', 'OUT Time', 'OUT Scanner', 'Duration', 'Status']
+      const rows = allSessions.map(r => {
+        const inDate = formatDateStr(r.date_ist)
+        const outDate = r.out_time ? formatDateStr(scanTimeToISTDate(r.out_time)) : ''
+        return [
+          csvEscape(r.badge_number),
+          csvEscape(r.sewadar_name),
+          csvEscape(r.centre),
+          csvEscape(r.department || ''),
+          csvEscape(DUTY_TYPE_LABEL[r.duty_type] || r.duty_type),
+          csvEscape(inDate),
+          formatTime(r.in_time),
+          csvEscape(r.in_scanner_name || r.scanner_name || ''),
+          csvEscape(outDate),
+          formatTime(r.out_time),
+          csvEscape(r.out_scanner_name || ''),
+          formatDuration(r.in_time, r.out_time) || '',
+          r.is_open ? 'Open' : r.force_closed ? 'Corrected' : 'Complete',
+        ]
+      })
+      const csv = [header, ...rows].map(r => r.join(',')).join('\n')
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+      a.download = `attendance_${dateRange.from}_${dateRange.to}.csv`
+      a.click()
+      showSuccess(`Exported ${allSessions.length} records`)
+    } catch (err) {
+      showError('Export failed: ' + err.message)
+    }
   }
 
   async function doDelete() {
@@ -204,8 +250,8 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
       // Step 1: Clear session_id on attendance records (removes FK reference, allows session delete)
       await supabase.from('attendance').update({ session_id: null }).eq('session_id', id)
 
-      // Step 2: Clear session_id on flags (preserve flags, just unlink the session)
-      await supabase.from('flags').update({ session_id: null }).eq('session_id', id)
+      // Step 2: Clear session_id on queries (preserve flags, just unlink the session)
+      await supabase.from('queries').update({ session_id: null }).eq('session_id', id)
 
       // Step 3: Delete the session
       const { error } = await supabase.from('attendance_sessions').delete().eq('id', id)
@@ -241,11 +287,11 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
 
     try {
       const { data: existing } = await supabase
-        .from('flags')
+        .from('queries')
         .select('id')
         .eq('session_id', flagModal.id)
         .in('status', ['open', 'in_progress'])
-        .maybeSingle()
+        .maybeOne()
 
       if (existing) {
         setFlagSubmitting(false)
@@ -254,14 +300,16 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
       }
 
       const { data: flag, error: flagError } = await supabase
-        .from('flags')
+        .from('queries')
         .insert({
           session_id: flagModal.id,
           raised_by_badge: profile.badge_number,
           raised_by_name: profile.name,
           raised_by_centre: profile.centre,
+          issue_description: flagReason.trim(),
           reason: flagReason.trim(),
           status: 'open',
+          flag_type: 'session_flag',
         })
         .select()
         .single()
@@ -861,7 +909,7 @@ function FlagsTab() {
   async function fetchFlags() {
     setLoading(true)
     let q = supabase
-      .from('flags')
+      .from('queries')
       .select('*', { count: 'exact' })
       .order('created_at', { ascending: false })
 
@@ -910,8 +958,8 @@ function FlagsTab() {
     setReplyText('')
 
     const [repliesRes, auditRes] = await Promise.all([
-      supabase.from('flag_replies').select('*').eq('flag_id', flag.id).order('created_at', { ascending: true }),
-      supabase.from('flag_audit_log').select('*').eq('flag_id', flag.id).order('created_at', { ascending: true }),
+      supabase.from('query_replies').select('*').eq('query_id', flag.id).order('created_at', { ascending: true }),
+      supabase.from('flag_audit_log').select('*').eq('query_id', flag.id).order('created_at', { ascending: true }),
     ])
 
     setReplies(repliesRes.data || [])
@@ -923,8 +971,8 @@ function FlagsTab() {
     setSubmittingReply(true)
 
     try {
-      await supabase.from('flag_replies').insert({
-        flag_id: activeFlag.id,
+      await supabase.from('query_replies').insert({
+        query_id: activeFlag.id,
         replied_by_badge: profile.badge_number,
         replied_by_name: profile.name,
         replied_by_centre: profile.centre,
@@ -932,7 +980,7 @@ function FlagsTab() {
       })
 
       await supabase.from('flag_audit_log').insert({
-        flag_id: activeFlag.id,
+        query_id: activeFlag.id,
         action: 'REPLY_ADDED',
         actor_badge: profile.badge_number,
         actor_name: profile.name,
@@ -941,14 +989,14 @@ function FlagsTab() {
 
       const updatedFlag = { ...activeFlag }
       if (updatedFlag.status === 'open') {
-        await supabase.from('flags').update({ status: 'in_progress', updated_at: new Date().toISOString() }).eq('id', activeFlag.id)
+        await supabase.from('queries').update({ status: 'in_progress', updated_at: new Date().toISOString() }).eq('id', activeFlag.id)
         updatedFlag.status = 'in_progress'
       }
       setActiveFlag(updatedFlag)
 
       const [repliesRes, auditRes] = await Promise.all([
-        supabase.from('flag_replies').select('*').eq('flag_id', activeFlag.id).order('created_at', { ascending: true }),
-        supabase.from('flag_audit_log').select('*').eq('flag_id', activeFlag.id).order('created_at', { ascending: true }),
+        supabase.from('query_replies').select('*').eq('query_id', activeFlag.id).order('created_at', { ascending: true }),
+        supabase.from('flag_audit_log').select('*').eq('query_id', activeFlag.id).order('created_at', { ascending: true }),
       ])
       setReplies(repliesRes.data || [])
       setAuditLog(auditRes.data || [])
@@ -965,7 +1013,7 @@ function FlagsTab() {
     setSubmittingResolve(true)
 
     try {
-      await supabase.from('flags').update({
+      await supabase.from('queries').update({
         status: 'resolved',
         resolved_by: profile.badge_number,
         resolved_at: new Date().toISOString(),
@@ -980,7 +1028,7 @@ function FlagsTab() {
       }
 
       await supabase.from('flag_audit_log').insert({
-        flag_id: activeFlag.id,
+        query_id: activeFlag.id,
         action: 'RESOLVED',
         actor_badge: profile.badge_number,
         actor_name: profile.name,
@@ -1063,7 +1111,7 @@ function FlagsTab() {
                       )}
                     </div>
                   </div>
-                  <div style={{ paddingLeft: '1.1rem', fontSize: '0.82rem', color: '#dc2626', fontWeight: 500 }}>&ldquo;{flag.reason}&rdquo;</div>
+                  <div style={{ paddingLeft: '1.1rem', fontSize: '0.82rem', color: '#dc2626', fontWeight: 500 }}>&ldquo;{flag.issue_description}&rdquo;</div>
                   <div style={{ paddingLeft: '1.1rem', fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
                     Raised by {flag.raised_by_name} · {new Date(flag.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
                   </div>
