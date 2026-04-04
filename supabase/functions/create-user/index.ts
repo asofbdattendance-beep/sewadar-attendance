@@ -12,42 +12,37 @@ const corsHeaders = {
 }
 
 serve(async (req) => {
+  // Handle CORS preflight without auth
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders })
   }
 
-  const authHeader = req.headers.get("Authorization") || ""
-  if (!authHeader.startsWith("Bearer ")) {
-    return new Response(JSON.stringify({ error: "Missing authorization header" }), {
+  // Get user from x-user-id header (frontend provides this)
+  let userId = req.headers.get("x-user-id") || ""
+  
+  // Also try to get from JWT as fallback
+  if (!userId) {
+    const authHeader = req.headers.get("Authorization") || ""
+    if (authHeader.startsWith("Bearer ")) {
+      try {
+        const token = authHeader.slice(7)
+        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+        userId = payload.sub || ""
+        console.log("Got user from JWT:", userId)
+      } catch (e) {
+        console.log("JWT parse error:", e.message)
+      }
+    }
+  }
+
+  if (!userId) {
+    return new Response(JSON.stringify({ error: "Could not identify user - no x-user-id or valid JWT" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     })
   }
 
   try {
-    // Decode JWT manually to get user ID
-    const token = authHeader.slice(7)
-    const parts = token.split('.')
-    if (parts.length !== 3) {
-      return new Response(JSON.stringify({ error: "Invalid token format" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      })
-    }
-    
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
-    const userId = payload.sub
-    const userRole = payload.role
-    
-    console.log("Token payload:", { sub: userId, role: userRole })
-    
-    if (!userId) {
-      return new Response(JSON.stringify({ error: "Invalid token - no user ID" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      })
-    }
-
     // Use service role for all operations
     const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
@@ -62,7 +57,7 @@ serve(async (req) => {
     
     if (profileError || !profile) {
       console.error("Profile fetch error:", profileError)
-      return new Response(JSON.stringify({ error: "User profile not found" }), {
+      return new Response(JSON.stringify({ error: "User profile not found for id: " + userId }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       })

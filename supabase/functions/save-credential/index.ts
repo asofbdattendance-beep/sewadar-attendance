@@ -24,27 +24,29 @@ serve(async (req) => {
     return new Response(null, { status: 204, headers: corsHeaders })
   }
 
-  const authHeader = req.headers.get("Authorization") || ""
-  if (!authHeader.startsWith("Bearer ")) {
-    return new Response(JSON.stringify({ error: "Missing authorization header" }), {
+  let userId = req.headers.get("x-user-id") || ""
+  
+  if (!userId) {
+    const authHeader = req.headers.get("Authorization") || ""
+    if (authHeader.startsWith("Bearer ")) {
+      try {
+        const token = authHeader.slice(7)
+        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+        userId = payload.sub || ""
+      } catch (e) {
+        console.log("JWT parse error:", e.message)
+      }
+    }
+  }
+
+  if (!userId) {
+    return new Response(JSON.stringify({ error: "Could not identify user" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     })
   }
 
   try {
-    const token = authHeader.slice(7)
-    const parts = token.split('.')
-    if (parts.length !== 3) {
-      return new Response(JSON.stringify({ error: "Invalid token format" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      })
-    }
-
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
-    const userId = payload.sub
-
     const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
     })

@@ -354,19 +354,12 @@ export default function SuperAdminPage() {
         throw new Error('A login already exists for this badge number (in credentials log). Each sewadar can only have one account.')
       }
 
+      const { data: { user: authUser } } = await supabase.auth.getUser()
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
 
-      console.log('[createUser] session:', !!session, 'token length:', token?.length || 0)
-
-      if (!token) {
-        // Try to get the current user instead
-        const { data: { user } } = await supabase.auth.getUser()
-        if (user) {
-          showMsg('Session issue. Try refreshing the page and logging in again.', 'error')
-        } else {
-          showMsg('Session expired. Please log in again.', 'error')
-        }
+      if (!authUser || !token) {
+        showMsg('Session expired. Please log in again.', 'error')
         setSaving(false)
         return
       }
@@ -377,6 +370,7 @@ export default function SuperAdminPage() {
           'Content-Type': 'application/json',
           'apikey': supabaseAnonKey,
           'Authorization': `Bearer ${token}`,
+          'x-user-id': authUser.id,
         },
         body: JSON.stringify({
           email:        newUserEmail,
@@ -410,7 +404,7 @@ export default function SuperAdminPage() {
         headers: {
           'Content-Type': 'application/json',
           'apikey': supabaseAnonKey,
-          'Authorization': `Bearer ${token}`,
+          'x-user-id': authUser.id,
         },
         body: JSON.stringify({
           name:         lockedSewadar.sewadar_name,

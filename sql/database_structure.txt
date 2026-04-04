@@ -1,0 +1,222 @@
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
+
+CREATE TABLE public.app_settings (
+  id text NOT NULL DEFAULT 'global'::text,
+  centres_updated_at timestamp with time zone DEFAULT now(),
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  settings_json jsonb DEFAULT '{}'::jsonb,
+  CONSTRAINT app_settings_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.attendance (
+  id bigint NOT NULL DEFAULT nextval('attendance_id_seq'::regclass),
+  badge_number text NOT NULL,
+  sewadar_name text NOT NULL,
+  centre text NOT NULL,
+  department text,
+  type text NOT NULL CHECK (type = ANY (ARRAY['IN'::text, 'OUT'::text])),
+  scan_time timestamp with time zone DEFAULT now(),
+  scanner_badge text NOT NULL,
+  scanner_name text NOT NULL,
+  scanner_centre text NOT NULL,
+  latitude double precision,
+  longitude double precision,
+  device_id text,
+  created_at timestamp with time zone DEFAULT now(),
+  session_id bigint,
+  manual_entry boolean NOT NULL DEFAULT false,
+  submitted_by text NOT NULL,
+  submitted_at timestamp with time zone NOT NULL DEFAULT now(),
+  duty_type text NOT NULL DEFAULT 'gate_entry'::text CHECK (duty_type = ANY (ARRAY['satsang'::text, 'gate_entry'::text, 'watch_ward'::text])),
+  CONSTRAINT attendance_pkey PRIMARY KEY (id),
+  CONSTRAINT attendance_badge_number_fkey FOREIGN KEY (badge_number) REFERENCES public.sewadars(badge_number),
+  CONSTRAINT fk_attendance_session_id FOREIGN KEY (session_id) REFERENCES public.attendance_sessions(id)
+);
+CREATE TABLE public.attendance_sessions (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  badge_number text NOT NULL,
+  sewadar_name text NOT NULL,
+  centre text NOT NULL,
+  department text,
+  duty_type text NOT NULL DEFAULT 'gate_entry'::text CHECK (duty_type = ANY (ARRAY['satsang'::text, 'gate_entry'::text, 'watch_ward'::text])),
+  in_id bigint,
+  out_id bigint,
+  in_time timestamp with time zone,
+  out_time timestamp with time zone,
+  date_ist date NOT NULL,
+  is_open boolean NOT NULL DEFAULT true,
+  force_closed boolean NOT NULL DEFAULT false,
+  force_closed_reason text,
+  force_closed_by text,
+  manual_in boolean NOT NULL DEFAULT false,
+  manual_out boolean NOT NULL DEFAULT false,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  scanner_badge text,
+  scanner_name text,
+  scanner_centre text,
+  in_scanner_name text,
+  out_scanner_name text,
+  flagged boolean DEFAULT false,
+  flag_reason text,
+  flagged_by text,
+  flagged_at timestamp with time zone,
+  remark text,
+  CONSTRAINT attendance_sessions_pkey PRIMARY KEY (id),
+  CONSTRAINT attendance_sessions_badge_number_fkey FOREIGN KEY (badge_number) REFERENCES public.sewadars(badge_number),
+  CONSTRAINT fk_sessions_in_id FOREIGN KEY (in_id) REFERENCES public.attendance(id),
+  CONSTRAINT fk_sessions_out_id FOREIGN KEY (out_id) REFERENCES public.attendance(id)
+);
+CREATE TABLE public.centres (
+  id bigint NOT NULL DEFAULT nextval('centres_id_seq'::regclass),
+  centre_name text NOT NULL UNIQUE,
+  latitude double precision,
+  longitude double precision,
+  geo_radius integer DEFAULT 200,
+  geo_enabled boolean DEFAULT false,
+  created_at timestamp with time zone DEFAULT now(),
+  parent_centre text,
+  CONSTRAINT centres_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.flag_audit_log (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  query_id bigint,
+  action text NOT NULL,
+  actor_badge text NOT NULL,
+  actor_name text NOT NULL,
+  details text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT flag_audit_log_pkey PRIMARY KEY (id),
+  CONSTRAINT flag_audit_log_query_id_fkey FOREIGN KEY (query_id) REFERENCES public.queries(id)
+);
+CREATE TABLE public.jatha_attendance (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  badge_number text NOT NULL,
+  sewadar_name text NOT NULL,
+  centre text NOT NULL,
+  department text,
+  jatha_type text NOT NULL CHECK (jatha_type = ANY (ARRAY['major_centre'::text, 'beas'::text, 'jatha_home'::text])),
+  jatha_centre text NOT NULL,
+  jatha_dept text NOT NULL,
+  date_from date NOT NULL,
+  date_to date NOT NULL,
+  satsang_days integer NOT NULL DEFAULT 0,
+  remarks text,
+  flag boolean NOT NULL DEFAULT false,
+  flag_reason text,
+  submitted_by text NOT NULL,
+  submitted_name text,
+  submitted_centre text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT jatha_attendance_pkey PRIMARY KEY (id),
+  CONSTRAINT jatha_attendance_badge_number_fkey FOREIGN KEY (badge_number) REFERENCES public.sewadars(badge_number)
+);
+CREATE TABLE public.jatha_centres (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  jatha_type text NOT NULL CHECK (jatha_type = ANY (ARRAY['major_centre'::text, 'beas'::text, 'jatha_home'::text])),
+  centre_name text NOT NULL,
+  department text NOT NULL,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT jatha_centres_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.logs (
+  id bigint NOT NULL DEFAULT nextval('logs_id_seq'::regclass),
+  user_badge text NOT NULL,
+  action text NOT NULL,
+  details text,
+  timestamp timestamp with time zone DEFAULT now(),
+  device_id text,
+  CONSTRAINT logs_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.queries (
+  id bigint NOT NULL DEFAULT nextval('queries_id_seq'::regclass),
+  raised_by_badge text NOT NULL,
+  raised_by_name text NOT NULL,
+  attendance_id bigint,
+  issue_description text,
+  status text DEFAULT 'open'::text CHECK (status = ANY (ARRAY['open'::text, 'in_progress'::text, 'resolved'::text])),
+  resolved_by text,
+  resolved_at timestamp with time zone,
+  created_at timestamp with time zone DEFAULT now(),
+  raised_by_centre text,
+  flag_type text DEFAULT 'other'::text,
+  raised_by_role text,
+  target_centre text,
+  assigned_to text,
+  updated_at timestamp with time zone DEFAULT now(),
+  session_id bigint,
+  reason text,
+  resolved_reason text,
+  CONSTRAINT queries_pkey PRIMARY KEY (id),
+  CONSTRAINT queries_attendance_id_fkey FOREIGN KEY (attendance_id) REFERENCES public.attendance(id),
+  CONSTRAINT queries_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.attendance_sessions(id)
+);
+CREATE TABLE public.query_replies (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  query_id bigint,
+  replied_by_badge text NOT NULL,
+  replied_by_name text NOT NULL,
+  replied_by_centre text,
+  replied_by_role text,
+  message text NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT query_replies_pkey PRIMARY KEY (id),
+  CONSTRAINT query_replies_query_id_fkey FOREIGN KEY (query_id) REFERENCES public.queries(id)
+);
+CREATE TABLE public.sewadars (
+  id bigint NOT NULL DEFAULT nextval('sewadars_id_seq'::regclass),
+  badge_number text NOT NULL UNIQUE,
+  sewadar_name text NOT NULL,
+  father_husband_name text,
+  gender text CHECK (upper(gender) = ANY (ARRAY['MALE'::text, 'FEMALE'::text, 'M'::text, 'F'::text])),
+  centre text NOT NULL,
+  department text,
+  age integer,
+  badge_status text DEFAULT 'Active'::text,
+  geo_required boolean DEFAULT false,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT sewadars_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.user_credentials (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  name text NOT NULL,
+  badge_number text NOT NULL,
+  email text NOT NULL,
+  password text NOT NULL,
+  role text NOT NULL,
+  centre text NOT NULL,
+  created_by text,
+  created_at timestamp with time zone DEFAULT now(),
+  password_hash text,
+  CONSTRAINT user_credentials_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.user_permissions (
+  user_id bigint NOT NULL,
+  can_scan boolean NOT NULL DEFAULT true,
+  can_records boolean NOT NULL DEFAULT true,
+  can_reports boolean NOT NULL DEFAULT false,
+  can_jatha boolean NOT NULL DEFAULT false,
+  can_manual_entry boolean NOT NULL DEFAULT false,
+  can_flags boolean NOT NULL DEFAULT false,
+  can_edit_jatha boolean NOT NULL DEFAULT false,
+  updated_by text,
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT user_permissions_pkey PRIMARY KEY (user_id),
+  CONSTRAINT user_permissions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id)
+);
+CREATE TABLE public.users (
+  id bigint NOT NULL DEFAULT nextval('users_id_seq'::regclass),
+  auth_id uuid UNIQUE,
+  email text NOT NULL UNIQUE,
+  name text NOT NULL,
+  badge_number text NOT NULL,
+  role text NOT NULL CHECK (role = ANY (ARRAY['aso'::text, 'centre'::text])),
+  centre text NOT NULL,
+  is_active boolean DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  parent_centre text,
+  CONSTRAINT users_pkey PRIMARY KEY (id),
+  CONSTRAINT users_auth_id_fkey FOREIGN KEY (auth_id) REFERENCES auth.users(id)
+);
