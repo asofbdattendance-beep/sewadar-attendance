@@ -25,6 +25,21 @@ function formatTime(iso) {
   })
 }
 
+function extractISTDate(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+}
+
+function extractISTTime(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Kolkata'
+  })
+}
+
 function formatDuration(inTime, outTime) {
   if (!inTime || !outTime) return null
   const mins = Math.round((new Date(outTime) - new Date(inTime)) / 60000)
@@ -50,8 +65,8 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
-  const canEdit = isAso
-  const canFlag = isAso || profile?.can_flags
+  const canEdit = !!isAso
+  const canFlag = !!isAso || !!profile?.can_flags
 
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(false)
@@ -268,7 +283,18 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
   }
 
   async function doFlag() {
-    if (!flagModal || !flagReason.trim() || !profile) return
+    if (!flagModal) {
+      showError('No session selected')
+      return
+    }
+    if (!flagReason.trim()) {
+      showError('Please enter a reason for flagging')
+      return
+    }
+    if (!profile) {
+      showError('Profile not loaded. Please refresh the page.')
+      return
+    }
     setFlagSubmitting(true)
 
     try {
@@ -277,7 +303,7 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
         .select('id')
         .eq('session_id', flagModal.id)
         .in('status', ['open', 'in_progress'])
-        .maybeOne()
+        .maybeSingle()
 
       if (existing) {
         setFlagSubmitting(false)
@@ -321,7 +347,8 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
       if (onFlagRaised) onFlagRaised()
       fetchRecords()
     } catch (err) {
-      showError(err.message)
+      console.error('Flag error:', err)
+      showError(err.message || 'Failed to raise flag')
     }
 
     setFlagSubmitting(false)
@@ -403,20 +430,21 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
 
         <DateRangePicker value={dateRange} onChange={val => { setDateRange(val); setPage(1) }} />
 
-        <select value={dutyFilter} onChange={e => { setDutyFilter(e.target.value); setPage(1) }}
-          style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.6rem', background: 'var(--bg)', fontSize: '0.8rem', minHeight: 36 }}>
-          <option value="">Duty</option>
-          <option value="satsang">Satsang</option>
-          <option value="gate_entry">Gate</option>
-          <option value="watch_ward">W&W</option>
-        </select>
+        <div style={{ display: 'flex', gap: '0.35rem' }}>
+          {['', 'satsang', 'gate_entry', 'watch_ward'].map(d => (
+            <button key={d} className={`btn ${dutyFilter === d ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setDutyFilter(d); setPage(1) }} style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}>
+              {d === '' ? 'All' : d === 'satsang' ? 'Satsang' : d === 'gate_entry' ? 'Gate' : 'W&W'}
+            </button>
+          ))}
+        </div>
 
-        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
-          style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.6rem', background: 'var(--bg)', fontSize: '0.8rem', minHeight: 36 }}>
-          <option value="">Status</option>
-          <option value="open">Open</option>
-          <option value="closed">Closed</option>
-        </select>
+        <div style={{ display: 'flex', gap: '0.35rem' }}>
+          {['', 'open', 'closed'].map(s => (
+            <button key={s} className={`btn ${statusFilter === s ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setStatusFilter(s); setPage(1) }} style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}>
+              {s === '' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
 
         <div style={{ display: 'flex', gap: '0.4rem', flexShrink: 0, marginLeft: 'auto' }}>
           <button className="btn btn-ghost" onClick={fetchRecords} title="Refresh"><RefreshCw size={14} /></button>
@@ -532,10 +560,10 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                           <>
                             <button className="records-delete-btn" title="Edit session" onClick={() => { 
                               setEditingSession(r)
-                              setEditInDate(r.in_time ? r.in_time.split('T')[0] : '')
-                              setEditInTime(r.in_time ? r.in_time.slice(11, 16) : '')
-                              setEditOutDate(r.out_time ? r.out_time.split('T')[0] : '')
-                              setEditOutTime(r.out_time ? r.out_time.slice(11, 16) : '')
+                              setEditInDate(extractISTDate(r.in_time))
+                              setEditInTime(extractISTTime(r.in_time))
+                              setEditOutDate(extractISTDate(r.out_time))
+                              setEditOutTime(extractISTTime(r.out_time))
                             }}>
                               <PenLine size={13} color="var(--blue)" />
                             </button>
@@ -672,15 +700,15 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
               <div>
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>IN Time</label>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <input type="date" value={editInDate} onChange={e => setEditInDate(e.target.value)} style={{ flex: '0 0 140px', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.9rem' }} />
-                  <input type="time" value={editInTime} onChange={e => setEditInTime(e.target.value)} style={{ flex: '0 0 100px', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.9rem' }} />
+                  <input type="date" value={editInDate} onChange={e => setEditInDate(e.target.value)} style={{ width: '180px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
+                  <input type="time" value={editInTime} onChange={e => setEditInTime(e.target.value)} style={{ width: '150px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
                 </div>
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>OUT Time</label>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <input type="date" value={editOutDate} onChange={e => setEditOutDate(e.target.value)} style={{ flex: '0 0 140px', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.9rem' }} />
-                  <input type="time" value={editOutTime} onChange={e => setEditOutTime(e.target.value)} style={{ flex: '0 0 100px', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.9rem' }} />
+                  <input type="date" value={editOutDate} onChange={e => setEditOutDate(e.target.value)} style={{ width: '180px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
+                  <input type="time" value={editOutTime} onChange={e => setEditOutTime(e.target.value)} style={{ width: '150px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
                 </div>
               </div>
             </div>

@@ -127,6 +127,21 @@ export default function SuperAdminPage() {
     return () => clearTimeout(searchTimerRef.current)
   }, [])
 
+  function extractISTDate(iso) {
+    if (!iso) return ''
+    return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+  }
+
+  function extractISTTime(iso) {
+    if (!iso) return ''
+    return new Date(iso).toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Asia/Kolkata'
+    })
+  }
+
   // Debounced sewadar search (main sewadars tab)
   useEffect(() => {
     clearTimeout(searchTimerRef.current)
@@ -1045,8 +1060,8 @@ export default function SuperAdminPage() {
                     <td style={{ fontSize:'0.8rem', whiteSpace:'nowrap' }}>
                       {editingAtt?.id===r.id
                         ? <div style={{ display:'flex', gap:4, alignItems:'center' }}>
-                            <input type="date" value={editAttDate} onChange={e => setEditAttDate(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem 0.3rem', fontSize:'0.7rem', background:'white', color:'var(--text-primary)', width:'90px' }}/>
-                            <input type="time" value={editAttTime} onChange={e => setEditAttTime(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem 0.3rem', fontSize:'0.75rem', background:'white', color:'var(--text-primary)', width:'70px' }}/>
+                            <input type="date" value={editAttDate} onChange={e => setEditAttDate(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.4rem 0.5rem', fontSize:'0.85rem', background:'white', color:'var(--text-primary)', width:'130px' }}/>
+                            <input type="time" value={editAttTime} onChange={e => setEditAttTime(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.4rem 0.5rem', fontSize:'0.85rem', background:'white', color:'var(--text-primary)', width:'130px' }}/>
                           </div>
                         : new Date(r.scan_time).toLocaleDateString('en-IN', { day:'2-digit', month:'2-digit' }) + ' ' + new Date(r.scan_time).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' })}
                     </td>
@@ -1069,7 +1084,7 @@ export default function SuperAdminPage() {
                         ) : (
                           <>
                             <button style={{ background:'none', border:'1px solid #3b82f6', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'#3b82f6', display:'flex', alignItems:'center' }} title="Edit"
-                              onClick={() => { setEditingAtt(r); setEditAttDate(r.scan_time.split('T')[0]); setEditAttTime(r.scan_time.slice(11, 16)); setEditAttType(r.type) }}>
+                              onClick={() => { setEditingAtt(r); setEditAttDate(extractISTDate(r.scan_time)); setEditAttTime(extractISTTime(r.scan_time)); setEditAttType(r.type) }}>
                               <Pencil size={12}/>
                             </button>
                             <button style={{ background:'none', border:'1px solid #dc2626', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'#dc2626', display:'flex', alignItems:'center' }} title="Delete" onClick={() => deleteAttRecord(r)}>

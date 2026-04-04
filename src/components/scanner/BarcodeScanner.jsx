@@ -1,17 +1,26 @@
 /**
- * BarcodeScanner — Single-engine, cross-platform
+ * BarcodeScanner.jsx
  *
- * Uses BarcodeDetector API everywhere.
- * On Android/Chrome: native hardware-accelerated (built-in, ~2-8ms/frame)
- * On iOS/Safari + others: @undecaf/barcode-detector-polyfill (ZBar WASM, ~15-30ms/frame)
+ * Fixes applied:
+ *  - Removed non-existent `Flashlight` import from lucide-react.
+ *    Replaced with `Zap` (torch on) / `ZapOff` (torch off) — always present in
+ *    lucide-react and semantically appropriate for a flash/torch toggle.
+ *  - Added `ZapOff` import so the button correctly shows state.
+ *  - Minor: `applyTorch` guard improved — logs warning in dev if torch unsupported.
  *
- * Same code path for all devices — polyfill just fills the gap where native isn't available.
- * iOS Safari has BarcodeDetector but only supports QR/2D formats, NOT Code39/128.
- * The polyfill replaces it entirely and supports all linear barcode formats.
+ * Architecture (unchanged):
+ *  Uses BarcodeDetector API everywhere.
+ *  On Android/Chrome: native hardware-accelerated (built-in, ~2-8ms/frame)
+ *  On iOS/Safari + others: @undecaf/barcode-detector-polyfill (ZBar WASM, ~15-30ms/frame)
+ *
+ *  iOS Safari has BarcodeDetector but only supports QR/2D formats, NOT Code39/128.
+ *  The polyfill replaces it entirely and supports all linear barcode formats.
  */
 
-import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react'
-import { CameraOff, RefreshCw, Zap, Flashlight } from 'lucide-react'
+import {
+  useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback,
+} from 'react'
+import { CameraOff, RefreshCw, Zap, ZapOff } from 'lucide-react'
 
 const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{1,2}[0-9]{4}$/
 
@@ -30,7 +39,9 @@ async function hasLinearBarcodeSupport() {
 }
 
 async function loadPolyfill() {
-  const { BarcodeDetectorPolyfill } = await import(/* @vite-ignore */ '@undecaf/barcode-detector-polyfill')
+  const { BarcodeDetectorPolyfill } = await import(
+    /* @vite-ignore */ '@undecaf/barcode-detector-polyfill'
+  )
   window.BarcodeDetector = BarcodeDetectorPolyfill
 }
 
@@ -41,28 +52,27 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const detectorRef     = useRef(null)
   const mountedRef      = useRef(true)
   const lastScanRef     = useRef({ badge: null, time: 0 })
-  const isDetectingRef = useRef(false)
+  const isDetectingRef  = useRef(false)
   const scanTimerRef    = useRef(null)
   const fpsRef          = useRef({ frames: 0, last: Date.now() })
   const lastDetectRef   = useRef(0)
   const torchRef        = useRef(false)
   const callbackRef     = useRef(onScan)
+
   const [status, setStatus]           = useState('starting')
   const [errorMsg, setErrorMsg]       = useState('')
   const [lastScanned, setLastScanned] = useState('')
   const [engineLabel, setEngineLabel] = useState('')
-  const [fps, setFps]               = useState(0)
+  const [fps, setFps]                 = useState(0)
   const [torchOn, setTorchOn]         = useState(false)
 
-  useEffect(() => {
-    callbackRef.current = onScan
-  }, [onScan])
+  useEffect(() => { callbackRef.current = onScan }, [onScan])
 
   const stopScanner = useCallback(() => {
-    if (rafRef.current)        { cancelAnimationFrame(rafRef.current); rafRef.current = null }
-    if (scanTimerRef.current)  { clearTimeout(scanTimerRef.current); scanTimerRef.current = null }
-    if (streamRef.current)     { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
-    if (videoRef.current)       videoRef.current.srcObject = null
+    if (rafRef.current)       { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+    if (scanTimerRef.current) { clearTimeout(scanTimerRef.current); scanTimerRef.current = null }
+    if (streamRef.current)    { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null }
+    if (videoRef.current)     videoRef.current.srcObject = null
     isDetectingRef.current = false
   }, [])
 
@@ -70,12 +80,17 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     const track = streamRef.current?.getVideoTracks()[0]
     if (!track) return
     try {
-      const capabilities = track.getCapabilities()
-      if (!capabilities.torch) return
+      const capabilities = track.getCapabilities?.() || {}
+      if (!capabilities.torch) {
+        if (import.meta.env.DEV) console.warn('[Scanner] torch not supported on this device')
+        return
+      }
       track.applyConstraints({ advanced: [{ torch: on }] })
       torchRef.current = on
       setTorchOn(on)
-    } catch (_) { /* device doesn't support torch */ }
+    } catch (e) {
+      if (import.meta.env.DEV) console.warn('[Scanner] applyTorch failed:', e)
+    }
   }
 
   const toggleTorch = () => applyTorch(!torchRef.current)
@@ -86,10 +101,10 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     setStatus('loading')
     setErrorMsg('')
     setLastScanned('')
-    lastScanRef.current    = { badge: null, time: 0 }
+    lastScanRef.current   = { badge: null, time: 0 }
     fpsRef.current        = { frames: 0, last: Date.now() }
     lastDetectRef.current = 0
-    torchRef.current = false
+    torchRef.current      = false
     setTorchOn(false)
 
     const hasNative = await hasLinearBarcodeSupport()
@@ -112,7 +127,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
     try {
       detectorRef.current = new window.BarcodeDetector({
-        formats: ['code_39', 'code_128', 'codabar']
+        formats: ['code_39', 'code_128', 'codabar'],
       })
     } catch {
       if (mountedRef.current) { setStatus('error'); setErrorMsg('Failed to start barcode detector') }
@@ -126,11 +141,11 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
         video: {
           facingMode: { ideal: 'environment' },
           width:  { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
+          height: { ideal: 720,  max: 1080 },
         },
-        audio: false
+        audio: false,
       })
-      if (!mountedRef.current) { stream.getTracks().forEach(t => t.stop()); return }
+      if (!mountedRef.current) { stream.getTracks().forEach((t) => t.stop()); return }
       streamRef.current = stream
       videoRef.current.srcObject = stream
       await videoRef.current.play()
@@ -140,7 +155,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       setErrorMsg(
         err.name === 'NotAllowedError'
           ? 'Camera permission denied. Allow camera and retry.'
-          : 'Camera not available on this device.'
+          : 'Camera not available on this device.',
       )
       return
     }
@@ -162,6 +177,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
         rafRef.current = requestAnimationFrame(detect)
         return
       }
+      // Throttle: run detect at most every 80ms (~12fps) to save CPU
       if (now - lastDetectRef.current < 80) {
         rafRef.current = requestAnimationFrame(detect)
         return
@@ -169,13 +185,15 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       lastDetectRef.current = now
 
       isDetectingRef.current = true
-      detectorRef.current.detect(videoRef.current).then(barcodes => {
+      detectorRef.current.detect(videoRef.current).then((barcodes) => {
         for (const b of barcodes) {
           const text = clean(b.rawValue)
           if (text.length !== 12) continue
           if (!BADGE_REGEX.test(text)) continue
 
           const t = Date.now()
+          // De-dupe: same badge within 2 seconds is ignored at detector level.
+          // The server-side checkDuplicateScan (60s window) is the hard guard.
           if (text === lastScanRef.current.badge && t - lastScanRef.current.time < 2000) continue
 
           lastScanRef.current = { badge: text, time: t }
@@ -192,7 +210,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
         }
         isDetectingRef.current = false
         rafRef.current = requestAnimationFrame(detect)
-      }).catch(err => {
+      }).catch((err) => {
         isDetectingRef.current = false
         if (import.meta.env.DEV) console.warn('[Scanner] detect error:', err)
         rafRef.current = requestAnimationFrame(detect)
@@ -221,9 +239,9 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   }, [startScanner, stopScanner])
 
   useImperativeHandle(ref, () => ({
-    stop:    stopScanner,
-    resume:  () => { if (mountedRef.current) startScanner() },
-    restart: () => { stopScanner(); setTimeout(() => { if (mountedRef.current) startScanner() }, 100) },
+    stop:        stopScanner,
+    resume:      () => { if (mountedRef.current) startScanner() },
+    restart:     () => { stopScanner(); setTimeout(() => { if (mountedRef.current) startScanner() }, 100) },
     toggleTorch,
   }), [stopScanner, startScanner])
 
@@ -260,13 +278,16 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             <div className="scan-line" />
           </div>
 
+          {/* Torch toggle — Zap = flash on, ZapOff = flash off */}
           <button
             className="scanner-torch-btn"
             onClick={toggleTorch}
             style={{ background: torchOn ? 'rgba(255,220,0,0.9)' : 'rgba(0,0,0,0.5)' }}
             title={torchOn ? 'Flash off' : 'Flash on'}
           >
-            <Flashlight size={18} color={torchOn ? '#000' : '#fff'} />
+            {torchOn
+              ? <ZapOff size={18} color="#000" />
+              : <Zap    size={18} color="#fff" />}
           </button>
 
           <div className="scanner-fps-badge">

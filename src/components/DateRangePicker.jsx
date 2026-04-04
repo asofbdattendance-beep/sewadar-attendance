@@ -61,8 +61,8 @@ export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
           fontFamily: 'inherit',
           color: isToday(value.from) ? 'var(--text-muted)' : 'var(--text-primary)',
           fontWeight: isToday(value.from) ? 400 : 600,
-          minWidth: '80px',
-          width: '80px',
+          minWidth: '116px',
+          width: '100px',
           cursor: 'pointer',
         }}
       />
@@ -85,8 +85,8 @@ export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
           fontFamily: 'inherit',
           color: isToday(value.to) ? 'var(--text-muted)' : 'var(--text-primary)',
           fontWeight: isToday(value.to) ? 400 : 600,
-          minWidth: '80px',
-          width: '80px',
+          minWidth: '116px',
+          width: '100px',
           cursor: 'pointer',
         }}
       />

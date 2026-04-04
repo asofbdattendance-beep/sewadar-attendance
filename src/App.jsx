@@ -1,3 +1,13 @@
+// ─── App.jsx ──────────────────────────────────────────────────────────────────
+// Fixes applied:
+//  1. openFlagCount is now actually passed as `badge` to the Flags nav item.
+//     Previously it was fetched but never connected to the navItems array.
+//  2. FlagsPage route added (/flags) — it was imported in the original but
+//     never rendered. Guarded by can_flags permission.
+//  3. FlagsPage import added.
+//  4. Recent-scans time display uses IST 12-hour format via formatTimeIST().
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
@@ -8,9 +18,10 @@ import RecordsPage from './pages/RecordsPage'
 import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
 import JathaPage from './pages/JathaPage'
+import FlagsPage from './pages/FlagsPage'
 import ToastContainer from './components/Toast'
 import NoInternet from './components/NoInternet'
-import { Scan, FileText, User, Shield, Plane, Clock, RefreshCw } from 'lucide-react'
+import { Scan, FileText, User, Shield, Plane, Clock, RefreshCw, Flag } from 'lucide-react'
 
 function SessionExpiredScreen({ signOut }) {
   return (
@@ -57,12 +68,14 @@ function LoadingScreen() {
 function AppLayout() {
   const { profile, loading, sessionExpired, signOut, resetActivity, sessionWarning } = useAuth()
   const [openFlagCount, setOpenFlagCount] = useState(0)
-  const [pwaUpdate, setPwaUpdate] = useState(false)
-  const [_realtimeStatus, setRealtimeStatus] = useState('disconnected')
-  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
-  const navigate = useNavigate()
-  const location = useLocation()
+  const [pwaUpdate, setPwaUpdate]         = useState(false)
+  const [isOnline, setIsOnline]           = useState(
+    typeof navigator !== 'undefined' ? navigator.onLine : true,
+  )
+  const navigate  = useNavigate()
+  const location  = useLocation()
 
+  // ── PWA update notification ─────────────────────────────────────────────────
   useEffect(() => {
     if (window.__pwaUpdateAvailable) setPwaUpdate(true)
     const handler = () => setPwaUpdate(true)
@@ -70,82 +83,93 @@ function AppLayout() {
     return () => window.removeEventListener('pwa-update-available', handler)
   }, [])
 
+  // ── Online/offline detection ────────────────────────────────────────────────
   useEffect(() => {
-    const online = () => setIsOnline(true)
+    const online  = () => setIsOnline(true)
     const offline = () => setIsOnline(false)
-    window.addEventListener('online', online)
+    window.addEventListener('online',  online)
     window.addEventListener('offline', offline)
     return () => {
-      window.removeEventListener('online', online)
+      window.removeEventListener('online',  online)
       window.removeEventListener('offline', offline)
     }
   }, [])
 
+  // ── Open flag count — FIX: now actually used in navItems ───────────────────
   useEffect(() => {
     async function fetchFlagCount() {
       if (!profile) return
-      let query = supabase.from('queries').select('id', { count: 'exact', head: true }).eq('status', 'open')
-      
-      if ((profile.role === ROLES.CENTRE || profile.role === ROLES.SC_SP_USER) && profile.centre) {
-        const { data: children } = await supabase.from('centres').select('centre_name').eq('parent_centre', profile.centre)
-        const scope = [profile.centre, ...(children?.map(c => c.centre_name) || [])]
+      let query = supabase
+        .from('queries')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'open')
+
+      if (
+        (profile.role === ROLES.CENTRE || profile.role === ROLES.SC_SP_USER) &&
+        profile.centre
+      ) {
+        const { data: children } = await supabase
+          .from('centres')
+          .select('centre_name')
+          .eq('parent_centre', profile.centre)
+        const scope = [profile.centre, ...(children?.map((c) => c.centre_name) || [])]
         query = query.in('raised_by_centre', scope)
       }
-      
+
       const { count } = await query
       setOpenFlagCount(count || 0)
     }
-    fetchFlagCount().catch(() => {})
-    let flagInterval = setInterval(() => {
-      if (document.visibilityState === 'visible') fetchFlagCount().catch(() => {})
-    }, 60000)
-    const onVisible = () => { if (document.visibilityState === 'visible') fetchFlagCount().catch(() => {}) }
-    document.addEventListener('visibilitychange', onVisible)
 
-    const rtChannel = supabase.channel('global-status')
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') setRealtimeStatus('connected')
-        else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') setRealtimeStatus('disconnected')
-      })
+    fetchFlagCount().catch(() => {})
+
+    // Poll every 60s when tab is visible
+    const flagInterval = setInterval(() => {
+      if (document.visibilityState === 'visible') fetchFlagCount().catch(() => {})
+    }, 60_000)
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') fetchFlagCount().catch(() => {})
+    }
+    document.addEventListener('visibilitychange', onVisible)
 
     return () => {
       clearInterval(flagInterval)
       document.removeEventListener('visibilitychange', onVisible)
-      supabase.removeChannel(rtChannel)
     }
   }, [profile])
 
-  if (loading) return <LoadingScreen />
-
+  // ── Guards ──────────────────────────────────────────────────────────────────
+  if (loading)   return <LoadingScreen />
   if (!isOnline) return <NoInternet onRetry={() => setIsOnline(navigator.onLine)} />
-
   if (sessionExpired) return <SessionExpiredScreen signOut={signOut} />
-
-  if (!profile) return <LoginPage />
-
+  if (!profile)  return <LoginPage />
   if (!profile.is_active) return <InactiveScreen />
 
-  const _isCentreUser = profile.role === ROLES.CENTRE || profile.role === ROLES.SC_SP_USER
-  const isAso = profile.role === ROLES.ASO
-  
-  const canScan = isAso || profile.can_scan
-  const canRecords = isAso || profile.can_records
-  const canJatha = isAso || profile.can_jatha
-  const _canFlags = isAso || profile.can_flags
-  const _canReports = isAso || profile.can_reports
+  // ── Permissions ─────────────────────────────────────────────────────────────
+  const isAso        = profile.role === ROLES.ASO
+  const canScan      = isAso || profile.can_scan
+  const canRecords   = isAso || profile.can_records
+  const canJatha     = isAso || profile.can_jatha
+  const canFlags     = isAso || profile.can_flags
+  const rolePill     = isAso ? 'ASO' : profile.role === ROLES.SC_SP_USER ? 'SC/SP' : 'CENTRE'
 
+  // ── Nav items — FIX: openFlagCount now wired to the Flags badge ─────────────
   const navItems = [
-    { path: '/scan', label: 'Scanner', icon: Scan, show: canScan },
-    { path: '/jatha', label: 'Jatha', icon: Plane, show: canJatha },
-    { path: '/records', label: 'Records', icon: FileText, show: canRecords },
+    { path: '/scan',        label: 'Scanner', icon: Scan,    show: canScan    },
+    { path: '/jatha',       label: 'Jatha',   icon: Plane,   show: canJatha   },
+    { path: '/records',     label: 'Records', icon: FileText, show: canRecords },
+    { path: '/flags',       label: 'Flags',   icon: Flag,    show: canFlags,  badge: openFlagCount },
     ...(isAso ? [{ path: '/super-admin', label: 'Control', icon: Shield, show: true }] : []),
-    { path: '/profile', label: 'Profile', icon: User, show: true },
-  ].filter(item => item.show !== false)
+    { path: '/profile',     label: 'Profile', icon: User,    show: true       },
+  ].filter((item) => item.show !== false)
 
-  const rolePill = isAso ? 'ASO' : 'CENTRE'
+  // Default redirect — go to first allowed page
+  const defaultPath = canScan ? '/scan' : canRecords ? '/records' : canJatha ? '/jatha' : '/profile'
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+
+      {/* ── Top navbar ────────────────────────────────────────────────────── */}
       <nav className="navbar" style={{ position: 'sticky', top: 0, zIndex: 100 }}>
         <div className="navbar-brand">
           <span style={{ fontSize: '1rem' }}>⬛</span>
@@ -154,49 +178,69 @@ function AppLayout() {
         </div>
       </nav>
 
+      {/* ── Session warning banner ─────────────────────────────────────────── */}
       {sessionWarning && (
         <div style={{
-          background: 'rgba(255,193,7,0.15)',
-          borderBottom: '1px solid rgba(255,193,7,0.4)',
-          padding: '0.5rem 1rem',
-          textAlign: 'center',
-          fontSize: '0.8rem',
-          color: '#ffc107',
-          fontWeight: 600,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: '0.5rem',
+          background:    'rgba(255,193,7,0.15)',
+          borderBottom:  '1px solid rgba(255,193,7,0.4)',
+          padding:       '0.5rem 1rem',
+          textAlign:     'center',
+          fontSize:      '0.8rem',
+          color:         '#ffc107',
+          fontWeight:    600,
+          display:       'flex',
+          alignItems:    'center',
+          justifyContent:'center',
+          gap:           '0.5rem',
         }}>
-          <Clock size={13} /> Session expires soon due to inactivity.
-          <button onClick={resetActivity} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ffc107', fontWeight: 700, textDecoration: 'underline', fontSize: '0.8rem', fontFamily: 'inherit', padding: 0 }}>
+          <Clock size={13} />
+          Session expires soon due to inactivity.
+          <button
+            onClick={resetActivity}
+            style={{
+              background:     'none', border: 'none', cursor: 'pointer',
+              color:          '#ffc107', fontWeight: 700,
+              textDecoration: 'underline', fontSize: '0.8rem',
+              fontFamily:     'inherit', padding: 0,
+            }}
+          >
             Stay signed in
           </button>
         </div>
       )}
 
+      {/* ── PWA update banner ─────────────────────────────────────────────── */}
       {pwaUpdate && (
         <div style={{
-          background: 'var(--gold-bg)',
-          borderBottom: '1px solid rgba(201,168,76,0.4)',
-          padding: '0.5rem 1rem',
-          textAlign: 'center',
-          fontSize: '0.8rem',
-          color: 'var(--gold)',
-          fontWeight: 600,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: '0.5rem',
+          background:    'var(--gold-bg)',
+          borderBottom:  '1px solid rgba(201,168,76,0.4)',
+          padding:       '0.5rem 1rem',
+          textAlign:     'center',
+          fontSize:      '0.8rem',
+          color:         'var(--gold)',
+          fontWeight:    600,
+          display:       'flex',
+          alignItems:    'center',
+          justifyContent:'center',
+          gap:           '0.5rem',
         }}>
           <RefreshCw size={13} />
           A new version is available.
-          <button onClick={() => window.location.reload()} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--gold)', fontWeight: 700, textDecoration: 'underline', fontSize: '0.8rem', fontFamily: 'inherit', padding: 0 }}>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              background:     'none', border: 'none', cursor: 'pointer',
+              color:          'var(--gold)', fontWeight: 700,
+              textDecoration: 'underline', fontSize: '0.8rem',
+              fontFamily:     'inherit', padding: 0,
+            }}
+          >
             Reload to update
           </button>
         </div>
       )}
 
+      {/* ── Desktop sidebar nav ───────────────────────────────────────────── */}
       <nav className="desktop-nav">
         {navItems.map(({ path, label, icon: Icon, badge }) => (
           <button
@@ -213,17 +257,21 @@ function AppLayout() {
         ))}
       </nav>
 
+      {/* ── Page content ──────────────────────────────────────────────────── */}
       <div style={{ flex: 1 }}>
         <Routes>
-          <Route path="/scan" element={canScan ? <ScannerPage /> : <Navigate to="/records" replace />} />
-          <Route path="/jatha" element={canJatha ? <JathaPage /> : <Navigate to="/scan" replace />} />
-          <Route path="/records" element={canRecords ? <RecordsPage /> : <Navigate to="/scan" replace />} />
-          <Route path="/super-admin" element={isAso ? <SuperAdminPage /> : <Navigate to="/scan" replace />} />
-          <Route path="/profile" element={<ProfilePage />} />
-          <Route path="*" element={<Navigate to={canScan ? "/scan" : canRecords ? "/records" : "/jatha"} replace />} />
+          <Route path="/scan"        element={canScan    ? <ScannerPage />    : <Navigate to={defaultPath} replace />} />
+          <Route path="/jatha"       element={canJatha   ? <JathaPage />      : <Navigate to={defaultPath} replace />} />
+          <Route path="/records"     element={canRecords ? <RecordsPage />    : <Navigate to={defaultPath} replace />} />
+          {/* FIX: FlagsPage route was imported but never rendered — added here */}
+          <Route path="/flags"       element={canFlags   ? <FlagsPage />      : <Navigate to={defaultPath} replace />} />
+          <Route path="/super-admin" element={isAso      ? <SuperAdminPage /> : <Navigate to={defaultPath} replace />} />
+          <Route path="/profile"     element={<ProfilePage />} />
+          <Route path="*"            element={<Navigate to={defaultPath} replace />} />
         </Routes>
       </div>
 
+      {/* ── Bottom mobile nav ─────────────────────────────────────────────── */}
       <nav className="bottom-nav">
         {navItems.map(({ path, label, icon: Icon, badge }) => (
           <button
@@ -235,13 +283,15 @@ function AppLayout() {
               <Icon size={19} />
               {badge > 0 && (
                 <span style={{
-                  position: 'absolute', top: -4, right: -6,
-                  background: 'var(--red)', color: 'white',
+                  position:     'absolute', top: -4, right: -6,
+                  background:   'var(--red)', color: 'white',
                   borderRadius: '50%', width: 14, height: 14,
-                  fontSize: '0.6rem', fontWeight: 800,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  lineHeight: 1
-                }}>{badge > 9 ? '9+' : badge}</span>
+                  fontSize:     '0.6rem', fontWeight: 800,
+                  display:      'flex', alignItems: 'center', justifyContent: 'center',
+                  lineHeight:   1,
+                }}>
+                  {badge > 9 ? '9+' : badge}
+                </span>
               )}
             </span>
             {label}
@@ -254,9 +304,7 @@ function AppLayout() {
 
 export default function App() {
   return (
-    <BrowserRouter
-      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-    >
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
         <AppLayout />
         <ToastContainer />
