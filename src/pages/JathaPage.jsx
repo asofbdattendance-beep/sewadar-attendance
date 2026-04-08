@@ -496,7 +496,44 @@ function ViewJathaTab() {
   const isAdmin = [ROLES.ASO].includes(profile?.role)
   const canEditJatha = isAso || profile?.can_edit_jatha
 
+  // Helper to check if jatha is within 40 min edit window (for centre users only)
+  function canEditJathaRecord(record) {
+    // ASO can always edit
+    if (isAso) return true
+    // Centre users: only within 40 minutes of creation
+    if (!record?.created_at) return false
+    const createdAt = new Date(record.created_at)
+    const now = new Date()
+    const diffMs = now - createdAt
+    const diffMins = diffMs / (1000 * 60)
+    return diffMins <= 40
+  }
+
   useEffect(() => { fetchRecords().catch(() => {}) }, [typeFilter, monthFilter, page])
+
+  // Real-time updates
+  useEffect(() => {
+    let timer = null
+    const channel = supabase.channel('jatha-page-realtime')
+    
+    channel.on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'jatha_attendance' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] jatha_attendance changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => fetchRecords().catch(() => {}), 300)
+    })
+    .subscribe((status) => {
+      if (import.meta.env.DEV) console.log('[RT] Jatha channel status:', status)
+    })
+
+    return () => { 
+      clearTimeout(timer)
+      supabase.removeChannel(channel) 
+    }
+  }, [])
 
   async function fetchRecords() {
     setLoading(true)
@@ -722,7 +759,7 @@ function ViewJathaTab() {
 
               <div className="jatha-actions">
                 <div className="jatha-action-group">
-                  {canEditJatha && (
+                  {canEditJatha && canEditJathaRecord(r) && (
                     <button onClick={() => setEditModal({ ...r })}
                       style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '0.25rem 0.65rem', fontSize: '0.75rem', color: 'var(--blue)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'inherit' }}>
                         <Pencil size={11} /> Edit

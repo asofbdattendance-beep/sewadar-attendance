@@ -160,6 +160,39 @@ export default function FlagsPage() {
     fetchFlags() 
   }, [page, statusFilter, flagTypeFilter, search, sortCol, sortDir, childCentres, profile])
 
+  // Real-time updates
+  useEffect(() => {
+    let timer = null
+    const channel = supabase.channel('flags-realtime')
+    
+    channel.on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'queries' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] queries changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => fetchFlags(), 300)
+    })
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'query_replies' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] query_replies changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => fetchFlags(), 300)
+    })
+    .subscribe((status) => {
+      if (import.meta.env.DEV) console.log('[RT] Flags channel status:', status)
+    })
+
+    return () => { 
+      clearTimeout(timer)
+      supabase.removeChannel(channel) 
+    }
+  }, [])
+
   async function submitReply(flagId) {
     const text = (replyTexts[flagId] || '').trim()
     if (!text) return
@@ -239,12 +272,12 @@ export default function FlagsPage() {
     showSuccess('Flag raised successfully')
   }
 
-  function timeFmt(iso) {
+  function formatTime(iso) {
     if (!iso) return '—'
-    return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+    return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
   }
 
-  function dateFmt(iso) {
+  function formatDate(iso) {
     if (!iso) return '—'
     return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
   }
@@ -336,13 +369,25 @@ export default function FlagsPage() {
 
   const scopeLabel = isAso ? 'All centres' : isCentreUser ? `${profile?.centre} + sub-centres` : 'My flags'
 
+  function formatTime(iso) {
+    if (!iso) return '—'
+    return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
+  }
+
+  function formatDate(iso) {
+    if (!iso) return '—'
+    return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+  }
+
   return (
     <div className="page pb-nav">
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
         <div>
-          <h2 style={{ fontSize: '1.1rem', fontWeight: 600, margin: 0 }}>Flags</h2>
-          <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '2px 0 0' }}>{scopeLabel}</p>
+          <h2 style={{ fontSize: '1.1rem', fontWeight: 600, margin: 0 }}>Query / Flags</h2>
+          <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '2px 0 0' }}>
+            {scopeLabel} · Track & resolve attendance issues
+          </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn btn-ghost" onClick={() => { fetchFlags(); fetchStats() }} style={{ padding: '0.4rem 0.6rem' }}>
@@ -351,9 +396,19 @@ export default function FlagsPage() {
           <button className="btn btn-ghost" onClick={exportFlagsCSV} style={{ padding: '0.4rem 0.6rem' }}>
             <Download size={14} /> Export
           </button>
-          <button className="btn btn-primary" onClick={() => setRaiseModal(true)} style={{ padding: '0.4rem 0.75rem', gap: '0.3rem', display: 'flex', alignItems: 'center' }}>
-            <Plus size={14} /> Raise Flag
-          </button>
+        </div>
+      </div>
+
+      {/* How it works - collapsible help */}
+      <div style={{ background: 'var(--blue-bg)', border: '1px solid rgba(37,99,235,0.2)', borderRadius: 10, padding: '0.75rem 1rem', marginBottom: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+          <Flag size={14} style={{ color: 'var(--blue)' }} />
+          <span style={{ fontWeight: 600, fontSize: '0.8rem', color: 'var(--blue)' }}>How Query System Works</span>
+        </div>
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+          <strong>1. Raise:</strong> Flag issues like wrong scan, duplicate entry, or mark "not present" from Records page.<br/>
+          <strong>2. Track:</strong> See all flags here with who raised it and when.<br/>
+          <strong>3. Resolve:</strong> Add replies to discuss, then mark as "In Progress" → "Resolved".
         </div>
       </div>
 
@@ -473,13 +528,13 @@ export default function FlagsPage() {
                         background: isExpanded ? 'var(--bg)' : idx % 2 === 0 ? 'var(--surface)' : 'transparent',
                       }}>
                       <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.78rem', fontWeight: 600 }}>
-                        {flag.attendance?.badge_number || '—'}
+                        {flag.attendance?.badge_number || flag.badge_number || '—'}
                       </td>
                       <td style={{ fontWeight: 500, padding: '0.45rem 0.5rem' }}>
-                        {flag.attendance?.sewadar_name || '—'}
+                        {flag.attendance?.sewadar_name || flag.sewadar_name || '—'}
                       </td>
                       <td style={{ color: 'var(--text-secondary)', fontSize: '0.78rem', padding: '0.45rem 0.5rem' }}>
-                        {flag.raised_by_centre || '—'}
+                        {flag.centre || flag.raised_by_centre || '—'}
                       </td>
                       <td style={{ padding: '0.45rem 0.5rem' }}>
                         <span style={{ fontWeight: 500 }}>{flag.raised_by_name || '—'}</span>
@@ -490,7 +545,7 @@ export default function FlagsPage() {
                         )}
                       </td>
                       <td style={{ color: 'var(--text-muted)', fontSize: '0.78rem', padding: '0.45rem 0.5rem', whiteSpace: 'nowrap' }}>
-                        {dateFmt(flag.created_at)}
+                        {formatDate(flag.created_at)}
                       </td>
                       <td style={{ padding: '0.45rem 0.5rem' }}>
                         <span style={{ fontSize: '0.72rem', background: 'var(--amber-bg)', color: 'var(--amber)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 4, padding: '1px 6px', fontWeight: 600, whiteSpace: 'nowrap' }}>
@@ -512,35 +567,96 @@ export default function FlagsPage() {
                       <tr key={`${flag.id}-thread`}>
                         <td colSpan={8} style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg)', padding: '0.75rem 1rem' }}>
                           <div style={{ maxWidth: 600 }}>
-                            {/* Issue */}
-                            <div style={{ marginBottom: '0.6rem' }}>
-                              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Issue</span>
-                              <p style={{ margin: '4px 0 0', fontSize: '0.85rem', color: 'var(--text-primary)' }}>{flag.issue_description || '—'}</p>
+                            {/* Issue Description */}
+                            <div style={{ marginBottom: '0.75rem', padding: '0.6rem 0.75rem', background: 'var(--red-bg)', borderRadius: 8, border: '1px solid rgba(220,38,38,0.2)' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.35rem' }}>
+                                <Flag size={12} style={{ color: 'var(--red)' }} />
+                                <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--red)', textTransform: 'uppercase' }}>Issue Reported</span>
+                              </div>
+                              <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-primary)' }}>{flag.issue_description || '—'}</p>
+                              <div style={{ marginTop: '0.5rem', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                By <strong>{flag.raised_by_name}</strong> ({flag.raised_by_role === 'aso' ? 'ASO' : flag.raised_by_role === 'centre' ? 'Centre' : 'SC/SP'}) from <strong>{flag.raised_by_centre}</strong> on {formatTime(flag.created_at)}
+                              </div>
                             </div>
 
-                            {/* Attendance ref */}
-                            {flag.attendance && (
-                              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.6rem', flexWrap: 'wrap' }}>
-                                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Record</span>
-                                <span style={{
-                                  fontSize: '0.7rem', fontWeight: 700, padding: '1px 6px', borderRadius: 4,
-                                  background: flag.attendance.type === 'IN' ? 'var(--green-bg)' : 'var(--red-bg)',
-                                  color: flag.attendance.type === 'IN' ? 'var(--green)' : 'var(--red)',
-                                }}>{flag.attendance.type}</span>
-                                <span style={{ fontWeight: 600, fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.8rem' }}>{flag.attendance.badge_number}</span>
-                                <span style={{ fontWeight: 500 }}>{flag.attendance.sewadar_name}</span>
-                                <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>{flag.attendance.centre}</span>
-                                <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>{timeFmt(flag.attendance.scan_time)}</span>
+                            {/* Attendance reference (if linked) */}
+                            {(flag.attendance || flag.badge_number) && (
+                              <div style={{ marginBottom: '0.75rem', padding: '0.6rem 0.75rem', background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.35rem' }}>
+                                  <Flag size={12} style={{ color: 'var(--text-muted)' }} />
+                                  <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Related Attendance Record</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                                  {flag.attendance && (
+                                    <>
+                                      <span style={{
+                                        fontSize: '0.7rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+                                        background: flag.attendance.type === 'IN' ? 'var(--green-bg)' : 'var(--red-bg)',
+                                        color: flag.attendance.type === 'IN' ? 'var(--green)' : 'var(--red)',
+                                      }}>{flag.attendance.type}</span>
+                                      <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 600 }}>{flag.attendance.badge_number}</span>
+                                      <span style={{ fontWeight: 500 }}>{flag.attendance.sewadar_name}</span>
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>· {flag.attendance.centre}</span>
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>· {formatTime(flag.attendance.scan_time)}</span>
+                                    </>
+                                  )}
+                                  {!flag.attendance && flag.badge_number && (
+                                    <>
+                                      <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 600 }}>{flag.badge_number}</span>
+                                      <span style={{ fontWeight: 500 }}>{flag.sewadar_name || '—'}</span>
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>· {flag.centre || '—'}</span>
+                                    </>
+                                  )}
+                                </div>
                               </div>
                             )}
 
-                            {/* Replies */}
+                            {/* Resolution status */}
+                            {flag.status === FLAG_STATUS.RESOLVED && (
+                              <div style={{ marginBottom: '0.75rem', padding: '0.6rem 0.75rem', background: 'var(--green-bg)', borderRadius: 8, border: '1px solid rgba(22,163,74,0.2)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.35rem' }}>
+                                  <CheckCircle size={12} style={{ color: 'var(--green)' }} />
+                                  <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--green)', textTransform: 'uppercase' }}>Resolved</span>
+                                  {flag.resolved_by && (
+                                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                      by {flag.resolved_by} on {formatTime(flag.resolved_at)}
+                                    </span>
+                                  )}
+                                </div>
+                                {flag.resolution_note && (
+                                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{flag.resolution_note}</p>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Action buttons */}
+                            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+                              {flag.status !== FLAG_STATUS.RESOLVED && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); updateStatus(flag.id, flag.status === FLAG_STATUS.OPEN ? FLAG_STATUS.IN_PROGRESS : FLAG_STATUS.RESOLVED) }}
+                                  style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem', borderRadius: 6, border: '1px solid', cursor: 'pointer', fontWeight: 600, background: 'transparent' }}
+                                  className="btn btn-ghost"
+                                >
+                                  {flag.status === FLAG_STATUS.OPEN ? 'Mark In Progress' : flag.status === FLAG_STATUS.IN_PROGRESS ? 'Resolve' : ''}
+                                </button>
+                              )}
+                              {flag.status === FLAG_STATUS.RESOLVED && (
+                                <button onClick={(e) => { e.stopPropagation(); reopenFlag(flag.id) }} className="btn btn-ghost" style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}>
+                                  Reopen
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Reply thread */}
                             <div style={{ marginBottom: '0.6rem' }}>
-                              <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
-                                {replies.length} {replies.length === 1 ? 'Reply' : 'Replies'}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.4rem' }}>
+                                <MessageSquare size={12} style={{ color: 'var(--text-muted)' }} />
+                                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                                  Discussion ({replies.length} {replies.length === 1 ? 'reply' : 'replies'})
+                                </span>
                               </div>
                               {replies.length === 0 && (
-                                <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontStyle: 'italic', margin: 0 }}>No replies yet.</p>
+                                <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontStyle: 'italic', margin: '0 0 0.5rem' }}>No replies yet. Add a reply below to discuss.</p>
                               )}
                               {[...replies].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(reply => {
                                 const isOwn = reply.replied_by_badge === profile?.badge_number
@@ -553,13 +669,12 @@ export default function FlagsPage() {
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
                                       <span style={{ fontWeight: 600, fontSize: '0.8rem' }}>
                                         {reply.replied_by_name}
-                                        {reply.replied_by_role && (
-                                          <span style={{ marginLeft: 6, fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400, background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
-                                            {reply.replied_by_role === 'aso' ? 'ASO' : reply.replied_by_role === 'centre' ? 'Centre' : reply.replied_by_role === 'sc_sp_user' ? 'SC/SP' : reply.replied_by_role}
-                                          </span>
-                                        )}
+                                        <span style={{ marginLeft: 6, fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400, background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
+                                          {reply.replied_by_role === 'aso' ? 'ASO' : reply.replied_by_role === 'centre' ? 'Centre' : reply.replied_by_role === 'sc_sp_user' ? 'SC/SP' : reply.replied_by_role}
+                                        </span>
+                                        {isOwn && <span style={{ marginLeft: 4, fontSize: '0.6rem', color: 'var(--green)', fontWeight: 600 }}>You</span>}
                                       </span>
-                                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{timeFmt(reply.created_at)}</span>
+                                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{formatTime(reply.created_at)}</span>
                                     </div>
                                     <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>{reply.message}</p>
                                   </div>
@@ -568,11 +683,11 @@ export default function FlagsPage() {
                             </div>
 
                             {/* Reply input */}
-                            {canReply && flag.status !== FLAG_STATUS.RESOLVED && (
-                              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+                            {canReply && (
+                              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', marginTop: '0.75rem' }}>
                                 <textarea
                                   className="input"
-                                  placeholder="Write a reply…"
+                                  placeholder="Add a reply or update…"
                                   rows={2}
                                   value={replyTexts[flag.id] || ''}
                                   onChange={e => setReplyTexts(prev => ({ ...prev, [flag.id]: e.target.value }))}
@@ -582,31 +697,13 @@ export default function FlagsPage() {
                                       submitReply(flag.id)
                                     }
                                   }}
-                                  style={{ fontSize: '0.82rem', resize: 'none' }}
+                                  style={{ fontSize: '0.82rem', resize: 'none', flex: 1 }}
                                 />
                                 <button className="btn btn-primary" onClick={() => submitReply(flag.id)}
                                   disabled={submitting || !(replyTexts[flag.id] || '').trim()}
-                                  style={{ padding: '0.4rem 0.75rem', flexShrink: 0 }}>
+                                  style={{ padding: '0.4rem 0.75rem', flexShrink: 0, alignSelf: 'flex-end' }}>
                                   <Send size={14} />
                                 </button>
-                              </div>
-                            )}
-
-                            {/* Actions */}
-                            {(isAso || isCentreUser) && (
-                              <div style={{ marginTop: '0.6rem', display: 'flex', gap: '0.5rem' }}>
-                                {canResolve && (
-                                  <button className="btn btn-ghost" onClick={() => resolveFlag(flag.id)}
-                                    style={{ fontSize: '0.8rem', color: 'var(--green)', padding: '0.35rem 0.75rem' }}>
-                                    <CheckCircle size={13} /> Mark Resolved
-                                  </button>
-                                )}
-                                {flag.status === FLAG_STATUS.RESOLVED && isAso && (
-                                  <button className="btn btn-ghost" onClick={() => reopenFlag(flag.id)}
-                                    style={{ fontSize: '0.8rem', color: 'var(--amber)', padding: '0.35rem 0.75rem' }}>
-                                    Reopen Flag
-                                  </button>
-                                )}
                               </div>
                             )}
                           </div>

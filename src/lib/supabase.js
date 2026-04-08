@@ -28,8 +28,23 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth:     { persistSession: true, autoRefreshToken: true },
-  realtime: { params: { eventsPerSecond: 10 } },
+  realtime: { 
+    params: { eventsPerSecond: 10 },
+    // Try to enable all tables
+  },
 })
+
+// Helper to enable realtime on a table (run in Supabase SQL editor)
+export const ENABLE_REALTIME_SQL = `
+-- Add tables to realtime publication
+ALTER PUBLICATION supabase_realtime ADD TABLE attendance_sessions;
+ALTER PUBLICATION supabase_realtime ADD TABLE attendance;
+ALTER PUBLICATION supabase_realtime ADD TABLE jatha_attendance;
+ALTER PUBLICATION supabase_realtime ADD TABLE queries;
+ALTER PUBLICATION supabase_realtime ADD TABLE query_replies;
+ALTER PUBLICATION supabase_realtime ADD TABLE sewadars;
+ALTER PUBLICATION supabase_realtime ADD TABLE jatha_centres;
+`
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ROLES
@@ -83,13 +98,12 @@ export function parseBadge(badge) {
 // ─────────────────────────────────────────────────────────────────────────────
 export const EXCEPTION_DEPARTMENTS = [
   'Administration',
-  'Office',
-  'Area Secretary Office',
   'Pathi',
   'Satsang Karta',
   'Baal Satsang Karta',
-  'Satsang Kartas',
-  'Baal Satsang Kartas',
+  'Office',
+  'Area Secretary Office',
+  'Maintenance',
 ]
 
 export function isExceptionDept(dept) {
@@ -177,6 +191,7 @@ export function getDistanceMetres(lat1, lon1, lat2, lon2) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const FLAG_TYPES = [
+  { value: 'session_flag', label: 'Attendance flag'         },
   { value: 'error_entry',  label: 'Error entry'             },
   { value: 'wrong_badge',  label: 'Wrong badge scanned'     },
   { value: 'duplicate',    label: 'Duplicate entry'         },

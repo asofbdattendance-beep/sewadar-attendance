@@ -965,6 +965,37 @@ export async function deleteSessionWithAttendance(supabase, {
 
   const attendanceCount = attendanceRecords?.length || 0
 
+  // Handle linked queries (flags) - archive them before deletion
+  const { data: linkedQueries } = await supabase
+    .from('queries')
+    .select('*')
+    .eq('session_id', sessionId)
+
+  if (linkedQueries && linkedQueries.length > 0) {
+    // Archive each linked query with session details
+    for (const query of linkedQueries) {
+      await supabase.from('queries').update({
+        archived: true,
+        archived_at: new Date().toISOString(),
+        archived_reason: reason,
+        session_deleted: true,
+        // Clear the foreign key reference since session will be deleted
+        session_id: null,
+        // Keep original session reference as JSON for historical record
+        original_session_info: JSON.stringify({
+          badge_number: session.badge_number,
+          sewadar_name: session.sewadar_name,
+          centre: session.centre,
+          department: session.department,
+          date_ist: session.date_ist,
+          in_time: session.in_time,
+          out_time: session.out_time,
+          duty_type: session.duty_type,
+        })
+      }).eq('id', query.id)
+    }
+  }
+
   if (attendanceCount > 0) {
     const { error: attError } = await supabase
       .from('attendance')

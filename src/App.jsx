@@ -14,6 +14,7 @@ import { AuthProvider, useAuth } from './context/AuthContext'
 import { supabase, ROLES } from './lib/supabase'
 import LoginPage from './pages/LoginPage'
 import ScannerPage from './pages/ScannerPage'
+import DashboardPage from './pages/DashboardPage'
 import RecordsPage from './pages/RecordsPage'
 import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
@@ -21,7 +22,7 @@ import JathaPage from './pages/JathaPage'
 import FlagsPage from './pages/FlagsPage'
 import ToastContainer from './components/Toast'
 import NoInternet from './components/NoInternet'
-import { Scan, FileText, User, Shield, Plane, Clock, RefreshCw, Flag } from 'lucide-react'
+import { Scan, FileText, User, Shield, Plane, Clock, RefreshCw, Flag, LayoutDashboard } from 'lucide-react'
 
 function SessionExpiredScreen({ signOut }) {
   return (
@@ -155,16 +156,17 @@ function AppLayout() {
 
   // ── Nav items — FIX: openFlagCount now wired to the Flags badge ─────────────
   const navItems = [
-    { path: '/scan',        label: 'Scanner', icon: Scan,    show: canScan    },
-    { path: '/jatha',       label: 'Jatha',   icon: Plane,   show: canJatha   },
-    { path: '/records',     label: 'Records', icon: FileText, show: canRecords },
-    { path: '/flags',       label: 'Flags',   icon: Flag,    show: canFlags,  badge: openFlagCount },
+    { path: '/dashboard',  label: 'Home',    icon: LayoutDashboard, show: true },
+    { path: '/scan',       label: 'Scanner', icon: Scan,            show: canScan    },
+    { path: '/jatha',      label: 'Jatha',   icon: Plane,           show: canJatha   },
+    { path: '/records',    label: 'Records', icon: FileText,        show: canRecords },
+    { path: '/flags',      label: 'Flags',   icon: Flag,            show: canFlags,  badge: openFlagCount },
     ...(isAso ? [{ path: '/super-admin', label: 'Control', icon: Shield, show: true }] : []),
-    { path: '/profile',     label: 'Profile', icon: User,    show: true       },
+    { path: '/profile',    label: 'Profile', icon: User,           show: true       },
   ].filter((item) => item.show !== false)
 
   // Default redirect — go to first allowed page
-  const defaultPath = canScan ? '/scan' : canRecords ? '/records' : canJatha ? '/jatha' : '/profile'
+  const defaultPath = '/dashboard'
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -260,6 +262,7 @@ function AppLayout() {
       {/* ── Page content ──────────────────────────────────────────────────── */}
       <div style={{ flex: 1 }}>
         <Routes>
+          <Route path="/dashboard"  element={<DashboardPage />} />
           <Route path="/scan"        element={canScan    ? <ScannerPage />    : <Navigate to={defaultPath} replace />} />
           <Route path="/jatha"       element={canJatha   ? <JathaPage />      : <Navigate to={defaultPath} replace />} />
           <Route path="/records"     element={canRecords ? <RecordsPage />    : <Navigate to={defaultPath} replace />} />

@@ -77,25 +77,45 @@ export default function ScannerPage() {
 
   useEffect(() => {
     fetchTodayCount().catch(() => {})
+    fetchRecentScans().catch(() => {})
     let debounceTimer = null
-    const channel = supabase.channel('scanner-count')
-      .on('postgres_changes', { 
-        event: 'INSERT', 
-        schema: 'public', 
-        table: 'attendance',
-      }, () => {
-        clearTimeout(debounceTimer)
-        debounceTimer = setTimeout(() => fetchTodayCount().catch(() => {}), 500)
-      })
-      .subscribe()
+    const channel = supabase.channel('scanner-realtime-v3')
+    
+    channel.on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance',
+    }, (payload) => {
+      console.log('[RT-SCANNER] attendance event:', payload.eventType, payload.new?.badge_number || '')
+      clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => {
+        console.log('[RT-SCANNER] Refreshing...')
+        fetchTodayCount().catch(() => {})
+        fetchRecentScans().catch(() => {})
+      }, 500)
+    })
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance_sessions',
+    }, (payload) => {
+      console.log('[RT-SCANNER] sessions event:', payload.eventType, payload.new?.badge_number || '')
+      clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => {
+        console.log('[RT-SCANNER] Refreshing...')
+        fetchTodayCount().catch(() => {})
+        fetchRecentScans().catch(() => {})
+      }, 500)
+    })
+    .subscribe((status, err) => {
+      console.log('[RT-SCANNER] Channel status:', status, err || '')
+    })
+    
     return () => {
+      console.log('[RT-SCANNER] Cleanup')
       clearTimeout(debounceTimer)
       supabase.removeChannel(channel)
     }
-  }, [profile?.centre, profile?.role, profile])
-
-  useEffect(() => {
-    fetchRecentScans().catch(() => {})
   }, [profile?.centre, profile?.role, profile])
 
   useEffect(() => {
@@ -360,6 +380,11 @@ export default function ScannerPage() {
         if (result.reason === 'duplicate_scan') {
           release?.()
           openPopup({ type: 'error', badge, message: result.message || 'Duplicate scan detected. Please wait.' })
+          return
+        }
+        if (result.reason === 'time_conflict') {
+          release?.()
+          openPopup({ type: 'time_conflict', sewadar: found, badge, conflictSession: result.conflictSession, todaySessions })
           return
         }
         if (result.reason === 'jatha_active') {
@@ -753,6 +778,26 @@ export default function ScannerPage() {
               </div>
             )}
 
+            {popupState.type === 'time_conflict' && (
+              <div className="popup-error">
+                <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Time Overlap</div>
+                <div className="error-name">{popupState.sewadar?.sewadar_name || 'Unknown'}</div>
+                <div className="error-msg">
+                  Cannot scan IN. This sewadar already has an entry from {
+                    popupState.conflictSession?.in_time 
+                      ? new Date(popupState.conflictSession.in_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
+                      : '—'
+                  } to {
+                    popupState.conflictSession?.out_time 
+                      ? new Date(popupState.conflictSession.out_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
+                      : 'Open'
+                  } on this date. Time cannot overlap.
+                </div>
+                <button className="btn-cancel" onClick={closePopup}>Dismiss</button>
+              </div>
+            )}
+
             {popupState.type === 'open_session_override' && (
               <OverridePopup
                 type="open_session"
@@ -1118,9 +1163,11 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
+  const [otherCentre, setOtherCentre] = useState(false)
   const searchRef = useRef(null)
 
   const isAso = profile?.role === ROLES.ASO
+  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
 
   useEffect(() => { searchRef.current?.focus() }, [])
 
@@ -1132,9 +1179,9 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
         let q = supabase.from('sewadars')
           .select('*')
           .or(`badge_number.ilike.%${search.toUpperCase()}%,sewadar_name.ilike.%${search.toUpperCase()}%`)
-          .limit(10)
+          .limit(15)
 
-        if (profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER) {
+        if (!otherCentre && (profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER)) {
           const scope = [profile.centre, ...childCentres]
           q = q.in('centre', scope)
         }
@@ -1145,12 +1192,81 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
       setSearching(false)
     }, 300)
     return () => clearTimeout(timer)
-  }, [search, profile, childCentres])
+  }, [search, profile, childCentres, otherCentre])
 
-  const canSubmit = selected && (dutyType === 'satsang' ? remark.trim().length >= 3 : true)
+  // Real-time time conflict check
+  useEffect(() => {
+    if (!selected || !inDate || !inTime) {
+      setError('')
+      return
+    }
+
+    const checkConflicts = async () => {
+      const inTimeISO = new Date(`${inDate}T${inTime}:00+05:30`).getTime()
+      
+      // Get all sessions for this sewadar on this date (ALL duty types)
+      const { data: existingSessions } = await supabase
+        .from('attendance_sessions')
+        .select('id, in_time, out_time, duty_type, date_ist')
+        .eq('badge_number', selected.badge_number)
+        .eq('date_ist', inDate)
+
+      if (import.meta.env.DEV) {
+        console.log('[TimeConflict] Checking:', { 
+          badge: selected.badge_number, 
+          date: inDate, 
+          time: inTime,
+          sessions: existingSessions?.map(s => ({ 
+            duty: s.duty_type, 
+            in: s.in_time, 
+            out: s.out_time 
+          }))
+        })
+      }
+
+      if (existingSessions?.length > 0) {
+        for (const session of existingSessions) {
+          const sessionInMs = new Date(session.in_time).getTime()
+          const sessionOutMs = session.out_time ? new Date(session.out_time).getTime() : Date.now() + 86400000 // Open = far future
+          
+          if (import.meta.env.DEV) {
+            console.log('[TimeConflict] Comparing:', { 
+              newTime: inTimeISO, 
+              sessionIn: sessionInMs, 
+              sessionOut: sessionOutMs,
+              overlap: inTimeISO >= sessionInMs && inTimeISO < sessionOutMs
+            })
+          }
+          
+          // Check if new IN time overlaps with existing session (any duty type)
+          if (inTimeISO >= sessionInMs && inTimeISO < sessionOutMs) {
+            const inStr = new Date(session.in_time).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
+            const outStr = session.out_time 
+              ? new Date(session.out_time).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
+              : 'Open'
+            setError(`Time conflict: ${session.duty_type} session from ${inStr} to ${outStr}. Choose different time.`)
+            return
+          }
+        }
+      }
+      setError('')
+    }
+
+    checkConflicts()
+  }, [selected, inDate, inTime, dutyType])
+
+  const canSubmit = selected && (dutyType === 'satsang' ? remark.trim().length >= 3 : true) && (!otherCentre || remark.trim().length >= 3) && !error
+
+  const ALLOWED_STATUSES = ['open', 'permanent', 'elderly']
 
   async function handleSubmit() {
     if (!canSubmit) return
+
+    const badgeStatus = (selected.badge_status || '').toLowerCase().trim()
+    if (!ALLOWED_STATUSES.includes(badgeStatus)) {
+      setError(`Cannot add ${selected.sewadar_name}. Badge status is "${selected.badge_status || 'unknown'}" - only Open, Permanent & Elderly allowed.`)
+      return
+    }
     setSubmitting(true)
     setError('')
 
@@ -1176,6 +1292,28 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
             return
           }
 
+          // Check for time conflict with any existing session on same day
+          const { data: sameDaySessions } = await supabase
+            .from('attendance_sessions')
+            .select('id, in_time, out_time, duty_type')
+            .eq('badge_number', selected.badge_number)
+            .eq('date_ist', inDate)
+            .order('in_time', { ascending: false })
+
+          if (sameDaySessions?.length > 0) {
+            const newInMs = new Date(inTimeISO).getTime()
+            for (const session of sameDaySessions) {
+              const sessionInMs = new Date(session.in_time).getTime()
+              const sessionOutMs = session.out_time ? new Date(session.out_time).getTime() : Date.now()
+              
+              if (newInMs >= sessionInMs && newInMs < sessionOutMs) {
+                setError(`Cannot mark IN. Time overlaps with existing ${session.duty_type} session from ${new Date(session.in_time).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })} to ${session.out_time ? new Date(session.out_time).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : 'Open'}.`)
+                setSubmitting(false)
+                return
+              }
+            }
+          }
+
           // Create session + IN
           const { data: session, error: sessionError } = await supabase
             .from('attendance_sessions')
@@ -1193,7 +1331,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
               scanner_name: profile.name,
               scanner_centre: profile.centre,
               in_scanner_name: profile.name,
-              remark: remark.trim() || null,
+              remark: otherCentre ? `[Other Centre] ${remark.trim()}` : (remark.trim() || null),
             })
             .select('id')
             .single()
@@ -1319,7 +1457,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
             scanner_name: profile.name,
             scanner_centre: profile.centre,
             in_scanner_name: profile.name,
-            remark: remark.trim() || null,
+            remark: otherCentre ? `[Other Centre] ${remark.trim()}` : (remark.trim() || null),
           })
           .select('id')
           .single()
@@ -1461,6 +1599,15 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
           )}
         </div>
 
+        {isCentreUser && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', cursor: 'pointer', padding: '0.5rem', background: otherCentre ? 'rgba(59,130,246,0.1)' : 'transparent', borderRadius: 6, border: otherCentre ? '1px solid rgba(59,130,246,0.3)' : '1px solid transparent' }}>
+            <input type="checkbox" checked={otherCentre} onChange={e => { setOtherCentre(e.target.checked); setSelected(null); setSearch('') }} style={{ width: 18, height: 18, accentColor: '#3b82f6' }} />
+            <span style={{ fontSize: '0.85rem', color: otherCentre ? '#3b82f6' : 'var(--text-secondary)', fontWeight: otherCentre ? 600 : 400 }}>
+              Search sewadars from other centres
+            </span>
+          </label>
+        )}
+
         {searching && <div className="spinner" style={{ margin: '0.5rem auto', width: 28, height: 28 }} />}
 
         {results.length > 0 && !selected && (
@@ -1479,8 +1626,13 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
         )}
 
         {selected && (
-          <div style={{ background: 'var(--gold-bg)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1rem' }}>
-            <div style={{ fontWeight: 700, color: 'var(--gold)', marginBottom: '0.2rem' }}>{selected.sewadar_name}</div>
+          <div style={{ background: otherCentre ? 'rgba(59,130,246,0.1)' : 'var(--gold-bg)', border: `1px solid ${otherCentre ? 'rgba(59,130,246,0.3)' : 'rgba(201,168,76,0.3)'}`, borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1rem' }}>
+            {otherCentre && (
+              <div style={{ fontSize: '0.7rem', color: '#3b82f6', fontWeight: 700, marginBottom: '0.35rem' }}>
+                ⚠ Out-of-centre sewadar
+              </div>
+            )}
+            <div style={{ fontWeight: 700, color: otherCentre ? '#3b82f6' : 'var(--gold)', marginBottom: '0.2rem' }}>{selected.sewadar_name}</div>
             <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{selected.badge_number} · {selected.centre} · {selected.department || '—'}</div>
             <button onClick={() => { setSelected(null); setSearch('') }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.72rem', marginTop: '0.35rem', fontFamily: 'inherit' }}>
               Change
@@ -1567,17 +1719,22 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
 
         {dutyType === 'satsang' && (
           <>
-            <label className="label">Reason * <span style={{ color: 'var(--red)', fontWeight: 700 }}>(Required)</span></label>
+            <label className="label">
+              Reason {otherCentre && <span style={{ color: 'var(--red)', fontWeight: 700 }}>*</span>}
+              {!otherCentre && dutyType !== 'satsang' && <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: '0.75rem' }}> (optional for gate entry)</span>}
+            </label>
             <textarea
               className="input"
               rows={2}
-              placeholder="Why is this being entered manually?..."
+              placeholder={otherCentre ? "Explain reason for adding out-of-centre sewadar..." : "Why is this being entered manually?..."}
               value={remark}
               onChange={e => setRemark(e.target.value)}
               style={{ resize: 'none', marginBottom: '0.5rem' }}
             />
-            <p style={{ fontSize: '0.72rem', color: remark.trim().length < 3 ? 'var(--text-muted)' : 'var(--green)', marginBottom: dutyType === 'satsang' ? '0.5rem' : '1rem' }}>
-              {remark.trim().length < 3 ? 'Minimum 3 characters required' : `✓ ${remark.trim().length} characters`}
+            <p style={{ fontSize: '0.72rem', color: (otherCentre && remark.trim().length < 3) ? 'var(--red)' : 'var(--text-muted)', marginBottom: dutyType === 'satsang' ? '0.5rem' : '1rem' }}>
+              {otherCentre && remark.trim().length < 3 
+                ? 'Remarks required for out-of-centre sewadar' 
+                : (!otherCentre && dutyType !== 'satsang' ? 'Optional' : `Minimum 3 characters required`)}
             </p>
           </>
         )}

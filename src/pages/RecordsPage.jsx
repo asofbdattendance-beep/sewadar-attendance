@@ -18,11 +18,23 @@ const PAGE_SIZE = 50
 
 function formatTime(iso) {
   if (!iso) return '—'
-  return new Date(iso).toLocaleTimeString('en-IN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: 'Asia/Kolkata'
-  })
+  // Handle both full ISO timestamps and just time strings (HH:mm:ss)
+  if (iso.includes('T')) {
+    return new Date(iso).toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'Asia/Kolkata'
+    })
+  }
+  // Just time string - return as-is
+  if (iso.match(/^\d{2}:\d{2}/)) {
+    const [h, m] = iso.split(':')
+    const hour = parseInt(h)
+    const ampm = hour >= 12 ? 'pm' : 'am'
+    const hour12 = hour % 12 || 12
+    return `${hour12}:${m} ${ampm}`
+  }
+  return iso
 }
 
 function extractISTDate(iso) {
@@ -61,12 +73,41 @@ function csvEscape(val) {
 // =====================================================
 // ATTENDANCE TAB - SESSION BASED
 // =====================================================
-function AttendanceTab({ onFlagRaised, onViewFlag }) {
+function AttendanceTab() {
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
   const canEdit = !!isAso
   const canFlag = !!isAso || !!profile?.can_flags
+
+  // Helper to check if session is within 40 min edit window (for centre users only)
+  // Uses created_at (timestamp when record was created) not IN time
+  function canEditSession(session) {
+    // ASO can always edit
+    if (isAso) return true
+    
+    // Fallback to in_time if created_at is missing
+    const timeRef = session?.created_at || session?.in_time
+    if (!timeRef) return false
+    
+    const refTime = new Date(timeRef)
+    const now = new Date()
+    const diffMs = now - refTime
+    const diffMins = diffMs / (1000 * 60)
+    
+    if (import.meta.env.DEV) {
+      console.log('[canEditSession]', { 
+        created_at: session?.created_at, 
+        in_time: session?.in_time, 
+        refTime: refTime.toISOString(),
+        now: now.toISOString(),
+        diffMins: Math.round(diffMins),
+        canEdit: diffMins <= 40
+      })
+    }
+    
+    return diffMins <= 40
+  }
 
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(false)
@@ -107,6 +148,47 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
   useEffect(() => {
     fetchRecords()
   }, [page, dateRange, centreFilter, dutyFilter, statusFilter, searchTerm])
+
+  const fetchRecordsRef = useRef(null)
+  fetchRecordsRef.current = fetchRecords
+
+  // Real-time updates
+  useEffect(() => {
+    let timer = null
+    const channel = supabase.channel('records-realtime-v3')
+    
+    channel.on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance_sessions' 
+    }, (payload) => {
+      console.log('[RT-RECORDS] sessions event:', payload.eventType)
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        if (fetchRecordsRef.current) fetchRecordsRef.current()
+      }, 300)
+    })
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance' 
+    }, (payload) => {
+      console.log('[RT-RECORDS] attendance event:', payload.eventType)
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        if (fetchRecordsRef.current) fetchRecordsRef.current()
+      }, 300)
+    })
+    .subscribe((status, err) => {
+      console.log('[RT-RECORDS] Channel status:', status)
+    })
+
+    return () => { 
+      console.log('[RT-RECORDS] Cleanup')
+      clearTimeout(timer)
+      supabase.removeChannel(channel) 
+    }
+  }, [])
 
   async function fetchCentres() {
     let q = supabase.from('centres').select('centre_name, parent_centre').order('centre_name')
@@ -318,10 +400,15 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
           raised_by_badge: profile.badge_number,
           raised_by_name: profile.name,
           raised_by_centre: profile.centre,
+          raised_by_role: profile.role,
           issue_description: flagReason.trim(),
           reason: flagReason.trim(),
           status: 'open',
           flag_type: 'session_flag',
+          // Include the sewadar info from the session being flagged
+          badge_number: flagModal.badge_number,
+          sewadar_name: flagModal.sewadar_name,
+          centre: flagModal.centre,
         })
         .select()
         .single()
@@ -343,8 +430,7 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
         details: `Flag raised: "${flagReason.trim()}"`,
       })
 
-      showSuccess('Flag raised — view in Flags tab')
-      if (onFlagRaised) onFlagRaised()
+      showSuccess('Query raised — check Queries tab')
       fetchRecords()
     } catch (err) {
       console.error('Flag error:', err)
@@ -425,7 +511,11 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
         </div>
 
         {isAso && (
-          <CentreComboBox value={centreFilter} onChange={val => { setCentreFilter(val); setPage(1) }} centres={centres} includeAll={true} />
+          <CentreComboBox value={centreFilter} onChange={val => { setCentreFilter(val); setPage(1) }} centres={centres} includeAll={true} grouped={true} />
+        )}
+
+        {isCentreUser && (
+          <CentreComboBox value={centreFilter} onChange={val => { setCentreFilter(val); setPage(1) }} centres={centres.filter(c => c.centre_name === profile?.centre || c.parent_centre === profile?.centre)} includeAll={true} grouped={false} />
         )}
 
         <DateRangePicker value={dateRange} onChange={val => { setDateRange(val); setPage(1) }} />
@@ -535,9 +625,6 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                           <span style={{ fontSize: '0.75rem', color: '#dc2626', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             🚩 {r.flag_reason || 'Flagged'}
                           </span>
-                          <button onClick={() => onViewFlag && onViewFlag(r)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontSize: '0.6rem', padding: 0, flexShrink: 0, fontFamily: 'inherit' }} title="View flag details">
-                            →
-                          </button>
                         </div>
                       ) : (
                         <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
@@ -556,9 +643,9 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                             <Flag size={13} color="var(--text-muted)" />
                           </button>
                         )}
-                        {canEdit && (
+                        {canEditSession(r) && (
                           <>
-                            <button className="records-delete-btn" title="Edit session" onClick={() => { 
+                            <button className="records-delete-btn" title="Edit session (within 40 min)" onClick={() => { 
                               setEditingSession(r)
                               setEditInDate(extractISTDate(r.in_time))
                               setEditInTime(extractISTTime(r.in_time))
@@ -623,7 +710,7 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                 )}
                 {r.flagged && (
                   <span style={{ fontSize: '0.65rem', background: 'rgba(220,38,38,0.1)', color: 'var(--red)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 5, padding: '2px 6px', fontWeight: 700 }}>
-                    🚩 Flagged
+                    🚩 Flagged{r.flag_reason && <span style={{ marginLeft: 4, fontWeight: 400 }}>: {r.flag_reason?.substring(0, 30)}{r.flag_reason?.length > 30 ? '...' : ''}</span>}
                   </span>
                 )}
               </div>
@@ -636,10 +723,12 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                     <Flag size={11} /> Flag
                   </button>
                 )}
-                {canEdit && (
+                {canEditSession(r) && (
                   <>
                     <button
                       onClick={() => { 
+                        if (import.meta.env.DEV) alert(`Edit: created=${r.created_at}, in=${r.in_time}, canEdit=${canEditSession(r)}`)
+                        setEditingSession(r) 
                         setEditingSession(r)
                         setEditInDate(r.in_time ? r.in_time.split('T')[0] : '')
                         setEditInTime(r.in_time ? r.in_time.slice(11, 16) : '')
@@ -687,6 +776,10 @@ function AttendanceTab({ onFlagRaised, onViewFlag }) {
                 <h3 style={{ fontWeight: 700, color: 'var(--blue)' }}>Edit Session Times</h3>
               </div>
               <button onClick={() => setEditingSession(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '1.2rem' }}>×</button>
+            </div>
+
+            <div style={{ background: 'var(--blue-bg)', border: '1px solid rgba(37,99,235,0.2)', borderRadius: 8, padding: '0.6rem 0.85rem', marginBottom: '1rem', fontSize: '0.8rem', color: 'var(--blue)' }}>
+              ⏱️ You can edit this session within 40 minutes of IN time
             </div>
 
             <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '0.85rem 1rem', marginBottom: '1rem' }}>
@@ -795,6 +888,30 @@ function ReportsTab() {
   useEffect(() => {
     fetchReport()
   }, [year, reportType, centreFilter, profile])
+
+  // Real-time updates
+  useEffect(() => {
+    let timer = null
+    const channel = supabase.channel('reports-realtime')
+    
+    channel.on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance_sessions' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] sessions changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => fetchReport(), 300)
+    })
+    .subscribe((status) => {
+      if (import.meta.env.DEV) console.log('[RT] Reports channel status:', status)
+    })
+
+    return () => { 
+      clearTimeout(timer)
+      supabase.removeChannel(channel) 
+    }
+  }, [])
 
   async function fetchCentres() {
     let q = supabase.from('centres').select('centre_name, parent_centre').order('centre_name')
@@ -935,8 +1052,12 @@ function ReportsTab() {
           </select>
         )}
 
-        {isAso && reportType !== 'open_now' && (
-          <CentreComboBox value={centreFilter} onChange={setCentreFilter} centres={centres} includeAll={true} />
+        {reportType !== 'open_now' && isAso && (
+          <CentreComboBox value={centreFilter} onChange={setCentreFilter} centres={centres} includeAll={true} grouped={true} />
+        )}
+
+        {reportType !== 'open_now' && isCentreUser && (
+          <CentreComboBox value={centreFilter} onChange={setCentreFilter} centres={centres.filter(c => c.centre_name === profile?.centre || c.parent_centre === profile?.centre)} includeAll={true} grouped={false} />
         )}
 
         <button className="btn btn-excel" onClick={exportCSV} disabled={!data.length}><Download size={14} /> Export</button>
@@ -1002,7 +1123,7 @@ function ReportsTab() {
 }
 
 // =====================================================
-// FLAGS TAB
+// FLAGS TAB - DEPRECATED (Use FlagsPage from nav)
 // =====================================================
 function FlagsTab() {
   const { profile } = useAuth()
@@ -1450,30 +1571,10 @@ export default function RecordsPage() {
             Reports
           </button>
         )}
-
-        {canFlags && (
-          <button
-            onClick={() => setActiveTab('flags')}
-            style={{
-              padding: '0.5rem 1rem',
-              background: activeTab === 'flags' ? 'var(--gold-bg)' : 'transparent',
-              border: 'none',
-              borderRadius: '8px 8px 0 0',
-              color: activeTab === 'flags' ? 'var(--gold)' : 'var(--text-muted)',
-              fontWeight: 600,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-          <Flag size={14} style={{ marginRight: '0.35rem', verticalAlign: 'middle' }} />
-          Flags
-          </button>
-        )}
       </div>
 
-      {activeTab === 'attendance' && <AttendanceTab onFlagRaised={() => setActiveTab('flags')} onViewFlag={() => setActiveTab('flags')} />}
+      {activeTab === 'attendance' && <AttendanceTab />}
       {activeTab === 'reports' && canReports && <ReportsTab />}
-      {activeTab === 'flags' && canFlags && <FlagsTab />}
     </div>
   )
 }

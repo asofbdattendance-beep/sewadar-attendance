@@ -165,6 +165,49 @@ export default function SuperAdminPage() {
   useEffect(() => {
     fetchCentresData().catch(() => {})
   }, [])
+
+  // Real-time updates
+  useEffect(() => {
+    let timer = null
+    const channel = supabase.channel('superadmin-realtime')
+    
+    channel.on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'sewadars' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] sewadars changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => { if (tab === 'sewadars') fetchSewadars().catch(() => {}) }, 300)
+    })
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance_sessions' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] sessions changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => { if (tab === 'attendance') fetchAttendance().catch(() => {}) }, 300)
+    })
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'jatha_centres' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] jatha_centres changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => { if (tab === 'jatha_centres') fetchJathaCentres().catch(() => {}) }, 300)
+    })
+    .subscribe((status) => {
+      if (import.meta.env.DEV) console.log('[RT] SuperAdmin channel status:', status)
+    })
+
+    return () => { 
+      clearTimeout(timer)
+      supabase.removeChannel(channel) 
+    }
+  }, [tab])
+
   useEffect(() => { if (tab === 'users')        fetchUsers().catch(() => {})        }, [tab])
   useEffect(() => { if (tab === 'sewadars')     fetchSewadars().catch(() => {})     }, [tab, sewadarPage, sewadarSearch, sewadarCentreFilter])
   useEffect(() => { if (tab === 'attendance')   fetchAttendance().catch(() => {})   }, [tab, attDate, attSearch, attPage])
