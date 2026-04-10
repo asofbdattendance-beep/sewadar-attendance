@@ -3,9 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { supabase, ROLES, DUTY_TYPE_LABEL } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { todayDateStr, formatDateStr, scanTimeToISTDate } from '../lib/dateUtils'
+import { detectTimeConflict, hasTimeConflict, hasTimeConflictForOut, hasSessionOverlap } from '../lib/sessionLogic'
 import {
   Search, Download, Flag, X, RefreshCw,
-  Trash2, FileText, PenLine
+  Trash2, FileText, PenLine, BarChart2
 } from 'lucide-react'
 import DateRangePicker from '../components/DateRangePicker'
 import CentreComboBox from '../components/CentreComboBox'
@@ -453,6 +454,8 @@ function AttendanceTab() {
 
     try {
       const updates = {}
+      let newInTimeISO = null
+      let newOutTimeISO = null
 
       if (editInDate && editInTime) {
         const inDateTime = new Date(`${editInDate}T${editInTime}:00+05:30`)
@@ -460,8 +463,11 @@ function AttendanceTab() {
           showError('Invalid IN date/time')
           return
         }
-        updates.in_time = inDateTime.toISOString()
+        newInTimeISO = inDateTime.toISOString()
+        updates.in_time = newInTimeISO
         updates.date_ist = editInDate
+      } else if (editingSession.in_time) {
+        newInTimeISO = editingSession.in_time
       }
 
       if (editOutDate && editOutTime) {
@@ -470,7 +476,51 @@ function AttendanceTab() {
           showError('Invalid OUT date/time')
           return
         }
-        updates.out_time = outDateTime.toISOString()
+        newOutTimeISO = outDateTime.toISOString()
+        updates.out_time = newOutTimeISO
+      }
+
+      if (!newInTimeISO) {
+        showError('IN time is required')
+        return
+      }
+
+      // Check time conflict before saving
+      const badgeNumber = editingSession.badge_number
+      
+      // Fetch existing sessions for this badge (exclude current session)
+      const { data: existingSessions } = await supabase
+        .from('v_sessions')
+        .select('id, badge_number, in_time, out_time, date_ist, duty_type')
+        .eq('badge_number', badgeNumber)
+        .neq('id', editingSession.id)
+        .eq('is_open', false)
+
+      // Fetch jatha records for this person (any jatha that overlaps with proposed time)
+      const { data: jathaRecords } = await supabase
+        .from('jatha_attendance')
+        .select('id, date_from, date_to, jatha_name')
+        .eq('badge_number', badgeNumber)
+        .lte('date_from', newOutTimeISO || newInTimeISO + 'T23:59:59')
+        .gte('date_to', newInTimeISO)
+
+      // Detect conflicts
+      const conflictResult = detectTimeConflict({
+        sessions: existingSessions || [],
+        jathas: jathaRecords || [],
+        proposedInISO: newInTimeISO,
+        proposedOutISO: newOutTimeISO,
+        excludeSessionId: editingSession.id,
+        badgeNumber
+      })
+
+      if (conflictResult.hasConflict) {
+        if (conflictResult.type === 'jatha') {
+          showError(`Cannot save: ${conflictResult.message}`)
+        } else {
+          showError(`Time conflict: ${conflictResult.message}`)
+        }
+        return
       }
 
       if (Object.keys(updates).length === 0) {
@@ -747,7 +797,7 @@ function AttendanceTab() {
                   <>
                     <button
                       onClick={() => { 
-                        if (import.meta.env.DEV) alert(`Edit: created=${r.created_at}, in=${r.in_time}, canEdit=${canEditSession(r)}`)
+                        if (import.meta.env.DEV) console.log(`Edit: created=${r.created_at}, in=${r.in_time}, canEdit=${canEditSession(r)}`)
                         setEditingSession(r)
                         setEditInDate(r.in_time ? r.in_time.split('T')[0] : '')
                         setEditInTime(r.in_time ? r.in_time.slice(11, 16) : '')

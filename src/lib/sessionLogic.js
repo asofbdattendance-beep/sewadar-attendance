@@ -121,6 +121,145 @@ export function hasTimeConflict(existingSessions, proposedInISO) {
   )
 }
 
+/**
+ * hasTimeConflictForOut — checks if proposed OUT time overlaps with any
+ * existing session's [in_time, out_time) window.
+ * 
+ * Returns conflicting session if found, null otherwise.
+ * 
+ * @param {Array} existingSessions - existing sessions to check against
+ * @param {string} proposedOutISO - ISO timestamp of proposed OUT time
+ * @param {string} proposedInISO - ISO timestamp of the IN time (to exclude own session)
+ * @returns {object|null}
+ */
+export function hasTimeConflictForOut(existingSessions, proposedOutISO, proposedInISO) {
+  if (!existingSessions?.length || !proposedOutISO) return null
+  const outT = new Date(proposedOutISO)
+  return (
+    existingSessions.find((s) => {
+      if (!s.in_time || !s.out_time) return false
+      // Skip the session we're editing (compare by proposed IN)
+      if (proposedInISO && s.in_time === proposedInISO) return false
+      const inT = new Date(s.in_time)
+      const existingOutT = new Date(s.out_time)
+      // Check if proposed OUT falls inside another session's range
+      return outT > inT && outT <= existingOutT
+    }) || null
+  )
+}
+
+/**
+ * hasSessionOverlap — checks if a time range [in, out) overlaps with any
+ * existing session. Used for editing sessions.
+ * 
+ * @param {Array} existingSessions - sessions to check against
+ * @param {string} proposedInISO - proposed IN time
+ * @param {string} proposedOutISO - proposed OUT time (can be null for open sessions)
+ * @param {string} excludeSessionId - session ID to exclude (for editing own session)
+ * @returns {object|null} - returns conflicting session or null
+ */
+export function hasSessionOverlap(existingSessions, proposedInISO, proposedOutISO, excludeSessionId = null) {
+  if (!existingSessions?.length || !proposedInISO) return null
+  
+  const proposedIn = new Date(proposedInISO)
+  const proposedOut = proposedOutISO ? new Date(proposedOutISO) : null
+  
+  return existingSessions.find(s => {
+    // Skip open sessions or the session being edited
+    if (!s.in_time || !s.out_time) return false
+    if (excludeSessionId && s.id === excludeSessionId) return false
+    
+    const existingIn = new Date(s.in_time)
+    const existingOut = new Date(s.out_time)
+    
+    // Check for any overlap: [A_start, A_end) overlaps with [B_start, B_end) if:
+    // A_start < B_end AND A_end > B_start
+    if (proposedOut) {
+      return proposedIn < existingOut && proposedOut > existingIn
+    } else {
+      // For open session (no OUT time), check if IN falls in existing range
+      return proposedIn < existingOut
+    }
+  }) || null
+}
+
+/**
+ * checkJathaOverlap — checks if a proposed time range overlaps with any
+ * jatha that the person is part of.
+ * 
+ * @param {Array} jathaRecords - jatha records for the person
+ * @param {string} proposedInISO - proposed IN time
+ * @param {string} proposedOutISO - proposed OUT time (can be null)
+ * @returns {object|null} - returns conflicting jatha or null
+ */
+export function checkJathaOverlap(jathaRecords, proposedInISO, proposedOutISO) {
+  if (!jathaRecords?.length || !proposedInISO) return null
+  
+  const proposedIn = new Date(proposedInISO)
+  const proposedOut = proposedOutISO ? new Date(proposedOutISO) : null
+  
+  return jathaRecords.find(j => {
+    if (!j.date_from || !j.date_to) return false
+    
+    const jathaIn = new Date(j.date_from)
+    const jathaOut = new Date(j.date_to)
+    
+    if (proposedOut) {
+      return proposedIn < jathaOut && proposedOut > jathaIn
+    } else {
+      return proposedIn < jathaOut
+    }
+  }) || null
+}
+
+/**
+ * Comprehensive time conflict detector - checks all scenarios:
+ * - Existing attendance sessions
+ * - Jatha assignments
+ * 
+ * @param {Object} options
+ * @param {Array} options.sessions - existing sessions
+ * @param {Array} options.jathas - jatha records
+ * @param {string} options.proposedInISO - proposed IN time
+ * @param {string} options.proposedOutISO - proposed OUT time (optional)
+ * @param {string} options.excludeSessionId - session ID to exclude (for edits)
+ * @param {string} options.badgeNumber - badge number for error message
+ * @returns {Object} - { hasConflict, type, conflictingItem, message }
+ */
+export function detectTimeConflict({ sessions, jathas, proposedInISO, proposedOutISO, excludeSessionId, badgeNumber }) {
+  // Check session overlap
+  const sessionConflict = hasSessionOverlap(sessions, proposedInISO, proposedOutISO, excludeSessionId)
+  if (sessionConflict) {
+    const inTime = sessionConflict.in_time ? new Date(sessionConflict.in_time).toLocaleString('en-IN', { 
+      day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' 
+    }) : ''
+    const outTime = sessionConflict.out_time ? new Date(sessionConflict.out_time).toLocaleString('en-IN', { 
+      day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' 
+    }) : 'Open'
+    return {
+      hasConflict: true,
+      type: 'session',
+      conflictingItem: sessionConflict,
+      message: `Time overlaps with existing session (${inTime} - ${outTime})`
+    }
+  }
+  
+  // Check Jatha overlap
+  if (jathas?.length) {
+    const jathaConflict = checkJathaOverlap(jathas, proposedInISO, proposedOutISO)
+    if (jathaConflict) {
+      return {
+        hasConflict: true,
+        type: 'jatha',
+        conflictingItem: jathaConflict,
+        message: `Person is assigned to Jatha from ${new Date(jathaConflict.date_from).toLocaleDateString('en-IN')} to ${new Date(jathaConflict.date_to).toLocaleDateString('en-IN')}`
+      }
+    }
+  }
+  
+  return { hasConflict: false, type: null, conflictingItem: null, message: '' }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SESSION QUERIES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -769,6 +908,35 @@ export async function closeSessionWithTime(supabase, {
     }
   }
 
+  // Check for time conflicts (except for the session being closed)
+  const { data: existingSessions } = await supabase
+    .from('v_sessions')
+    .select('id, badge_number, in_time, out_time, date_ist, duty_type')
+    .eq('badge_number', badge_number)
+    .neq('id', sessionId)
+    .eq('is_open', false)
+
+  // Check Jatha overlap
+  const { data: jathaRecords } = await supabase
+    .from('jatha_attendance')
+    .select('id, date_from, date_to')
+    .eq('badge_number', badge_number)
+    .lte('date_from', outTimeISO)
+    .gte('date_to', session.in_time)
+
+  const conflictResult = detectTimeConflict({
+    sessions: existingSessions || [],
+    jathas: jathaRecords || [],
+    proposedInISO: session.in_time,
+    proposedOutISO: outTimeISO,
+    excludeSessionId: sessionId,
+    badgeNumber: badge_number
+  })
+
+  if (conflictResult.hasConflict) {
+    throw new Error(conflictResult.message)
+  }
+
   const outDateIST = scanTimeToISTDate(outTimeISO)
 
   // Auto-promote to W&W if applicable
@@ -891,6 +1059,34 @@ export async function closeForgottenSession(supabase, {
     }
     
     durationHours = Math.round(durationMs / (1000 * 60 * 60) * 10) / 10
+  }
+
+  // Check for time conflicts
+  const { data: existingSessions } = await supabase
+    .from('v_sessions')
+    .select('id, badge_number, in_time, out_time, date_ist, duty_type')
+    .eq('badge_number', session.badge_number)
+    .neq('id', sessionId)
+    .eq('is_open', false)
+
+  const { data: jathaRecords } = await supabase
+    .from('jatha_attendance')
+    .select('id, date_from, date_to')
+    .eq('badge_number', session.badge_number)
+    .lte('date_from', outTimeISO)
+    .gte('date_to', session.in_time)
+
+  const conflictResult = detectTimeConflict({
+    sessions: existingSessions || [],
+    jathas: jathaRecords || [],
+    proposedInISO: session.in_time,
+    proposedOutISO: outTimeISO,
+    excludeSessionId: sessionId,
+    badgeNumber: session.badge_number
+  })
+
+  if (conflictResult.hasConflict) {
+    throw new Error(conflictResult.message)
   }
 
   const outDateIST = scanTimeToISTDate(outTimeISO)

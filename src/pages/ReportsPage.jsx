@@ -524,7 +524,7 @@ export default function ReportsPage() {
         }
         break
         
-      case 'duration':
+      case 'duration': {
         headers.push('Duration Group', 'Count', 'Percentage')
         const total = data.total
         for (const [group, count] of Object.entries(data.groups)) {
@@ -532,6 +532,7 @@ export default function ReportsPage() {
           rows.push([group, count, total ? Math.round(count / total * 100) + '%' : '0%'])
         }
         break
+      }
         
       case 'centrewise':
         headers.push('Centre', 'Eligible', 'Present', 'Percentage')

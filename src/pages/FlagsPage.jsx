@@ -414,8 +414,8 @@ export default function FlagsPage() {
           f.issue_description || f.reason || '',
           f.status || '',
           f.flag_type || '',
-          dateFmt(f.created_at),
-          f.resolved_at ? dateFmt(f.resolved_at) : '',
+          formatDate(f.created_at),
+          f.resolved_at ? formatDate(f.resolved_at) : '',
           f.resolved_by || ''
         ]
       })
@@ -458,16 +458,6 @@ export default function FlagsPage() {
 
   const scopeLabel = isAso ? 'All centres' : isCentreUser ? `${profile?.centre} + sub-centres` : 'My flags'
 
-  function formatTime(iso) {
-    if (!iso) return '—'
-    return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
-  }
-
-  function formatDate(iso) {
-    if (!iso) return '—'
-    return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-  }
-
   return (
     <div className="page pb-nav">
       {/* Header */}
@@ -495,9 +485,9 @@ export default function FlagsPage() {
           <span style={{ fontWeight: 600, fontSize: '0.8rem', color: 'var(--blue)' }}>How Query System Works</span>
         </div>
         <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-          <strong>1. Raise:</strong> Flag issues like wrong scan, duplicate entry, or mark "not present" from Records page.<br/>
+          <strong>1. Raise:</strong> Flag issues like wrong scan, duplicate entry, or mark not present from Records page.<br/>
           <strong>2. Track:</strong> See all flags here with who raised it and when.<br/>
-          <strong>3. Resolve:</strong> Add replies to discuss, then mark as "In Progress" → "Resolved".
+          <strong>3. Resolve:</strong> Add replies to discuss, then mark as In Progress &rarr; Resolved.
         </div>
       </div>
 

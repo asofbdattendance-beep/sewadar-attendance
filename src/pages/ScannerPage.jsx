@@ -14,10 +14,14 @@ import {
   isLateNightScan,
   getSessionsForDate,
   getOpenSession,
-  asoForceCloseSession,
+ asoForceCloseSession,
   executeStandaloneOut,
   closeSessionWithTime,
   closeForgottenSession,
+  hasTimeConflict,
+  hasSessionOverlap,
+  detectTimeConflict,
+  syncSessionWithAttendance,
   deleteSessionWithAttendance,
 } from '../lib/sessionLogic'
 
@@ -1494,6 +1498,21 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
             }
           }
 
+          // Check Jatha overlap
+          const { data: jathaRecords } = await supabase
+            .from('jatha_attendance')
+            .select('id, date_from, date_to')
+            .eq('badge_number', selected.badge_number)
+            .lte('date_from', inTimeISO)
+            .gte('date_to', inTimeISO)
+          
+          if (jathaRecords?.length > 0) {
+            const jatha = jathaRecords[0]
+            setError(`Cannot mark IN. Person is assigned to Jatha from ${new Date(jatha.date_from).toLocaleDateString('en-IN')} to ${new Date(jatha.date_to).toLocaleDateString('en-IN')}`)
+            setSubmitting(false)
+            return
+          }
+
           // Create session + IN
           const { data: session, error: sessionError } = await supabase
             .from('attendance_sessions')
@@ -1634,6 +1653,36 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
         }
       } else {
         // For GATE_ENTRY and WATCH_WARD: Create session + IN + OUT together
+        
+        // Step 0: Check for time conflicts and Jatha overlap
+        const { data: existingSessions } = await supabase
+          .from('v_sessions')
+          .select('id, badge_number, in_time, out_time, date_ist, duty_type')
+          .eq('badge_number', selected.badge_number)
+          .neq('is_open', true)
+        
+        const { data: jathaRecords } = await supabase
+          .from('jatha_attendance')
+          .select('id, date_from, date_to')
+          .eq('badge_number', selected.badge_number)
+          .lte('date_from', outTimeISO)
+          .gte('date_to', inTimeISO)
+        
+        const conflictResult = detectTimeConflict({
+          sessions: existingSessions || [],
+          jathas: jathaRecords || [],
+          proposedInISO: inTimeISO,
+          proposedOutISO: outTimeISO,
+          excludeSessionId: null,
+          badgeNumber: selected.badge_number
+        })
+        
+        if (conflictResult.hasConflict) {
+          setError(conflictResult.message)
+          setSubmitting(false)
+          return
+        }
+
         // Step 1: Create session with IN
         const { data: session, error: sessionError } = await supabase
           .from('attendance_sessions')

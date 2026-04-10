@@ -52,12 +52,16 @@ function fmtDate(d) {
 //  CONFLICT CHECKER
 // ─────────────────────────────────────────────
 async function checkConflicts(badgeNumber, dateFrom, dateTo) {
+  if (!dateFrom || !dateTo) return { jathaConflicts: [], dailyConflicts: [] }
+  
   const [jathaRes, dailyRes] = await Promise.all([
+    // Check if person already has jatha in overlapping date range
     supabase.from('jatha_attendance')
       .select('id, jatha_type, jatha_centre, jatha_dept, date_from, date_to, satsang_days, submitted_name')
       .eq('badge_number', badgeNumber)
-      .gte('date_to', dateFrom)
-      .lte('date_from', dateTo),
+      .lte('date_from', dateTo)     // Existing starts before new ends
+      .gte('date_to', dateFrom),   // Existing ends after new starts
+    // Check if person has attendance on any day in the jatha period
     supabase.from('attendance')
       .select('id, type, scan_time, scanner_name, centre')
       .eq('badge_number', badgeNumber)
