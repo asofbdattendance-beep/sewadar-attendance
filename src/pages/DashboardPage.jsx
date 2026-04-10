@@ -44,6 +44,11 @@ export default function DashboardPage() {
     if (!profile || !childCentresLoaded) return
     
     fetchDashboard()
+  }, [profile, dateFilter, childCentresLoaded])
+
+  // Realtime subscription - separate effect to avoid re-subscribing on data changes
+  useEffect(() => {
+    if (!profile) return
     
     let timer = null
     const channel = supabase.channel('dashboard-realtime-v2')
@@ -81,7 +86,7 @@ export default function DashboardPage() {
       clearTimeout(timer)
       supabase.removeChannel(channel) 
     }
-  }, [profile, dateFilter])
+  }, [profile?.centre, profile?.role])
 
   async function fetchDashboard() {
     setLoading(true)
@@ -144,7 +149,7 @@ export default function DashboardPage() {
       outside,
       satsang: dutyCounts.satsang,
       gateEntry: dutyCounts.gate_entry,
-      watchWard: dutyCounts.watchWard
+      watchWard: dutyCounts.watch_ward
     })
 
     // Fetch centres data for ASO

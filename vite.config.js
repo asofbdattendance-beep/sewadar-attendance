@@ -1,10 +1,18 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import mkcert from 'vite-plugin-mkcert'
 
 export default defineConfig({
   plugins: [
     react(),
+    mkcert() // 🔥 THIS is the missing piece
   ],
+
+  server: {
+    host: true,
+    https: true
+  },
+
   build: {
     rollupOptions: {
       output: {
@@ -19,6 +27,7 @@ export default defineConfig({
     },
     chunkSizeWarningLimit: 600,
   },
+
   define: {
     global: 'globalThis',
   },

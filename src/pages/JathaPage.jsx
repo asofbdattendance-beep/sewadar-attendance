@@ -176,7 +176,7 @@ function MarkJathaTab() {
       let scopeQ = supabase.from('centres').select('centre_name')
         .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
       const { data: cd } = await scopeQ
-      const scope = cd?.map(c => c.centre_name) || [profile.centre]
+      const scope = [...new Set(cd?.map(c => c.centre_name) || [profile.centre])]
       q = q.in('centre', scope)
     }
 
@@ -912,8 +912,8 @@ function JathaTableTab() {
     if (typeFilter)     q = q.eq('jatha_type', typeFilter)
 
     if (isCentreUser) {
-      const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
-      q = q.in('centre', scope)
+      const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre && c.centre_name !== profile.centre).map(c => c.centre_name)]
+      q = q.in('centre', [...new Set(scope)])
     } else if (centreFilter) {
       q = q.eq('centre', centreFilter)
     }

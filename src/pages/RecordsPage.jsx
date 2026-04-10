@@ -12,7 +12,7 @@ import SkeletonRows from '../components/SkeletonRows'
 import EmptyState from '../components/EmptyState'
 import ConfirmModal from '../components/ConfirmModal'
 import { showSuccess, showError } from '../components/Toast'
-import { deleteSessionWithAttendance } from '../lib/sessionLogic'
+import { deleteSessionWithAttendance, syncSessionWithAttendance } from '../lib/sessionLogic'
 
 const PAGE_SIZE = 50
 
@@ -472,16 +472,15 @@ function AttendanceTab() {
         return
       }
 
-      await supabase.from('attendance_sessions').update(updates).eq('id', editingSession.id)
+      // Use sync function to keep session and attendance consistent
+      await syncSessionWithAttendance(supabase, {
+        sessionId: editingSession.id,
+        updates,
+        updatedBy: profile?.badge_number,
+        reason: 'Manual edit from Records page',
+      })
 
-      if (editingSession.in_id && updates.in_time) {
-        await supabase.from('attendance').update({ scan_time: updates.in_time }).eq('id', editingSession.in_id)
-      }
-      if (editingSession.out_id && updates.out_time) {
-        await supabase.from('attendance').update({ scan_time: updates.out_time }).eq('id', editingSession.out_id)
-      }
-
-      showSuccess('Session updated')
+      showSuccess('Session and attendance updated')
       setEditingSession(null)
       fetchRecords()
     } catch (err) {

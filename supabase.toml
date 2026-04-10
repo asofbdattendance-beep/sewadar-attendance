@@ -27,3 +27,9 @@ functions_dir = "./supabase/functions"
 
 [edge_runtime]
 enabled = true
+
+[functions.create-user]
+verify_jwt = false
+
+[functions.save-credential]
+verify_jwt = false

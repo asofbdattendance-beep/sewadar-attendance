@@ -1194,66 +1194,98 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
     return () => clearTimeout(timer)
   }, [search, profile, childCentres, otherCentre])
 
-  // Real-time time conflict check
+  // Real-time validation check
   useEffect(() => {
-    if (!selected || !inDate || !inTime) {
+    if (!selected) {
       setError('')
       return
     }
 
-    const checkConflicts = async () => {
-      const inTimeISO = new Date(`${inDate}T${inTime}:00+05:30`).getTime()
+    const validateTime = async () => {
+      // Validate IN time format
+      if (!inDate || !inTime) {
+        setError('')
+        return
+      }
       
-      // Get all sessions for this sewadar on this date (ALL duty types)
-      const { data: existingSessions } = await supabase
-        .from('attendance_sessions')
-        .select('id, in_time, out_time, duty_type, date_ist')
-        .eq('badge_number', selected.badge_number)
-        .eq('date_ist', inDate)
-
-      if (import.meta.env.DEV) {
-        console.log('[TimeConflict] Checking:', { 
-          badge: selected.badge_number, 
-          date: inDate, 
-          time: inTime,
-          sessions: existingSessions?.map(s => ({ 
-            duty: s.duty_type, 
-            in: s.in_time, 
-            out: s.out_time 
-          }))
-        })
+      const inTimeISO = new Date(`${inDate}T${inTime}:00+05:30`)
+      if (isNaN(inTimeISO.getTime())) {
+        setError('Invalid IN time format')
+        return
       }
 
-      if (existingSessions?.length > 0) {
-        for (const session of existingSessions) {
-          const sessionInMs = new Date(session.in_time).getTime()
-          const sessionOutMs = session.out_time ? new Date(session.out_time).getTime() : Date.now() + 86400000 // Open = far future
-          
-          if (import.meta.env.DEV) {
-            console.log('[TimeConflict] Comparing:', { 
-              newTime: inTimeISO, 
-              sessionIn: sessionInMs, 
-              sessionOut: sessionOutMs,
-              overlap: inTimeISO >= sessionInMs && inTimeISO < sessionOutMs
-            })
-          }
-          
-          // Check if new IN time overlaps with existing session (any duty type)
-          if (inTimeISO >= sessionInMs && inTimeISO < sessionOutMs) {
-            const inStr = new Date(session.in_time).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
-            const outStr = session.out_time 
-              ? new Date(session.out_time).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
-              : 'Open'
-            setError(`Time conflict: ${session.duty_type} session from ${inStr} to ${outStr}. Choose different time.`)
-            return
+      // For GATE_ENTRY/WATCH_WARD: validate OUT time
+      if (dutyType !== 'satsang') {
+        if (!outDate || !outTime) {
+          setError('')
+          return
+        }
+
+        const outTimeISO = new Date(`${outDate}T${outTime}:00+05:30`)
+        if (isNaN(outTimeISO.getTime())) {
+          setError('Invalid OUT time format')
+          return
+        }
+
+        // OUT must be after IN
+        if (outTimeISO <= inTimeISO) {
+          setError('OUT time must be after IN time')
+          return
+        }
+
+        const durationMs = outTimeISO - inTimeISO
+        const MIN_MS = 10 * 60 * 1000
+        const MAX_MS_NORMAL = 12 * 60 * 60 * 1000
+        const MAX_MS_WW = 20 * 60 * 60 * 1000
+
+        const inDateIST = inTimeISO.toISOString().split('T')[0]
+        const outDateIST = outTimeISO.toISOString().split('T')[0]
+
+        // Minimum duration (only for same-day)
+        if (inDateIST === outDateIST && durationMs < MIN_MS) {
+          setError('Session must be at least 10 minutes')
+          return
+        }
+
+        // Maximum duration
+        const maxMs = dutyType === DUTY_TYPES.WATCH_WARD ? MAX_MS_WW : MAX_MS_NORMAL
+        if (durationMs > maxMs) {
+          setError(`Session cannot exceed ${dutyType === DUTY_TYPES.WATCH_WARD ? 20 : 12} hours`)
+          return
+        }
+      }
+
+      // Check for database time conflicts
+      if (dutyType === 'satsang' && inDate && inTime) {
+        const { data: existingSessions } = await supabase
+          .from('attendance_sessions')
+          .select('id, in_time, out_time, duty_type, date_ist')
+          .eq('badge_number', selected.badge_number)
+          .eq('date_ist', inDate)
+
+        if (existingSessions?.length > 0) {
+          const inTimeMs = inTimeISO.getTime()
+          for (const session of existingSessions) {
+            const sessionInMs = new Date(session.in_time).getTime()
+            const sessionOutMs = session.out_time ? new Date(session.out_time).getTime() : Date.now() + 86400000
+
+            if (inTimeMs >= sessionInMs && inTimeMs < sessionOutMs) {
+              const inStr = new Date(session.in_time).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
+              const outStr = session.out_time
+                ? new Date(session.out_time).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })
+                : 'Open'
+              setError(`Time conflict: ${session.duty_type} session from ${inStr} to ${outStr}. Choose different time.`)
+              return
+            }
           }
         }
       }
+
       setError('')
     }
 
-    checkConflicts()
-  }, [selected, inDate, inTime, dutyType])
+    validateTime()
+  }, [selected, inDate, inTime, outDate, outTime, dutyType])
 
   const canSubmit = selected && (dutyType === 'satsang' ? remark.trim().length >= 3 : true) && (!otherCentre || remark.trim().length >= 3) && !error
 
@@ -1272,6 +1304,48 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
 
     const inTimeISO = new Date(`${inDate}T${inTime}:00+05:30`).toISOString()
     const outTimeISO = new Date(`${outDate}T${outTime}:00+05:30`).toISOString()
+
+    // Validate IN time
+    if (isNaN(new Date(inTimeISO).getTime())) {
+      setError('Invalid IN time')
+      setSubmitting(false)
+      return
+    }
+
+    // For GATE_ENTRY/WATCH_WARD: validate duration
+    if (dutyType !== 'satsang') {
+      const outDateObj = new Date(outTimeISO)
+      const inDateObj = new Date(inTimeISO)
+
+      // OUT must be after IN
+      if (outDateObj <= inDateObj) {
+        setError('OUT time must be after IN time')
+        setSubmitting(false)
+        return
+      }
+
+      const durationMs = outDateObj - inDateObj
+      const MIN_MS = 10 * 60 * 1000
+      const MAX_MS_NORMAL = 12 * 60 * 60 * 1000
+      const MAX_MS_WW = 20 * 60 * 60 * 1000
+
+      // Minimum duration (only for same-day)
+      const inDateIST = inTimeISO.split('T')[0]
+      const outDateIST = outTimeISO.split('T')[0]
+      if (inDateIST === outDateIST && durationMs < MIN_MS) {
+        setError('Session must be at least 10 minutes')
+        setSubmitting(false)
+        return
+      }
+
+      // Maximum duration
+      const maxMs = dutyType === DUTY_TYPES.WATCH_WARD ? MAX_MS_WW : MAX_MS_NORMAL
+      if (durationMs > maxMs) {
+        setError(`Session cannot exceed ${dutyType === DUTY_TYPES.WATCH_WARD ? 20 : 12} hours`)
+        setSubmitting(false)
+        return
+      }
+    }
 
     try {
       // For SATSANG: handle IN or OUT separately
@@ -1379,7 +1453,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
           try {
             const { data: sessions } = await supabase
               .from('attendance_sessions')
-              .select('id')
+              .select('id, in_time')
               .eq('badge_number', selected.badge_number)
               .eq('is_open', true)
               .eq('duty_type', 'satsang')
@@ -1389,6 +1463,29 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
             if (!sessions?.length) throw new Error('No open satsang session found. Mark IN first.')
 
             const openSession = sessions[0]
+
+            // Validate OUT time for same-day sessions
+            if (openSession.in_time) {
+              const inTime = new Date(openSession.in_time)
+              const outTime = new Date(outTimeISO)
+              const inDateIST = openSession.in_time.split('T')[0]
+              const outDateIST = outTimeISO.split('T')[0]
+              const durationMs = outTime - inTime
+
+              // Same-day: minimum 10 minutes
+              if (inDateIST === outDateIST && durationMs < 10 * 60 * 1000) {
+                setError('Session must be at least 10 minutes')
+                setSubmitting(false)
+                return
+              }
+
+              // Maximum 12 hours for satsang
+              if (durationMs > 12 * 60 * 60 * 1000) {
+                setError('Satsang session cannot exceed 12 hours')
+                setSubmitting(false)
+                return
+              }
+            }
 
             const { data: outAtt, error: outError } = await supabase
               .from('attendance')

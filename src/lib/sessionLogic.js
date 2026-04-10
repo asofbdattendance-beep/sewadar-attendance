@@ -453,6 +453,14 @@ export async function executeScan(supabase, {
           const m = String(inDate.getMonth() + 1).padStart(2, '0')
           const d = String(inDate.getDate()).padStart(2, '0')
           outTime = `${y}-${m}-${d}T23:59:59+05:30`
+          
+          // Ensure OUT is AFTER IN (handles case where IN was late night like 11:30pm)
+          if (new Date(outTime) <= new Date(openSession.in_time)) {
+            // If 23:59 is not after IN, use IN time + 1 minute
+            const inTime = new Date(openSession.in_time)
+            inTime.setMinutes(inTime.getMinutes() + 1)
+            outTime = inTime.toISOString()
+          }
         }
 
         const durationMs = new Date(outTime) - new Date(openSession.in_time)
@@ -789,6 +797,7 @@ export async function closeSessionWithTime(supabase, {
       force_closed:        true,
       force_closed_reason: reason,
       force_closed_by:     scanner_badge || 'MANUAL',
+      out_scanner_name:    scanner_name || 'Manual Entry',
       duty_type:           finalDutyType,
       updated_at:          new Date().toISOString(),
     })
@@ -1216,4 +1225,205 @@ export async function cleanupOrphanRecords(supabase, deletedByBadge = 'SYSTEM') 
   } catch (_) { /* logging non-critical */ }
 
   return results
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BIDIRECTIONAL SYNC - Keep sessions and attendance consistent
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Sync session fields with its attendance records.
+ * Updates the linked IN/OUT attendance records when session is edited.
+ * 
+ * @param {object} supabase
+ * @param {object} params
+ * @param {number} params.sessionId - Session ID to sync
+ * @param {object} params.updates - Fields to update on session
+ * @param {string} params.updatedBy - Badge of user making the change
+ * @param {string} params.reason - Reason for the change (for logging)
+ */
+export async function syncSessionWithAttendance(supabase, {
+  sessionId,
+  updates,
+  updatedBy,
+  reason = 'Manual edit',
+}) {
+  const errors = []
+  
+  // Fetch current session to get in_id and out_id
+  const { data: session, error: fetchError } = await supabase
+    .from('attendance_sessions')
+    .select('id, in_id, out_id, in_time, out_time')
+    .eq('id', sessionId)
+    .single()
+
+  if (fetchError || !session) {
+    throw new Error('Session not found: ' + (fetchError?.message || sessionId))
+  }
+
+  // Prepare attendance updates
+  const attendanceUpdates = {}
+  
+  if (updates.in_time && session.in_id) {
+    attendanceUpdates.in_time = updates.in_time
+  }
+  if (updates.out_time && session.out_id) {
+    attendanceUpdates.out_time = updates.out_time
+  }
+  if (updates.duty_type) {
+    attendanceUpdates.duty_type = updates.duty_type
+  }
+
+  // Update session
+  const sessionUpdateData = { ...updates, updated_at: new Date().toISOString() }
+  const { error: sessionError } = await supabase
+    .from('attendance_sessions')
+    .update(sessionUpdateData)
+    .eq('id', sessionId)
+
+  if (sessionError) {
+    errors.push('Session update failed: ' + sessionError.message)
+  }
+
+  // Update linked IN attendance record
+  if (session.in_id && Object.keys(attendanceUpdates).length > 0) {
+    const { error: inError } = await supabase
+      .from('attendance')
+      .update(attendanceUpdates)
+      .eq('id', session.in_id)
+    
+    if (inError) {
+      errors.push('IN attendance update failed: ' + inError.message)
+    }
+  }
+
+  // Update linked OUT attendance record
+  if (session.out_id && Object.keys(attendanceUpdates).length > 0) {
+    const { error: outError } = await supabase
+      .from('attendance')
+      .update(attendanceUpdates)
+      .eq('id', session.out_id)
+    
+    if (outError) {
+      errors.push('OUT attendance update failed: ' + outError.message)
+    }
+  }
+
+  // Log the change
+  try {
+    await supabase.from('logs').insert({
+      user_badge: updatedBy || 'SYSTEM',
+      action: 'SYNC_SESSION_ATTENDANCE',
+      details: JSON.stringify({
+        sessionId,
+        updates,
+        syncedFields: attendanceUpdates,
+        reason,
+        errors,
+      }),
+      timestamp: new Date().toISOString(),
+    })
+  } catch (_) { /* logging non-critical */ }
+
+  if (errors.length > 0) {
+    throw new Error('Sync partially failed: ' + errors.join('; '))
+  }
+
+  return { success: true, sessionId }
+}
+
+/**
+ * Sync attendance record with its session.
+ * Updates the session when an attendance record is edited.
+ * 
+ * @param {object} supabase
+ * @param {object} params
+ * @param {number} params.attendanceId - Attendance ID that was edited
+ * @param {object} params.updates - Fields updated on attendance
+ * @param {string} params.updatedBy - Badge of user making the change
+ */
+export async function syncAttendanceWithSession(supabase, {
+  attendanceId,
+  updates,
+  updatedBy,
+}) {
+  // Fetch the attendance record
+  const { data: att, error: fetchError } = await supabase
+    .from('attendance')
+    .select('id, session_id, type, scan_time')
+    .eq('id', attendanceId)
+    .single()
+
+  if (fetchError || !att) {
+    throw new Error('Attendance record not found: ' + (fetchError?.message || attendanceId))
+  }
+
+  if (!att.session_id) {
+    // No linked session, nothing to sync
+    return { success: true, attendanceId, synced: false }
+  }
+
+  // Prepare session updates based on attendance changes
+  const sessionUpdates = {}
+
+  if (updates.scan_time) {
+    if (att.type === 'IN') {
+      sessionUpdates.in_time = updates.scan_time
+    } else if (att.type === 'OUT') {
+      sessionUpdates.out_time = updates.scan_time
+    }
+  }
+  
+  if (updates.duty_type) {
+    sessionUpdates.duty_type = updates.duty_type
+  }
+
+  if (Object.keys(sessionUpdates).length === 0) {
+    return { success: true, attendanceId, synced: false }
+  }
+
+  // Update the session
+  sessionUpdates.updated_at = new Date().toISOString()
+  
+  const { error: sessionError } = await supabase
+    .from('attendance_sessions')
+    .update(sessionUpdates)
+    .eq('id', att.session_id)
+
+  if (sessionError) {
+    throw new Error('Session sync failed: ' + sessionError.message)
+  }
+
+  // Also update the other attendance record if time changed
+  if (updates.scan_time) {
+    const { data: otherAtts } = await supabase
+      .from('attendance')
+      .select('id, type')
+      .eq('session_id', att.session_id)
+      .neq('id', attendanceId)
+
+    for (const other of otherAtts || []) {
+      await supabase
+        .from('attendance')
+        .update({ duty_type: updates.duty_type })
+        .eq('id', other.id)
+    }
+  }
+
+  // Log the change
+  try {
+    await supabase.from('logs').insert({
+      user_badge: updatedBy || 'SYSTEM',
+      action: 'SYNC_ATTENDANCE_SESSION',
+      details: JSON.stringify({
+        attendanceId,
+        sessionId: att.session_id,
+        updates,
+        sessionUpdates,
+      }),
+      timestamp: new Date().toISOString(),
+    })
+  } catch (_) { /* logging non-critical */ }
+
+  return { success: true, attendanceId, sessionId: att.session_id }
 }

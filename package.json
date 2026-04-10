@@ -11,7 +11,8 @@
     "lint": "eslint src --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview:dist": "npm run build && npm run preview",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "dev:host": "vite --host"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
@@ -31,7 +32,9 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
+    "jsdom": "^29.0.2",
     "vite": "^5.0.0",
+    "vite-plugin-mkcert": "^1.17.10",
     "vitest": "^4.1.2"
   }
 }

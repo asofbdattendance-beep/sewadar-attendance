@@ -23,7 +23,7 @@ import TablePagination from '../components/TablePagination'
 import EmptyState from '../components/EmptyState'
 import ConfirmModal from '../components/ConfirmModal'
 import { showSuccess, showError } from '../components/Toast'
-import { deleteAttendanceWithSessionUpdate } from '../lib/sessionLogic'
+import { deleteAttendanceWithSessionUpdate, syncAttendanceWithSession } from '../lib/sessionLogic'
 
 const PAGE_SIZE = 50
 const SEARCH_DEBOUNCE = 300
@@ -679,22 +679,21 @@ export default function SuperAdminPage() {
     if (!Object.keys(updates).length) { setEditingAtt(null); return }
 
     try {
-      // Update attendance record
-      const { error } = await supabase.from('attendance').update(updates).eq('id', editingAtt.id)
-      if (error) { showMsg('Update failed: ' + error.message, 'error'); return }
+      // Update attendance record first
+      const { error: attError } = await supabase.from('attendance').update(updates).eq('id', editingAtt.id)
+      if (attError) { showMsg('Update failed: ' + attError.message, 'error'); return }
 
-      // If this attendance has a session, update session fields too
+      // Sync with session using the unified function
       if (editingAtt.session_id) {
-        const isIn = editingAtt.type === 'IN'
-        const sessionUpdate = isIn 
-          ? { in_time: updates.scan_time, date_ist: editAttDate }
-          : { out_time: updates.scan_time }
-        
-        await supabase.from('attendance_sessions').update(sessionUpdate).eq('id', editingAtt.session_id)
+        await syncAttendanceWithSession(supabase, {
+          attendanceId: editingAtt.id,
+          updates,
+          updatedBy: profile?.badge_number,
+        })
       }
 
       await logAction(profile, 'EDIT_ATTENDANCE', `Edited id=${editingAtt.id} badge=${editingAtt.badge_number}: ${JSON.stringify(updates)}`)
-      showMsg('Record updated successfully')
+      showMsg('Attendance and session updated')
       setEditingAtt(null); fetchAttendance()
     } catch (err) { showMsg('Update failed: ' + err.message, 'error') }
   }

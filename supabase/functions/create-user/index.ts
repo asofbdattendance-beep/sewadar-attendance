@@ -1,5 +1,5 @@
 // supabase/functions/create-user/index.ts
-// SECURE: Creates new user accounts - ASO only via Authorization header
+// SECURE: Creates new user accounts - ASO only
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
@@ -8,42 +8,27 @@ const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY") ?? ""
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-user-id",
 }
 
 serve(async (req) => {
-  // Handle CORS preflight without auth
+  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders })
   }
 
-  // Get user from x-user-id header (frontend provides this)
-  let userId = req.headers.get("x-user-id") || ""
-  
-  // Also try to get from JWT as fallback
-  if (!userId) {
-    const authHeader = req.headers.get("Authorization") || ""
-    if (authHeader.startsWith("Bearer ")) {
-      try {
-        const token = authHeader.slice(7)
-        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
-        userId = payload.sub || ""
-        console.log("Got user from JWT:", userId)
-      } catch (e) {
-        console.log("JWT parse error:", e.message)
-      }
-    }
-  }
+  // Get user ID from x-user-id header
+  const userId = req.headers.get("x-user-id") || ""
+  console.log("x-user-id header:", userId)
 
   if (!userId) {
-    return new Response(JSON.stringify({ error: "Could not identify user - no x-user-id or valid JWT" }), {
+    return new Response(JSON.stringify({ error: "Missing x-user-id header" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     })
   }
 
   try {
-    // Use service role for all operations
     const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
     })
@@ -55,9 +40,10 @@ serve(async (req) => {
       .eq("auth_id", userId)
       .single()
     
+    console.log("Profile lookup:", { profile, error: profileError })
+    
     if (profileError || !profile) {
-      console.error("Profile fetch error:", profileError)
-      return new Response(JSON.stringify({ error: "User profile not found for id: " + userId }), {
+      return new Response(JSON.stringify({ error: "User profile not found" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       })
@@ -75,21 +61,6 @@ serve(async (req) => {
 
     if (!email || !password || !name || !badge_number || !role || !centre) {
       return new Response(JSON.stringify({ error: "All fields are required" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      })
-    }
-
-    if (password.length < 6) {
-      return new Response(JSON.stringify({ error: "Password must be at least 6 characters" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      })
-    }
-
-    const validRoles = ['aso', 'centre', 'sc_sp_user']
-    if (!validRoles.includes(role)) {
-      return new Response(JSON.stringify({ error: "Invalid role" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       })
