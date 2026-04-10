@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, FLAG_TYPES, FLAG_STATUS } from '../lib/supabase'
@@ -15,12 +16,17 @@ const PAGE_SIZE = 50
 const SEARCH_DEBOUNCE = 300
 
 export default function FlagsPage() {
+  const [searchParams] = useSearchParams()
+  const highlightId = searchParams.get('id')
+  
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
 
   const [allFlags, setAllFlags] = useState([])
   const [loading, setLoading] = useState(true)
+  const [highlightedId, setHighlightedId] = useState(highlightId)
+  const highlightRef = useRef(null)
   const [statusFilter, setStatusFilter] = useState('open')
   const [flagTypeFilter, setFlagTypeFilter] = useState(null)
   const [searchInput, setSearchInput] = useState('')
@@ -34,6 +40,7 @@ export default function FlagsPage() {
   const [submitting, setSubmitting] = useState(false)
   const [childCentres, setChildCentres] = useState([])
   const [totalCount, setTotalCount] = useState(0)
+  const [sewadarMap, setSewadarMap] = useState({})
   const [raiseModal, setRaiseModal] = useState(false)
   const [raiseType, setRaiseType] = useState('other')
   const [raiseNote, setRaiseNote] = useState('')
@@ -96,7 +103,7 @@ export default function FlagsPage() {
       .from('queries')
       .select(`
         *,
-        attendance(badge_number, sewadar_name, type, scan_time, centre, department, scanner_name),
+        attendance(id, badge_number, type, scan_time, scanner_name),
         query_replies(id, replied_by_badge, replied_by_name, replied_by_centre, replied_by_role, message, created_at)
       `, { count: 'exact' })
       .order(sortCol === 'created_at' ? 'created_at' : sortCol, { ascending: sortDir === 'asc' })
@@ -116,8 +123,45 @@ export default function FlagsPage() {
     const { data, count, error } = await query
     if (error) { showError('Failed to load flags'); setLoading(false); return }
     setTotalCount(count || 0)
+    
+    // Fetch sewadar info for all badge numbers
+    const badgeNumbers = [...new Set((data || []).map(f => f.badge_number || f.attendance?.badge_number).filter(Boolean))]
+    if (badgeNumbers.length > 0) {
+      const { data: sewadars } = await supabase
+        .from('sewadars')
+        .select('badge_number, sewadar_name, centre, department')
+        .in('badge_number', badgeNumbers)
+      setSewadarMap(Object.fromEntries((sewadars || []).map(s => [s.badge_number, s])))
+    } else {
+      setSewadarMap({})
+    }
 
     let flags = data || []
+    
+    // Fetch session data for flags that have session_id
+    const sessionIds = flags
+      .map(f => f.session_id)
+      .filter(id => id && typeof id === 'number')
+    
+    if (sessionIds.length > 0) {
+      try {
+        const { data: sessionsData, error: sessionError } = await supabase
+          .from('attendance_sessions')
+          .select('id, badge_number, in_time, out_time, duty_type, date_ist')
+          .in('id', sessionIds)
+        
+        if (!sessionError && sessionsData) {
+          const sessionsMap = Object.fromEntries(sessionsData.map(s => [s.id, s]))
+          for (const flag of flags) {
+            if (flag.session_id && sessionsMap[flag.session_id]) {
+              flag.attendance_sessions = sessionsMap[flag.session_id]
+            }
+          }
+        }
+      } catch (e) {
+        if (import.meta.env.DEV) console.warn('[Flags] Session fetch error:', e)
+      }
+    }
 
     // Client-side sort for attendance-related columns (not directly queryable)
     flags.sort((a, b) => {
@@ -159,6 +203,19 @@ export default function FlagsPage() {
   useEffect(() => { 
     fetchFlags() 
   }, [page, statusFilter, flagTypeFilter, search, sortCol, sortDir, childCentres, profile])
+
+  // Scroll to highlighted flag when page loads
+  useEffect(() => {
+    if (highlightedId && highlightRef.current) {
+      setTimeout(() => {
+        highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        highlightRef.current?.classList.add('flag-highlight')
+        setTimeout(() => {
+          highlightRef.current?.classList.remove('flag-highlight')
+        }, 3000)
+      }, 500)
+    }
+  }, [allFlags, highlightedId])
 
   // Real-time updates
   useEffect(() => {
@@ -214,6 +271,25 @@ export default function FlagsPage() {
     }
     setReplyTexts(prev => ({ ...prev, [flagId]: '' }))
     setSubmitting(false)
+    fetchFlags()
+    fetchStats()
+  }
+
+  async function updateStatus(flagId, newStatus) {
+    await supabase.from('queries').update({ 
+      status: newStatus, 
+      updated_at: new Date().toISOString() 
+    }).eq('id', flagId)
+    try {
+      await supabase.from('logs').insert({
+        user_badge: profile.badge_number, 
+        action: 'FLAG_STATUS_UPDATE',
+        details: `Flag #${flagId} status changed to ${newStatus}`, 
+        timestamp: new Date().toISOString()
+      })
+    } catch (e) {
+      if (import.meta.env.DEV) console.warn('Log insert failed:', e)
+    }
     fetchFlags()
     fetchStats()
   }
@@ -301,7 +377,7 @@ export default function FlagsPage() {
         .from('queries')
         .select(`
           *,
-          attendance(badge_number, sewadar_name, type, scan_time, centre, department, scanner_name)
+          attendance:attendance_id(id, badge_number, type, scan_time, scanner_name)
         `)
         .order(sortCol === 'created_at' ? 'created_at' : sortCol, { ascending: sortDir === 'asc' })
 
@@ -316,20 +392,33 @@ export default function FlagsPage() {
         return
       }
 
+      // Get sewadar info for all badge numbers
+      const badgeNumbers = [...new Set(allFlags.map(f => f.badge_number || f.attendance?.badge_number).filter(Boolean))]
+      const { data: sewadars } = await supabase
+        .from('sewadars')
+        .select('badge_number, sewadar_name, centre')
+        .in('badge_number', badgeNumbers)
+      
+      const sewadarMap = Object.fromEntries((sewadars || []).map(s => [s.badge_number, s]))
+
       const header = ['ID', 'Badge', 'Name', 'Centre', 'Raised By', 'Reason', 'Status', 'Flag Type', 'Created', 'Resolved At', 'Resolved By']
-      const rows = allFlags.map(f => [
-        f.id,
-        f.attendance?.badge_number || '',
-        f.attendance?.sewadar_name || '',
-        f.raised_by_centre || '',
-        f.raised_by_name || '',
-        f.issue_description || f.reason || '',
-        f.status || '',
-        f.flag_type || '',
-        dateFmt(f.created_at),
-        f.resolved_at ? dateFmt(f.resolved_at) : '',
-        f.resolved_by || ''
-      ])
+      const rows = allFlags.map(f => {
+        const badge = f.badge_number || f.attendance?.badge_number
+        const sewadar = sewadarMap[badge] || {}
+        return [
+          f.id,
+          badge || '',
+          sewadar.sewadar_name || '',
+          f.raised_by_centre || '',
+          f.raised_by_name || '',
+          f.issue_description || f.reason || '',
+          f.status || '',
+          f.flag_type || '',
+          dateFmt(f.created_at),
+          f.resolved_at ? dateFmt(f.resolved_at) : '',
+          f.resolved_by || ''
+        ]
+      })
       
       const csv = [header, ...rows].map(r => r.map(v => {
         const str = String(v || '')
@@ -514,27 +603,34 @@ export default function FlagsPage() {
               </tr>
             ) : (
               allFlags.map((flag, idx) => {
-                const isExpanded = expandedId === flag.id
+                const isHighlighted = flag.id === highlightedId
+                const isExpanded = expandedId === flag.id || isHighlighted
                 const replies = flag.query_replies || []
                 const canReply = isAso || isCentreUser || flag.raised_by_badge === profile?.badge_number
                 const canResolve = (isAso || isCentreUser) && flag.status !== FLAG_STATUS.RESOLVED
+                const badgeNum = flag.badge_number || flag.attendance?.badge_number
+                const sewadar = sewadarMap[badgeNum] || {}
 
                 return (
                   <React.Fragment key={flag.id}>
-                    <tr onClick={() => setExpandedId(isExpanded ? null : flag.id)}
+                    <tr 
+                      ref={isHighlighted ? highlightRef : null}
+                      onClick={() => { setExpandedId(isExpanded ? null : flag.id); setHighlightedId(null) }}
+                      className={isHighlighted ? 'flag-highlight' : ''}
                       style={{
                         cursor: 'pointer',
                         borderBottom: isExpanded ? 'none' : '1px solid var(--border)',
                         background: isExpanded ? 'var(--bg)' : idx % 2 === 0 ? 'var(--surface)' : 'transparent',
+                        transition: 'background 0.3s ease',
                       }}>
                       <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.78rem', fontWeight: 600 }}>
-                        {flag.attendance?.badge_number || flag.badge_number || '—'}
+                        {badgeNum || '—'}
                       </td>
                       <td style={{ fontWeight: 500, padding: '0.45rem 0.5rem' }}>
-                        {flag.attendance?.sewadar_name || flag.sewadar_name || '—'}
+                        {sewadar.sewadar_name || '—'}
                       </td>
                       <td style={{ color: 'var(--text-secondary)', fontSize: '0.78rem', padding: '0.45rem 0.5rem' }}>
-                        {flag.centre || flag.raised_by_centre || '—'}
+                        {sewadar.centre || flag.raised_by_centre || '—'}
                       </td>
                       <td style={{ padding: '0.45rem 0.5rem' }}>
                         <span style={{ fontWeight: 500 }}>{flag.raised_by_name || '—'}</span>
@@ -580,7 +676,7 @@ export default function FlagsPage() {
                             </div>
 
                             {/* Attendance reference (if linked) */}
-                            {(flag.attendance || flag.badge_number) && (
+                            {(flag.attendance || flag.badge_number || flag.attendance_sessions) && (
                               <div style={{ marginBottom: '0.75rem', padding: '0.6rem 0.75rem', background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.35rem' }}>
                                   <Flag size={12} style={{ color: 'var(--text-muted)' }} />
@@ -595,15 +691,28 @@ export default function FlagsPage() {
                                         color: flag.attendance.type === 'IN' ? 'var(--green)' : 'var(--red)',
                                       }}>{flag.attendance.type}</span>
                                       <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 600 }}>{flag.attendance.badge_number}</span>
-                                      <span style={{ fontWeight: 500 }}>{flag.attendance.sewadar_name}</span>
-                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>· {flag.attendance.centre}</span>
-                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>· {formatTime(flag.attendance.scan_time)}</span>
+                                      <span style={{ fontWeight: 500 }}>{sewadar.sewadar_name || '—'}</span>
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>· {sewadar.centre || '—'}</span>
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>· {flag.attendance.scan_time ? `${formatDate(flag.attendance.scan_time)} ${formatTime(flag.attendance.scan_time)}` : '—'}</span>
                                     </>
                                   )}
-                                  {!flag.attendance && flag.badge_number && (
+                                  {flag.attendance_sessions && !flag.attendance && (
+                                    <>
+                                      <span style={{
+                                        fontSize: '0.7rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+                                        background: 'var(--amber-bg)',
+                                        color: 'var(--amber)',
+                                      }}>{flag.flag_type === 'forgot_out' ? 'FORGOT OUT' : 'SESSION'}</span>
+                                      <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 600 }}>{flag.attendance_sessions.badge_number || flag.badge_number}</span>
+                                      <span style={{ fontWeight: 500 }}>{sewadar.sewadar_name || flag.attendance_sessions.sewadar_name || '—'}</span>
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>· {flag.attendance_sessions.date_ist || '—'}</span>
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>· {formatTime(flag.attendance_sessions.in_time)} → {flag.attendance_sessions.out_time ? formatTime(flag.attendance_sessions.out_time) : 'Open'}</span>
+                                    </>
+                                  )}
+                                  {!flag.attendance && !flag.attendance_sessions && flag.badge_number && (
                                     <>
                                       <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 600 }}>{flag.badge_number}</span>
-                                      <span style={{ fontWeight: 500 }}>{flag.sewadar_name || '—'}</span>
+                                      <span style={{ fontWeight: 500 }}>{sewadar.sewadar_name || '—'}</span>
                                       <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>· {flag.centre || '—'}</span>
                                     </>
                                   )}

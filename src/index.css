@@ -691,6 +691,11 @@ tr:hover td { background:#FAFCFF; }
 .flag-resolve-btn { display:inline-flex; align-items:center; gap:5px; padding:6px 14px; background:var(--green-bg); color:var(--green); border:1px solid rgba(46,125,50,0.25); border-radius:6px; font-size:12px; font-weight:700; cursor:pointer; font-family:'Inter',sans-serif; transition:all 0.12s; }
 .flag-resolve-btn:hover { background:#bbf7d0; }
 .flag-reopen-btn { display:inline-flex; align-items:center; gap:5px; padding:6px 14px; background:var(--amber-bg); color:var(--amber); border:1px solid rgba(230,81,0,0.2); border-radius:6px; font-size:12px; font-weight:700; cursor:pointer; font-family:'Inter',sans-serif; }
+.flag-highlight { animation: flagPulse 1.5s ease-in-out 3; }
+@keyframes flagPulse {
+  0%, 100% { background-color: var(--bg) !important; }
+  50% { background-color: rgba(220, 38, 38, 0.15) !important; }
+}
 
 /* ── SUPER ADMIN PAGE ── */
 .super-admin-msg { padding:0.75rem 1rem; border-radius:8px; font-size:0.85rem; font-weight:500; margin-bottom:1rem; }

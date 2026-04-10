@@ -131,7 +131,7 @@ export function hasTimeConflict(existingSessions, proposedInISO) {
 export async function getOpenSession(supabase, badgeNumber) {
   const { data, error } = await supabase
     .from('attendance_sessions')
-    .select('id, in_time, in_id, duty_type, centre, date_ist, sewadar_name, department')
+    .select('id, in_time, in_id, duty_type, date_ist')
     .eq('badge_number', badgeNumber)
     .eq('is_open', true)
     .order('in_time', { ascending: false })
@@ -373,6 +373,32 @@ export async function evaluateScan(supabase, {
       }
     }
 
+    // Check if this is a previous-day open session
+    const openSessionDate = openSession?.date_ist
+      ? String(openSession.date_ist).substring(0, 10)
+      : null
+    const isSameDay = openSessionDate === scanDateIST
+
+    // Previous-day open session → needs W&W or forgot OUT confirmation
+    if (!isSameDay) {
+      const oldInDate = openSession.in_time ? new Date(openSession.in_time) : null
+      const oldDay = oldInDate
+        ? oldInDate.toLocaleDateString('en-IN', { weekday: 'short', timeZone: 'Asia/Kolkata' })
+        : ''
+      const wasSatsang = oldDay === 'Wed' || oldDay === 'Sun'
+
+      return {
+        status:              'needs_watch_ward_confirmation',
+        reason:              'previous_day_open_session',
+        action:              'close_and_confirm',
+        openSession,
+        todaySessions,
+        message:             `You have an open session from ${openSessionDate}. Did you forget to scan OUT?`,
+        oldSessionWasSatsang: wasSatsang,
+        oldSessionInDate:    openSessionDate,
+      }
+    }
+
     return {
       status:     'allowed',
       action:     'close_session',
@@ -492,9 +518,6 @@ export async function executeScan(supabase, {
           try {
             await supabase.from('attendance').insert({
               badge_number,
-              sewadar_name:   openSession.sewadar_name,
-              centre:         openSession.centre,
-              department:     openSession.department,
               type:           'OUT',
               scan_time:      outTime,
               duty_type:      openSession.duty_type,
@@ -527,9 +550,6 @@ export async function executeScan(supabase, {
       .from('attendance_sessions')
       .insert({
         badge_number,
-        sewadar_name,
-        centre,
-        department,
         duty_type:      dutyType,
         in_time:        scanTimeISO,
         date_ist:       scanDateIST,
@@ -551,9 +571,6 @@ export async function executeScan(supabase, {
       .from('attendance')
       .insert({
         badge_number,
-        sewadar_name,
-        centre,
-        department,
         type:         'IN',
         scan_time:    scanTimeISO,
         duty_type:    dutyType,
@@ -635,9 +652,6 @@ export async function executeScan(supabase, {
       .from('attendance')
       .insert({
         badge_number,
-        sewadar_name,
-        centre,
-        department,
         type:         'OUT',
         scan_time:    scanTimeISO,
         duty_type:    finalDutyType,
@@ -769,16 +783,13 @@ export async function closeSessionWithTime(supabase, {
     .from('attendance')
     .insert({
       badge_number,
-      sewadar_name:   session.sewadar_name,
-      centre:         session.centre,
-      department:     session.department,
       type:           'OUT',
       scan_time:      outTimeISO,
       duty_type:      finalDutyType,
       session_id:     sessionId,
       scanner_badge:  scanner_badge || 'MANUAL',
       scanner_name:   scanner_name  || 'Manual Entry',
-      scanner_centre: scanner_centre || session.centre,
+      scanner_centre: scanner_centre,
       manual_entry:   true,
       submitted_by:   scanner_badge,
       submitted_at:   new Date().toISOString(),
@@ -818,14 +829,163 @@ export async function closeSessionWithTime(supabase, {
 }
 
 /**
+ * closeForgottenSession — closes an open session when user forgot to scan OUT.
+ * 
+ * This function:
+ * 1. Validates OUT time is after IN time
+ * 2. Checks duration (min 10 mins, max 20 hours)
+ * 3. If duration > 12 hours, creates auto-flag in queries table
+ * 4. Closes the session with provided OUT time
+ * 5. Creates OUT attendance record
+ * 
+ * @param {object} supabase
+ * @param {object} params
+ * @param {string} params.sessionId - Session ID to close
+ * @param {string} params.outTimeISO - OUT time in ISO format
+ * @param {boolean} params.isWatchWard - Was this a W&W duty (for duration > 12h)
+ * @param {string} params.reason - Reason for forgetting OUT (required, min 3 chars)
+ * @param {string} params.scanner_badge - Badge of person closing
+ * @param {string} params.scanner_name - Name of person closing
+ * @param {string} params.scanner_centre - Centre of person closing
+ */
+export async function closeForgottenSession(supabase, {
+  sessionId,
+  outTimeISO,
+  isWatchWard = false,
+  reason,
+  scanner_badge,
+  scanner_name,
+  scanner_centre,
+}) {
+  if (!sessionId) throw new Error('Session ID is required')
+  if (!outTimeISO) throw new Error('OUT time is required')
+  if (!reason || reason.trim().length < 3) throw new Error('Reason is required (min 3 characters)')
+
+  const { data: session, error: fetchError } = await supabase
+    .from('attendance_sessions')
+    .select('*')
+    .eq('id', sessionId)
+    .single()
+
+  if (fetchError || !session) throw new Error('Session not found')
+
+  const outDate = new Date(outTimeISO)
+  const inTime = session.in_time ? new Date(session.in_time) : null
+
+  if (inTime && outDate < inTime) {
+    throw new Error('OUT time cannot be before IN time')
+  }
+
+  let durationHours = 0
+  if (inTime) {
+    const durationMs = outDate - inTime
+    const MIN_MS = 10 * 60 * 1000
+    const MAX_MS = 20 * 60 * 60 * 1000
+    
+    if (durationMs < MIN_MS) {
+      throw new Error('Session must be at least 10 minutes')
+    }
+    
+    if (durationMs > MAX_MS) {
+      throw new Error('Duration cannot exceed 20 hours')
+    }
+    
+    durationHours = Math.round(durationMs / (1000 * 60 * 60) * 10) / 10
+  }
+
+  const outDateIST = scanTimeToISTDate(outTimeISO)
+  const isCrossMidnight = inTime && scanTimeToISTDate(session.in_time) !== outDateIST
+
+  let finalDutyType = session.duty_type
+  if (isWatchWard) {
+    finalDutyType = DUTY_TYPES.WATCH_WARD
+  } else if (inTime && isLateNightScan(session.in_time)) {
+    if (isCrossMidnight) {
+      finalDutyType = DUTY_TYPES.WATCH_WARD
+    }
+  }
+
+  const { data: att, error: attError } = await supabase
+    .from('attendance')
+    .insert({
+      badge_number: session.badge_number,
+      type: 'OUT',
+      scan_time: outTimeISO,
+      duty_type: finalDutyType,
+      session_id: sessionId,
+      scanner_badge: scanner_badge || 'FORGOT_OUT',
+      scanner_name: scanner_name || 'Forgot OUT Entry',
+      scanner_centre: scanner_centre,
+      manual_entry: true,
+      submitted_by: scanner_badge,
+      submitted_at: new Date().toISOString(),
+    })
+    .select('id')
+    .single()
+
+  if (attError) throw new Error('Failed to record OUT: ' + attError.message)
+
+  const { error: updateError } = await supabase
+    .from('attendance_sessions')
+    .update({
+      out_time: outTimeISO,
+      out_id: att.id,
+      is_open: false,
+      force_closed: true,
+      force_closed_reason: `FORGOT OUT - Duration: ${durationHours}h. Reason: ${reason.trim()}`,
+      force_closed_by: scanner_badge || 'FORGOT_OUT',
+      out_scanner_name: scanner_name || 'Forgot OUT Entry',
+      duty_type: finalDutyType,
+      flagged: isWatchWard || durationHours > 12,
+      flag_reason: isWatchWard ? 'Watch & Ward confirmed' : 'Duration exceeded 12h',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', sessionId)
+
+  if (updateError) throw new Error('Failed to close session: ' + updateError.message)
+
+  if (isWatchWard || durationHours > 12) {
+    try {
+      await supabase.from('queries').insert({
+        session_id: sessionId,
+        badge_number: session.badge_number,
+        raised_by_badge: scanner_badge || 'SYSTEM',
+        raised_by_name: scanner_name || 'System',
+        raised_by_centre: scanner_centre,
+        reason: reason.trim(),
+        issue_description: `[FORGOT OUT] Duration: ${durationHours}h. Reason: ${reason.trim()}${isWatchWard ? ' (W&W confirmed)' : ' (Auto-flagged: >12h)'}`,
+        status: 'open',
+        flag_type: 'forgot_out',
+      })
+    } catch (flagErr) {
+      if (import.meta.env.DEV) console.warn('[Session] Failed to create auto-flag:', flagErr)
+    }
+  }
+
+  try {
+    await supabase.from('logs').insert({
+      user_badge: scanner_badge || 'FORGOT_OUT',
+      action: 'CLOSE_FORGOTTEN_SESSION',
+      details: `Closed forgotten session ${sessionId} (badge: ${session.badge_number}) — OUT: ${outTimeISO} — Duration: ${durationHours}h — W&W: ${isWatchWard} — Reason: ${reason.trim()}`,
+      timestamp: new Date().toISOString(),
+    })
+  } catch (_) { /* logging non-critical */ }
+
+  return { 
+    attendanceId: att.id, 
+    sessionId,
+    durationHours,
+    flagged: isWatchWard || durationHours > 12,
+    dutyType: finalDutyType,
+  }
+}
+
+/**
  * ASO Standalone OUT — creates an OUT record without a prior IN.
  * Used for data correction only. ASO must provide a reason.
  */
 export async function executeStandaloneOut(supabase, {
   badge_number,
-  sewadar_name,
-  centre,
-  department,
   scanTimeISO,
   scanner_badge,
   scanner_name,
@@ -841,9 +1001,6 @@ export async function executeStandaloneOut(supabase, {
     .from('attendance_sessions')
     .insert({
       badge_number,
-      sewadar_name,
-      centre,
-      department,
       duty_type:           'gate_entry',
       out_time:            scanTimeISO,
       date_ist:            scanDateIST,
@@ -861,9 +1018,6 @@ export async function executeStandaloneOut(supabase, {
     .from('attendance')
     .insert({
       badge_number,
-      sewadar_name,
-      centre,
-      department,
       type:         'OUT',
       scan_time:    scanTimeISO,
       duty_type:    'gate_entry',

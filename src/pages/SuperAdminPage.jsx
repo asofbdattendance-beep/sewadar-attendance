@@ -627,7 +627,7 @@ export default function SuperAdminPage() {
   async function fetchAttendance() {
     setAttLoading(true)
     const offset = (attPage - 1) * PAGE_SIZE
-    let q = supabase.from('attendance').select('*', { count: 'exact' })
+    let q = supabase.from('v_attendance').select('*', { count: 'exact' })
       .gte('scan_time', new Date(attDate + 'T00:00:00').toISOString())
       .lte('scan_time', new Date(attDate + 'T23:59:59.999').toISOString())
       .order('scan_time', { ascending: false })
@@ -1114,7 +1114,7 @@ export default function SuperAdminPage() {
                     </td>
                     <td style={{ fontWeight:500, fontSize:'0.85rem' }}>{r.sewadar_name}</td>
                     <td style={{ fontFamily:'monospace', fontSize:'0.82rem', color:'var(--gold)' }}>{r.badge_number}</td>
-                    <td style={{ fontSize:'0.78rem', color:'var(--text-muted)' }}>{r.centre}</td>
+                    <td style={{ fontSize:'0.78rem', color:'var(--text-muted)' }}>{r.sewadar_centre}</td>
                     <td style={{ fontSize:'0.75rem', color:'var(--text-muted)' }}>{r.scanner_name||'—'}</td>
                     <td>
                       <div style={{ display:'flex', gap:4, alignItems:'center' }}>

@@ -25,6 +25,7 @@ export default function DashboardPage() {
   const [centreStats, setCentreStats] = useState([])
   const [deptStats, setDeptStats] = useState([])
   const [childCentres, setChildCentres] = useState([])
+  const [childCentreStats, setChildCentreStats] = useState([])
   const [childCentresLoaded, setChildCentresLoaded] = useState(false)
   const [expandedCentres, setExpandedCentres] = useState({})
 
@@ -118,13 +119,13 @@ export default function DashboardPage() {
 
     // Get all sessions for the date (both open and closed)
     let sessionsQ = supabase
-      .from('attendance_sessions')
-      .select('badge_number, duty_type, department, centre, is_open')
+      .from('v_sessions')
+      .select('badge_number, duty_type, sewadar_department, sewadar_centre, is_open')
       .gte('in_time', start)
       .lte('in_time', end)
 
     if (scope.length > 0) {
-      sessionsQ = sessionsQ.in('centre', scope)
+      sessionsQ = sessionsQ.in('sewadar_centre', scope)
     }
 
     const { data: sessions } = await sessionsQ
@@ -152,6 +153,24 @@ export default function DashboardPage() {
       watchWard: dutyCounts.watch_ward
     })
 
+    // Get eligible sewadars grouped by department for centre user
+    let deptEligible = {}
+    if (isCentreUser && profile?.centre) {
+      const { data: deptSewadars } = await supabase
+        .from('sewadars')
+        .select('badge_number, badge_status, department')
+        .in('centre', scope)
+      
+      deptSewadars?.forEach(s => {
+        const status = (s.badge_status || s.status || '').toLowerCase().trim()
+        if (ALLOWED_STATUSES.includes(status)) {
+          const dept = s.department || 'Unassigned'
+          if (!deptEligible[dept]) deptEligible[dept] = 0
+          deptEligible[dept]++
+        }
+      })
+    }
+
     // Fetch centres data for ASO
     if (isAso) {
       const { data: centres } = await supabase
@@ -167,11 +186,11 @@ export default function DashboardPage() {
         const allCentresInGroup = [parent, ...childNames]
 
         const { data: centreSessions } = await supabase
-          .from('attendance_sessions')
-          .select('badge_number, duty_type, department, is_open')
+          .from('v_sessions')
+          .select('badge_number, duty_type, sewadar_department, is_open')
           .gte('in_time', start)
           .lte('in_time', end)
-          .in('centre', allCentresInGroup)
+          .in('sewadar_centre', allCentresInGroup)
 
         const presentSet = new Set(centreSessions?.map(s => s.badge_number) || [])
         const insideCount = centreSessions?.filter(s => s.is_open).length || 0
@@ -190,7 +209,7 @@ export default function DashboardPage() {
         // Get departments for this centre group
         const deptCounts = {}
         centreSessions?.forEach(s => {
-          const dept = s.department || 'Unassigned'
+          const dept = s.sewadar_department || 'Unassigned'
           if (!deptCounts[dept]) deptCounts[dept] = { name: dept, present: 0, inside: 0 }
           deptCounts[dept].present++
           if (s.is_open) deptCounts[dept].inside++
@@ -208,16 +227,37 @@ export default function DashboardPage() {
 
       setCentreStats(centreData)
     } else if (isCentreUser) {
-      // For centre user - get department breakdown
+      // For centre user - get department breakdown with eligible count
       const deptCounts = {}
       sessions?.forEach(s => {
-        const dept = s.department || 'Unassigned'
-        if (!deptCounts[dept]) deptCounts[dept] = { name: dept, present: 0, inside: 0 }
+        const dept = s.sewadar_department || 'Unassigned'
+        if (!deptCounts[dept]) deptCounts[dept] = { name: dept, eligible: deptEligible[dept] || 0, present: 0, inside: 0 }
         deptCounts[dept].present++
         if (s.is_open) deptCounts[dept].inside++
       })
 
       setDeptStats(Object.values(deptCounts).sort((a, b) => b.present - a.present))
+
+      // Fetch sub-centre stats for centre user
+      const childCentreStatsData = []
+      for (const child of childCentres) {
+        const { data: childSessions } = await supabase
+          .from('v_sessions')
+          .select('badge_number, is_open')
+          .eq('sewadar_centre', child)
+          .gte('in_time', start)
+          .lte('in_time', end)
+        
+        const presentSet = new Set(childSessions?.map(s => s.badge_number) || [])
+        const insideCount = childSessions?.filter(s => s.is_open).length || 0
+        
+        childCentreStatsData.push({
+          name: child,
+          present: presentSet.size,
+          inside: insideCount
+        })
+      }
+      setChildCentreStats(childCentreStatsData.sort((a, b) => b.present - a.present))
     }
 
     setLoading(false)
@@ -367,11 +407,13 @@ export default function DashboardPage() {
                     <div style={{ paddingLeft: '1.5rem', marginTop: '0.5rem' }}>
                       {c.departments.length > 0 ? (
                         c.departments.map((d, j) => (
-                          <div key={j} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.4rem 0.75rem', background: 'var(--bg-elevated)', borderRadius: 6, marginBottom: '0.25rem' }}>
-                            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{d.name}</span>
-                            <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.75rem' }}>
-                              <span style={{ color: 'var(--green)' }}>{d.present}</span>
-                              <span style={{ color: '#9333ea' }}>{d.inside}</span>
+                          <div key={j} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.4rem 0.75rem', background: 'var(--bg-elevated)', borderRadius: 6, marginBottom: '0.25rem' }}>
+                            <div>
+                              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)' }}>{d.name}</span>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: '0.5rem' }}>{d.eligible || 0} total</span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--green)', fontWeight: 600 }}>{d.present} ({d.inside} in)</span>
                             </div>
                           </div>
                         ))
@@ -402,16 +444,15 @@ export default function DashboardPage() {
                 <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.6rem 0.75rem', background: 'var(--bg)', borderRadius: 8 }}>
                   <div>
                     <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{d.name}</div>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{d.present} present today</div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      {d.eligible} total
+                    </div>
                   </div>
-                  <div style={{ 
-                    minWidth: 36, height: 28, borderRadius: 6, 
-                    background: d.inside > 3 ? 'rgba(34,197,94,0.15)' : 'var(--bg-elevated)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: d.inside > 3 ? 'var(--green)' : 'var(--text-muted)',
-                    fontWeight: 700, fontSize: '0.85rem'
-                  }}>
-                    {d.inside} in
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <div style={{ textAlign: 'center', padding: '0.35rem 0.6rem', background: 'rgba(34,197,94,0.1)', borderRadius: 6 }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--green)' }}>{d.present}</div>
+                      <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>({d.inside} in)</div>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -420,18 +461,22 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Sub-centres count for centre user */}
-      {isCentreUser && childCentres.length > 0 && (
+      {/* Sub-centres stats for centre user */}
+      {isCentreUser && childCentreStats.length > 0 && (
         <div style={{ background: 'var(--gold-bg)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 12, padding: '1rem', marginTop: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
             <Home size={14} color="var(--gold)" />
-            <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--gold)' }}>Sub-centres</span>
+            <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--gold)' }}>Sub-centre Attendance</span>
           </div>
-          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            {childCentres.join(', ')}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-            Total: {childCentres.length} sub-centres
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            {childCentreStats.map((c, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0.75rem', background: 'var(--bg)', borderRadius: 8 }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{c.name}</span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--green)', fontWeight: 600 }}>
+                  {c.present} ({c.inside} in)
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       )}

@@ -20,9 +20,10 @@ import SuperAdminPage from './pages/SuperAdminPage'
 import ProfilePage from './pages/ProfilePage'
 import JathaPage from './pages/JathaPage'
 import FlagsPage from './pages/FlagsPage'
+import ReportsPage from './pages/ReportsPage'
 import ToastContainer from './components/Toast'
 import NoInternet from './components/NoInternet'
-import { Scan, FileText, User, Shield, Plane, Clock, RefreshCw, Flag, LayoutDashboard } from 'lucide-react'
+import { Scan, FileText, User, Shield, Plane, Clock, RefreshCw, Flag, LayoutDashboard, BarChart2 } from 'lucide-react'
 
 function SessionExpiredScreen({ signOut }) {
   return (
@@ -152,6 +153,7 @@ function AppLayout() {
   const canRecords   = isAso || profile.can_records
   const canJatha     = isAso || profile.can_jatha
   const canFlags     = isAso || profile.can_flags
+  const canReports   = isAso || profile.can_reports
   const rolePill     = isAso ? 'ASO' : profile.role === ROLES.SC_SP_USER ? 'SC/SP' : 'CENTRE'
 
   // ── Nav items — FIX: openFlagCount now wired to the Flags badge ─────────────
@@ -161,6 +163,7 @@ function AppLayout() {
     { path: '/jatha',      label: 'Jatha',   icon: Plane,           show: canJatha   },
     { path: '/records',    label: 'Records', icon: FileText,        show: canRecords },
     { path: '/flags',      label: 'Flags',   icon: Flag,            show: canFlags,  badge: openFlagCount },
+    { path: '/reports',    label: 'Reports', icon: BarChart2,        show: canReports },
     ...(isAso ? [{ path: '/super-admin', label: 'Control', icon: Shield, show: true }] : []),
     { path: '/profile',    label: 'Profile', icon: User,           show: true       },
   ].filter((item) => item.show !== false)
@@ -268,6 +271,7 @@ function AppLayout() {
           <Route path="/records"     element={canRecords ? <RecordsPage />    : <Navigate to={defaultPath} replace />} />
           {/* FIX: FlagsPage route was imported but never rendered — added here */}
           <Route path="/flags"       element={canFlags   ? <FlagsPage />      : <Navigate to={defaultPath} replace />} />
+          <Route path="/reports"      element={canReports ? <ReportsPage />    : <Navigate to={defaultPath} replace />} />
           <Route path="/super-admin" element={isAso      ? <SuperAdminPage /> : <Navigate to={defaultPath} replace />} />
           <Route path="/profile"     element={<ProfilePage />} />
           <Route path="*"            element={<Navigate to={defaultPath} replace />} />

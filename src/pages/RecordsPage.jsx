@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase, ROLES, DUTY_TYPE_LABEL } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { todayDateStr, formatDateStr, scanTimeToISTDate } from '../lib/dateUtils'
 import {
   Search, Download, Flag, X, RefreshCw,
-  Trash2, FileText, BarChart2, PenLine
+  Trash2, FileText, PenLine
 } from 'lucide-react'
 import DateRangePicker from '../components/DateRangePicker'
 import CentreComboBox from '../components/CentreComboBox'
@@ -74,19 +75,20 @@ function csvEscape(val) {
 // ATTENDANCE TAB - SESSION BASED
 // =====================================================
 function AttendanceTab() {
+  const navigate = useNavigate()
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
   const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
   const canEdit = !!isAso
   const canFlag = !!isAso || !!profile?.can_flags
 
+  function goToFlag(flagId) {
+    navigate(`/flags?id=${flagId}`)
+  }
+
   // Helper to check if session is within 40 min edit window (for centre users only)
   // Uses created_at (timestamp when record was created) not IN time
   function canEditSession(session) {
-    // ASO can always edit
-    if (isAso) return true
-    
-    // Fallback to in_time if created_at is missing
     const timeRef = session?.created_at || session?.in_time
     if (!timeRef) return false
     
@@ -94,17 +96,6 @@ function AttendanceTab() {
     const now = new Date()
     const diffMs = now - refTime
     const diffMins = diffMs / (1000 * 60)
-    
-    if (import.meta.env.DEV) {
-      console.log('[canEditSession]', { 
-        created_at: session?.created_at, 
-        in_time: session?.in_time, 
-        refTime: refTime.toISOString(),
-        now: now.toISOString(),
-        diffMins: Math.round(diffMins),
-        canEdit: diffMins <= 40
-      })
-    }
     
     return diffMins <= 40
   }
@@ -203,7 +194,7 @@ function AttendanceTab() {
     setLoading(true)
 
     let q = supabase
-      .from('attendance_sessions')
+      .from('v_sessions_full')
       .select('*', { count: 'exact' })
       .gte('date_ist', dateRange.from)
       .lte('date_ist', dateRange.to)
@@ -211,11 +202,21 @@ function AttendanceTab() {
       .order('in_time', { ascending: false })
 
     // Centre scope
-    if (isCentreUser && profile?.centre) {
-      const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
-      q = q.in('centre', scope)
-    } else if (centreFilter) {
-      q = q.eq('centre', centreFilter)
+    if (centreFilter) {
+      q = q.eq('sewadar_centre', centreFilter)
+      if (import.meta.env.DEV) console.log('[Records] Centre filter:', centreFilter)
+    } else if (isCentreUser && profile?.centre) {
+      let childCentres = centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)
+      if (childCentres.length === 0 && centres.length === 0) {
+        const { data: childData } = await supabase
+          .from('centres')
+          .select('centre_name')
+          .eq('parent_centre', profile.centre)
+        childCentres = (childData || []).map(c => c.centre_name)
+      }
+      const scope = [profile.centre, ...childCentres]
+      q = q.in('sewadar_centre', scope)
+      if (import.meta.env.DEV) console.log('[Records] Centre scope (user):', scope)
     }
 
     // Search
@@ -241,6 +242,13 @@ function AttendanceTab() {
       if (import.meta.env.DEV) console.warn('[Records] fetch failed:', error)
       return
     }
+    
+    if (import.meta.env.DEV) {
+      console.log('[Records] Fetched:', data?.length, 'records, total:', count)
+      if (data?.length > 0) {
+        console.log('[Records] Sample centre values:', [...new Set(data.map(r => r.sewadar_centre))].slice(0, 5))
+      }
+    }
 
     const sessions = data || []
     const flaggedIds = sessions.filter(s => s.flagged).map(s => s.id)
@@ -258,6 +266,7 @@ function AttendanceTab() {
         if (session.flagged && flagsMap[session.id]) {
           session.flag_reason = flagsMap[session.id].issue_description
           session.flag_status = flagsMap[session.id].status
+          session.flag_id = flagsMap[session.id].id
         }
       }
     }
@@ -275,8 +284,8 @@ function AttendanceTab() {
     
     try {
       let q = supabase
-        .from('attendance_sessions')
-        .select('*')
+        .from('v_sessions')
+        .select('badge_number, sewadar_name, sewadar_centre, sewadar_department, date_ist, in_time, in_scanner_name, out_time, out_scanner_name, duty_type, is_open')
         .gte('date_ist', dateRange.from)
         .lte('date_ist', dateRange.to)
         .order('date_ist', { ascending: false })
@@ -285,9 +294,9 @@ function AttendanceTab() {
       // Centre scope
       if (isCentreUser && profile?.centre) {
         const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
-        q = q.in('centre', scope)
+        q = q.in('sewadar_centre', scope)
       } else if (centreFilter) {
-        q = q.eq('centre', centreFilter)
+        q = q.eq('sewadar_centre', centreFilter)
       }
 
       // Search
@@ -321,8 +330,8 @@ function AttendanceTab() {
         return [
           csvEscape(r.badge_number),
           csvEscape(r.sewadar_name),
-          csvEscape(r.centre),
-          csvEscape(r.department || ''),
+          csvEscape(r.sewadar_centre),
+          csvEscape(r.sewadar_department || ''),
           csvEscape(DUTY_TYPE_LABEL[r.duty_type] || r.duty_type),
           csvEscape(inDate),
           formatTime(r.in_time),
@@ -405,10 +414,7 @@ function AttendanceTab() {
           reason: flagReason.trim(),
           status: 'open',
           flag_type: 'session_flag',
-          // Include the sewadar info from the session being flagged
           badge_number: flagModal.badge_number,
-          sewadar_name: flagModal.sewadar_name,
-          centre: flagModal.centre,
         })
         .select()
         .single()
@@ -584,7 +590,7 @@ function AttendanceTab() {
                   <tr key={r.id}>
                     <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.82rem', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.badge_number}</td>
                     <td style={{ fontWeight: 600, fontSize: '0.875rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.sewadar_name}</td>
-                    {isAso && <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.centre}</td>}
+                    {isAso && <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.sewadar_centre}</td>}
                     <td>
                       <span style={{ 
                         fontSize: '0.6rem', 
@@ -692,7 +698,7 @@ function AttendanceTab() {
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                     {r.is_open ? '🟡 OPEN' : r.force_closed ? '⚪ CORRECTED' : '🟢 COMPLETE'}
                   </div>
-                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 2 }}>{r.centre}</div>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 2 }}>{r.sewadar_centre}</div>
                 </div>
               </div>
               <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
@@ -708,8 +714,23 @@ function AttendanceTab() {
                   </span>
                 )}
                 {r.flagged && (
-                  <span style={{ fontSize: '0.65rem', background: 'rgba(220,38,38,0.1)', color: 'var(--red)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 5, padding: '2px 6px', fontWeight: 700 }}>
-                    🚩 Flagged{r.flag_reason && <span style={{ marginLeft: 4, fontWeight: 400 }}>: {r.flag_reason?.substring(0, 30)}{r.flag_reason?.length > 30 ? '...' : ''}</span>}
+                  <span 
+                    onClick={() => r.flag_id && goToFlag(r.flag_id)}
+                    style={{ 
+                      fontSize: '0.65rem', 
+                      background: r.flag_status === 'resolved' ? 'rgba(34,197,94,0.1)' : 'rgba(220,38,38,0.1)', 
+                      color: r.flag_status === 'resolved' ? 'var(--green)' : 'var(--red)', 
+                      border: `1px solid ${r.flag_status === 'resolved' ? 'rgba(34,197,94,0.3)' : 'rgba(220,38,38,0.25)'}`, 
+                      borderRadius: 5, 
+                      padding: '2px 6px', 
+                      fontWeight: 700,
+                      cursor: r.flag_id ? 'pointer' : 'default',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4
+                    }}
+                  >
+                    🚩 {r.flag_status === 'resolved' ? 'Flag Resolved' : (r.flag_id ? 'View Flag' : 'Flagged')}{r.flag_reason && r.flag_status !== 'resolved' && <span style={{ marginLeft: 4, fontWeight: 400, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>: {r.flag_reason}</span>}
                   </span>
                 )}
               </div>
@@ -727,7 +748,6 @@ function AttendanceTab() {
                     <button
                       onClick={() => { 
                         if (import.meta.env.DEV) alert(`Edit: created=${r.created_at}, in=${r.in_time}, canEdit=${canEditSession(r)}`)
-                        setEditingSession(r) 
                         setEditingSession(r)
                         setEditInDate(r.in_time ? r.in_time.split('T')[0] : '')
                         setEditInTime(r.in_time ? r.in_time.slice(11, 16) : '')
@@ -830,7 +850,7 @@ function AttendanceTab() {
                 <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.78rem', fontWeight: 700 }}>{flagModal.badge_number}</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.25rem', fontSize: '0.78rem' }}>
-                <div style={{ color: 'var(--text-muted)' }}>Centre: <strong style={{ color: 'var(--text-primary)' }}>{flagModal.centre}</strong></div>
+                <div style={{ color: 'var(--text-muted)' }}>Centre: <strong style={{ color: 'var(--text-primary)' }}>{flagModal.sewadar_centre}</strong></div>
                 <div style={{ color: 'var(--text-muted)' }}>Duty: <strong style={{ color: 'var(--text-primary)' }}>
                   {flagModal.duty_type === 'watch_ward' ? 'W&W' : flagModal.duty_type === 'satsang' ? 'Satsang' : 'Gate Entry'}
                 </strong></div>
@@ -927,8 +947,8 @@ function ReportsTab() {
     if (reportType === 'satsang') {
       // Satsang days by sewadar
       let q = supabase
-        .from('attendance_sessions')
-        .select('badge_number, sewadar_name, centre, date_ist, duty_type')
+        .from('v_sessions')
+        .select('badge_number, sewadar_name, sewadar_centre, date_ist, duty_type')
         .eq('duty_type', 'satsang')
         .eq('is_open', false)
         .gte('date_ist', `${year}-01-01`)
@@ -937,9 +957,9 @@ function ReportsTab() {
 
       if (isCentreUser && profile?.centre) {
         const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
-        q = q.in('centre', scope)
+        q = q.in('sewadar_centre', scope)
       } else if (centreFilter) {
-        q = q.eq('centre', centreFilter)
+        q = q.eq('sewadar_centre', centreFilter)
       }
 
       const { data: sessions } = await q
@@ -948,7 +968,7 @@ function ReportsTab() {
       const badgeMap = {}
       sessions?.forEach(s => {
         if (!badgeMap[s.badge_number]) {
-          badgeMap[s.badge_number] = { badge_number: s.badge_number, name: s.sewadar_name, centre: s.centre, days: new Set() }
+          badgeMap[s.badge_number] = { badge_number: s.badge_number, name: s.sewadar_name, centre: s.sewadar_centre, days: new Set() }
         }
         badgeMap[s.badge_number].days.add(s.date_ist)
       })
@@ -963,17 +983,17 @@ function ReportsTab() {
     } else if (reportType === 'duty_summary') {
       // Duty summary by sewadar
       let q = supabase
-        .from('attendance_sessions')
-        .select('badge_number, sewadar_name, centre, duty_type, is_open')
+        .from('v_sessions')
+        .select('badge_number, sewadar_name, sewadar_centre, duty_type, is_open')
         .gte('date_ist', `${year}-01-01`)
         .lte('date_ist', `${year}-12-31`)
         .order('sewadar_name')
 
       if (isCentreUser && profile?.centre) {
         const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
-        q = q.in('centre', scope)
+        q = q.in('sewadar_centre', scope)
       } else if (centreFilter) {
-        q = q.eq('centre', centreFilter)
+        q = q.eq('sewadar_centre', centreFilter)
       }
 
       const { data: sessions } = await q
@@ -981,7 +1001,7 @@ function ReportsTab() {
       const badgeMap = {}
       sessions?.forEach(s => {
         if (!badgeMap[s.badge_number]) {
-          badgeMap[s.badge_number] = { badge_number: s.badge_number, name: s.sewadar_name, centre: s.centre, satsang: 0, gate_entry: 0, watch_ward: 0, open: 0 }
+          badgeMap[s.badge_number] = { badge_number: s.badge_number, name: s.sewadar_name, centre: s.sewadar_centre, satsang: 0, gate_entry: 0, watch_ward: 0, open: 0 }
         }
         if (s.duty_type === 'satsang') badgeMap[s.badge_number].satsang++
         else if (s.duty_type === 'gate_entry') badgeMap[s.badge_number].gate_entry++
@@ -994,18 +1014,18 @@ function ReportsTab() {
     } else if (reportType === 'open_now') {
       // Who's inside now
       let q = supabase
-        .from('attendance_sessions')
-        .select('badge_number, sewadar_name, centre, department, in_time, duty_type')
+        .from('v_sessions')
+        .select('badge_number, sewadar_name, sewadar_centre, sewadar_department, in_time, duty_type')
         .eq('is_open', true)
         .order('in_time', { ascending: false })
 
       if (isCentreUser && profile?.centre) {
         const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
-        q = q.in('centre', scope)
+        q = q.in('sewadar_centre', scope)
       }
 
       const { data: sessions } = await q
-      setData(sessions || [])
+      setData((sessions || []).map(s => ({ ...s, centre: s.sewadar_centre, department: s.sewadar_department })))
     }
 
     setLoading(false)
@@ -1121,459 +1141,10 @@ function ReportsTab() {
   )
 }
 
-// =====================================================
-// FLAGS TAB - DEPRECATED (Use FlagsPage from nav)
-// =====================================================
-function FlagsTab() {
-  const { profile } = useAuth()
-  const isAso = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
-
-  const [flags, setFlags] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [totalCount, setTotalCount] = useState(0)
-  const [page, setPage] = useState(1)
-  const [centres, setCentres] = useState([])
-  const [activeFlag, setActiveFlag] = useState(null)
-  const [replies, setReplies] = useState([])
-  const [auditLog, setAuditLog] = useState([])
-  const [replyText, setReplyText] = useState('')
-  const [submittingReply, setSubmittingReply] = useState(false)
-  const [statusFilter, setStatusFilter] = useState('open')
-  const [resolveReason, setResolveReason] = useState('')
-  const [submittingResolve, setSubmittingResolve] = useState(false)
-
-  useEffect(() => {
-    fetchCentres()
-  }, [])
-
-  useEffect(() => {
-    fetchFlags()
-  }, [page, statusFilter, profile])
-
-  async function fetchCentres() {
-    let q = supabase.from('centres').select('centre_name, parent_centre').order('centre_name')
-    if (isCentreUser && profile?.centre) {
-      q = q.or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
-    }
-    const { data } = await q
-    setCentres(data || [])
-  }
-
-  async function fetchFlags() {
-    setLoading(true)
-    let q = supabase
-      .from('queries')
-      .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
-
-    if (statusFilter === 'open') {
-      q = q.eq('status', 'open')
-    } else if (statusFilter === 'in_progress') {
-      q = q.eq('status', 'in_progress')
-    } else if (statusFilter === 'resolved') {
-      q = q.eq('status', 'resolved')
-    }
-
-    if (isCentreUser && profile?.centre) {
-      const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
-      q = q.in('raised_by_centre', scope)
-    }
-
-    const { data: flagsData, count, error } = await q.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
-    setLoading(false)
-
-    if (error || !flagsData) {
-      setFlags([])
-      return
-    }
-
-    const sessionIds = flagsData.filter(f => f.session_id).map(f => f.session_id)
-    let sessionsMap = {}
-    if (sessionIds.length > 0) {
-      const { data: sessions } = await supabase
-        .from('attendance_sessions')
-        .select('*')
-        .in('id', sessionIds)
-      sessionsMap = Object.fromEntries((sessions || []).map(s => [s.id, s]))
-    }
-
-    const merged = flagsData.map(f => ({
-      ...f,
-      attendance_sessions: f.session_id ? sessionsMap[f.session_id] : null,
-    }))
-
-    setFlags(merged)
-    setTotalCount(count || 0)
-  }
-
-  async function openFlagDetail(flag) {
-    setActiveFlag(flag)
-    setReplyText('')
-
-    const [repliesRes, auditRes] = await Promise.all([
-      supabase.from('query_replies').select('*').eq('query_id', flag.id).order('created_at', { ascending: true }),
-      supabase.from('flag_audit_log').select('*').eq('query_id', flag.id).order('created_at', { ascending: true }),
-    ])
-
-    setReplies(repliesRes.data || [])
-    setAuditLog(auditRes.data || [])
-  }
-
-  async function submitReply() {
-    if (!replyText.trim() || !activeFlag || !profile) return
-    setSubmittingReply(true)
-
-    try {
-      await supabase.from('query_replies').insert({
-        query_id: activeFlag.id,
-        replied_by_badge: profile.badge_number,
-        replied_by_name: profile.name,
-        replied_by_centre: profile.centre,
-        message: replyText.trim(),
-      })
-
-      await supabase.from('flag_audit_log').insert({
-        query_id: activeFlag.id,
-        action: 'REPLY_ADDED',
-        actor_badge: profile.badge_number,
-        actor_name: profile.name,
-        details: `Replied: "${replyText.trim().slice(0, 50)}"`,
-      })
-
-      const updatedFlag = { ...activeFlag }
-      if (updatedFlag.status === 'open') {
-        await supabase.from('queries').update({ status: 'in_progress', updated_at: new Date().toISOString() }).eq('id', activeFlag.id)
-        updatedFlag.status = 'in_progress'
-      }
-      setActiveFlag(updatedFlag)
-
-      const [repliesRes, auditRes] = await Promise.all([
-        supabase.from('query_replies').select('*').eq('query_id', activeFlag.id).order('created_at', { ascending: true }),
-        supabase.from('flag_audit_log').select('*').eq('query_id', activeFlag.id).order('created_at', { ascending: true }),
-      ])
-      setReplies(repliesRes.data || [])
-      setAuditLog(auditRes.data || [])
-      setReplyText('')
-      showSuccess('Reply added')
-    } catch (err) {
-      showError('Failed to add reply: ' + err.message)
-    }
-    setSubmittingReply(false)
-  }
-
-  async function resolveFlag() {
-    if (!activeFlag || !profile) return
-    setSubmittingResolve(true)
-
-    try {
-      await supabase.from('queries').update({
-        status: 'resolved',
-        resolved_by: profile.badge_number,
-        resolved_at: new Date().toISOString(),
-        resolved_reason: resolveReason || null,
-        updated_at: new Date().toISOString(),
-      }).eq('id', activeFlag.id)
-
-      if (activeFlag.session_id) {
-        await supabase.from('attendance_sessions').update({
-          flagged: false,
-        }).eq('id', activeFlag.session_id)
-      }
-
-      await supabase.from('flag_audit_log').insert({
-        query_id: activeFlag.id,
-        action: 'RESOLVED',
-        actor_badge: profile.badge_number,
-        actor_name: profile.name,
-        details: resolveReason ? `Resolved: "${resolveReason}"` : 'Resolved',
-      })
-
-      showSuccess('Flag resolved')
-      setActiveFlag(null)
-      fetchFlags()
-    } catch (err) {
-      showError('Failed to resolve: ' + err.message)
-    }
-    setSubmittingResolve(false)
-    setResolveReason('')
-  }
-
-  const session = activeFlag?.attendance_sessions
-  const dutyLabel = session?.duty_type === 'watch_ward' ? 'Watch & Ward' : session?.duty_type === 'satsang' ? 'Satsang' : 'Gate Entry'
-  const statusColors = { open: '#dc2626', in_progress: '#f59e0b', resolved: '#16a34a' }
-  const statusLabels = { open: 'Open', in_progress: 'In Progress', resolved: 'Resolved' }
-
-  return (
-    <div>
-      {!activeFlag ? (
-        <>
-          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', gap: '0.35rem' }}>
-              {['open', 'in_progress', 'resolved'].map(s => (
-                <button key={s} className={`btn ${statusFilter === s ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setStatusFilter(s); setPage(1) }} style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}>
-                  {s === 'in_progress' ? 'In Progress' : statusLabels[s]}
-                </button>
-              ))}
-            </div>
-            <span style={{ marginLeft: 'auto', fontSize: '0.78rem', color: 'var(--text-muted)' }}>{totalCount} flag{totalCount !== 1 ? 's' : ''}</span>
-          </div>
-
-          {loading ? (
-            <div className="text-center" style={{ padding: '2rem' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
-          ) : flags.length === 0 ? (
-            <EmptyState icon={Flag} title="No flags" message={statusFilter === 'open' ? 'No open flags — all clear!' : `No ${statusFilter.replace('_', ' ')} flags`} />
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-              {flags.map(flag => (
-                <div key={flag.id} onClick={() => openFlagDetail(flag)} style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 12, padding: '1rem', cursor: 'pointer', transition: 'border-color 0.15s' }}
-                  onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--gold)'}
-                  onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
-                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColors[flag.status], display: 'inline-block', flexShrink: 0 }} />
-                        {flag.attendance_sessions ? (
-                          <>
-                            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>{flag.attendance_sessions.sewadar_name}</span>
-                            <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.78rem', fontWeight: 700 }}>{flag.attendance_sessions.badge_number}</span>
-                          </>
-                        ) : (
-                          <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                            Session Deleted
-                          </span>
-                        )}
-                      </div>
-                      {flag.attendance_sessions ? (
-                        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', paddingLeft: '1.1rem' }}>
-                          {flag.attendance_sessions.centre} · {flag.attendance_sessions.duty_type === 'watch_ward' ? 'W&W' : flag.attendance_sessions.duty_type === 'satsang' ? 'Satsang' : 'Gate'} · {formatDateStr(flag.attendance_sessions.date_ist)} · {formatTime(flag.attendance_sessions.in_time)} → {flag.attendance_sessions.out_time ? formatTime(flag.attendance_sessions.out_time) : 'Open'}
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', paddingLeft: '1.1rem' }}>
-                          {flag.raised_by_centre}
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem' }}>
-                      <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: `${statusColors[flag.status]}15`, color: statusColors[flag.status], border: `1px solid ${statusColors[flag.status]}40` }}>
-                        {statusLabels[flag.status]}
-                      </span>
-                      {!flag.attendance_sessions && (
-                        <span style={{ fontSize: '0.6rem', fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(107,114,128,0.15)', color: '#6b7280', border: '1px solid rgba(107,114,128,0.3)' }}>
-                          ARCHIVED
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ paddingLeft: '1.1rem', fontSize: '0.82rem', color: '#dc2626', fontWeight: 500 }}>&ldquo;{flag.issue_description}&rdquo;</div>
-                  <div style={{ paddingLeft: '1.1rem', fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-                    Raised by {flag.raised_by_name} · {new Date(flag.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {!loading && totalCount > PAGE_SIZE && (
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', marginTop: '1rem' }}>
-              <button className="btn btn-ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>‹ Prev</button>
-              <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)', alignSelf: 'center' }}>Page {page} of {Math.ceil(totalCount / PAGE_SIZE)}</span>
-              <button className="btn btn-ghost" onClick={() => setPage(p => p + 1)} disabled={page >= Math.ceil(totalCount / PAGE_SIZE)}>Next ›</button>
-            </div>
-          )}
-        </>
-      ) : (
-        <div>
-          <button className="btn btn-ghost" onClick={() => setActiveFlag(null)} style={{ marginBottom: '1rem', fontSize: '0.8rem' }}>← Back to Flags</button>
-
-          <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden', marginBottom: '1rem' }}>
-            <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ width: 10, height: 10, borderRadius: '50%', background: statusColors[activeFlag.status], display: 'inline-block' }} />
-                {session ? (
-                  <>
-                    <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>{session.sewadar_name}</span>
-                    <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.82rem', fontWeight: 700 }}>{session.badge_number}</span>
-                  </>
-                ) : (
-                  <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-muted)' }}>Session Deleted</span>
-                )}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem' }}>
-                <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '2px 10px', borderRadius: 6, background: `${statusColors[activeFlag.status]}15`, color: statusColors[activeFlag.status], border: `1px solid ${statusColors[activeFlag.status]}40` }}>
-                  {statusLabels[activeFlag.status]}
-                </span>
-                {!session && (
-                  <span style={{ fontSize: '0.6rem', fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: 'rgba(107,114,128,0.15)', color: '#6b7280', border: '1px solid rgba(107,114,128,0.3)' }}>ARCHIVED</span>
-                )}
-              </div>
-            </div>
-
-            <div style={{ padding: '1rem 1.25rem' }}>
-              {session ? (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1rem' }}>
-                  <div><div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.15rem' }}>Centre</div><div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{session.centre}</div></div>
-                  <div><div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.15rem' }}>Duty Type</div><div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{dutyLabel}</div></div>
-                  <div><div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.15rem' }}>IN Time</div><div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{session.in_time ? formatTime(session.in_time) : '—'}</div></div>
-                  <div><div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.15rem' }}>OUT Time</div><div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{session.out_time ? formatTime(session.out_time) : '—'}</div></div>
-                  <div><div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.15rem' }}>Date</div><div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{formatDateStr(session.date_ist)}</div></div>
-                  <div><div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.15rem' }}>Status</div><div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{session.is_open ? 'Still Open' : 'Closed'}</div></div>
-                </div>
-              ) : (
-                <div style={{ background: 'rgba(107,114,128,0.08)', border: '1px solid rgba(107,114,128,0.2)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1rem', fontSize: '0.82rem', color: '#6b7280' }}>
-                  This attendance session was deleted. The flag conversation and replies are preserved below for audit purposes.
-                </div>
-              )}
-
-              <div style={{ background: 'rgba(198,40,40,0.06)', border: '1px solid rgba(198,40,40,0.2)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '0.75rem' }}>
-                <div style={{ fontSize: '0.68rem', color: '#dc2626', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.35rem', fontWeight: 700 }}>Flag Reason</div>
-                <div style={{ fontSize: '0.9rem', fontWeight: 500, color: '#dc2626' }}>{activeFlag.reason}</div>
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-                  Raised by <strong>{activeFlag.raised_by_name}</strong> ({activeFlag.raised_by_badge}) from <strong>{activeFlag.raised_by_centre}</strong>
-                  {' · '}{new Date(activeFlag.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                </div>
-              </div>
-
-              {activeFlag.resolved_at && (
-                <div style={{ background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '0.75rem' }}>
-                  <div style={{ fontSize: '0.68rem', color: '#16a34a', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.35rem', fontWeight: 700 }}>Resolution</div>
-                  <div style={{ fontSize: '0.9rem', fontWeight: 500, color: '#16a34a' }}>{activeFlag.resolved_reason || 'Resolved without note'}</div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-                    Resolved by <strong>{activeFlag.resolved_by}</strong>
-                    {' · '}{new Date(activeFlag.resolved_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {auditLog.length > 0 && (
-            <div style={{ marginBottom: '1rem' }}>
-              <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>Activity Trail</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                {auditLog.map(entry => (
-                  <div key={entry.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.78rem', color: 'var(--text-muted)', padding: '0.25rem 0' }}>
-                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: entry.action === 'RESOLVED' ? '#16a34a' : entry.action === 'REPLY_ADDED' ? '#3b82f6' : '#f59e0b', flexShrink: 0 }} />
-                    <span style={{ fontWeight: 600 }}>{entry.actor_name}</span>
-                    <span>{entry.details}</span>
-                    <span style={{ marginLeft: 'auto', fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>
-                      {new Date(entry.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {replies.length > 0 && (
-            <div style={{ marginBottom: '1rem' }}>
-              <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>Replies ({replies.length})</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                {replies.map(reply => (
-                  <div key={reply.id} style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '0.75rem 1rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.3rem' }}>
-                      <div style={{ fontWeight: 600, fontSize: '0.82rem' }}>{reply.replied_by_name}</div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        {new Date(reply.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: '0.85rem', lineHeight: 1.5 }}>{reply.message}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {activeFlag.status !== 'resolved' && (
-            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 12, padding: '1rem' }}>
-              <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>Add Reply</div>
-              <textarea className="input" rows={3} placeholder="Write a reply or note..." value={replyText} onChange={e => setReplyText(e.target.value)} style={{ resize: 'none', marginBottom: '0.5rem' }} />
-              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                <button className="btn btn-primary" onClick={submitReply} disabled={!replyText.trim() || submittingReply} style={{ fontSize: '0.82rem' }}>
-                  {submittingReply ? 'Sending...' : 'Send Reply'}
-                </button>
-                {isAso && !resolveReason && (
-                  <button className="btn btn-ghost" onClick={() => setResolveReason(' ')} style={{ fontSize: '0.82rem', color: '#16a34a' }}>
-                    Mark Resolved
-                  </button>
-                )}
-              </div>
-              {isAso && resolveReason !== undefined && (
-                <div style={{ marginTop: '0.75rem', borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
-                  <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#16a34a', marginBottom: '0.4rem' }}>Resolution Note (optional)</div>
-                  <textarea className="input" rows={2} placeholder="Enter resolution note..." value={resolveReason} onChange={e => setResolveReason(e.target.value)} style={{ resize: 'none', marginBottom: '0.5rem' }} />
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button className="btn" style={{ background: '#16a34a', color: 'white', border: 'none', fontSize: '0.82rem' }} onClick={resolveFlag} disabled={submittingResolve}>
-                      {submittingResolve ? 'Resolving...' : 'Confirm Resolve'}
-                    </button>
-                    <button className="btn btn-outline" onClick={() => { setResolveReason(''); setSubmittingResolve(false) }} style={{ fontSize: '0.82rem' }}>
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// =====================================================
-// MAIN RECORDS PAGE
-// =====================================================
 export default function RecordsPage() {
-  const { profile } = useAuth()
-  const isAso = profile?.role === ROLES.ASO
-
-  const [activeTab, setActiveTab] = useState('attendance')
-
-  const canReports = isAso || profile?.can_reports
-  const canFlags = isAso || profile?.can_flags
-
   return (
     <div className="page-wide pb-nav">
-      <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '1rem', borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem' }}>
-        <button
-          onClick={() => setActiveTab('attendance')}
-          style={{
-            padding: '0.5rem 1rem',
-            background: activeTab === 'attendance' ? 'var(--gold-bg)' : 'transparent',
-            border: 'none',
-            borderRadius: '8px 8px 0 0',
-            color: activeTab === 'attendance' ? 'var(--gold)' : 'var(--text-muted)',
-            fontWeight: 600,
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-          }}
-        >
-          <FileText size={14} style={{ marginRight: '0.35rem', verticalAlign: 'middle' }} />
-          Attendance
-        </button>
-
-        {canReports && (
-          <button
-            onClick={() => setActiveTab('reports')}
-            style={{
-              padding: '0.5rem 1rem',
-              background: activeTab === 'reports' ? 'var(--gold-bg)' : 'transparent',
-              border: 'none',
-              borderRadius: '8px 8px 0 0',
-              color: activeTab === 'reports' ? 'var(--gold)' : 'var(--text-muted)',
-              fontWeight: 600,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            <BarChart2 size={14} style={{ marginRight: '0.35rem', verticalAlign: 'middle' }} />
-            Reports
-          </button>
-        )}
-      </div>
-
-      {activeTab === 'attendance' && <AttendanceTab />}
-      {activeTab === 'reports' && canReports && <ReportsTab />}
+      <AttendanceTab />
     </div>
   )
 }

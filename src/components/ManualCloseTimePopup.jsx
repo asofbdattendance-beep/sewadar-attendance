@@ -1,75 +1,203 @@
-import { useState } from 'react'
-import { Clock, X } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { X, AlertTriangle, Moon, Clock } from 'lucide-react'
+
+function formatISTDate(date) {
+  return date.toLocaleDateString('en-IN', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata'
+  })
+}
 
 export default function ManualCloseTimePopup({ 
   sessionData, 
   sewadar, 
   badge, 
-  isSatsangDay,   // If old session was on Wed/Sun
-  oldInDate,     // Date of old session (IN date)
-  mode,          // 'forgot_out' or 'exceeded_duration'
+  isSatsangDay,
+  oldInDate,
+  mode,
   onSubmit, 
   onClose 
 }) {
   const inTime = sessionData?.in_time ? new Date(sessionData.in_time) : null
   
-  // For Satsang day: default to 23:59 on same day
-  // For regular day: default to IN time + 12 hours
-  const getDefaultDateTime = () => {
-    if (isSatsangDay && oldInDate) {
-      // Satsang: same day, default to 23:59
-      const date = oldInDate
-      return { date, time: '23:59' }
-    } else {
-      // Regular: default to IN time + 12 hours
-      const defaultDateTime = inTime 
-        ? new Date(inTime.getTime() + 12 * 60 * 60 * 1000)
-        : new Date()
-      return { 
-        date: defaultDateTime.toISOString().split('T')[0],
-        time: defaultDateTime.toTimeString().slice(0, 5)
-      }
-    }
+  // Calculate min and max dates
+  const getMinDate = () => {
+    if (!inTime) return ''
+    const d = new Date(inTime)
+    return d.toISOString().split('T')[0]
   }
   
-  const defaults = getDefaultDateTime()
+  const getMaxDate = () => {
+    if (!inTime) return ''
+    const d = new Date(inTime)
+    d.setDate(d.getDate() + 1)
+    const max = d.toISOString().split('T')[0]
+    const today = new Date().toISOString().split('T')[0]
+    return max < today ? max : today
+  }
   
-  const [dateStr, setDateStr] = useState(defaults.date)
-  const [timeStr, setTimeStr] = useState(defaults.time)
+  const [dateStr, setDateStr] = useState(getMinDate)
+  const [timeStr, setTimeStr] = useState('')
+  const [isWW, setIsWW] = useState(false)
+  const [reason, setReason] = useState('')
   const [error, setError] = useState('')
-  
-  const handleSubmit = () => {
-    const dateTime = new Date(`${dateStr}T${timeStr}:00+05:30`)
-    
-    // Validate: OUT time must be after IN time
-    if (inTime && dateTime < inTime) {
-      setError('OUT time cannot be before IN time')
-      return
+  const [showWWConfirm, setShowWWConfirm] = useState(false)
+  const [durationText, setDurationText] = useState('')
+  const [exceeds12h, setExceeds12h] = useState(false)
+  const [durationMins, setDurationMins] = useState(0)
+
+  useEffect(() => {
+    if (dateStr && timeStr && inTime) {
+      const outTime = new Date(`${dateStr}T${timeStr}:00+05:30`)
+      if (outTime >= inTime) {
+        const durationMs = outTime - inTime
+        const durationMinsCalc = Math.round(durationMs / (1000 * 60))
+        const hours = Math.floor(durationMinsCalc / 60)
+        const mins = durationMinsCalc % 60
+        
+        setDurationMins(durationMinsCalc)
+        setDurationText(`${hours}h ${mins}m`)
+        setExceeds12h(durationMinsCalc > 12 * 60)
+      } else {
+        setDurationMins(0)
+        setDurationText('')
+        setExceeds12h(false)
+      }
+    } else {
+      setDurationMins(0)
+      setDurationText('')
+      setExceeds12h(false)
+    }
+  }, [dateStr, timeStr, inTime])
+
+  const validateAndProceed = () => {
+    if (!dateStr || !timeStr) {
+      setError('Please enter both date and time')
+      return false
     }
     
-    // Validate: duration - min 10 mins, max 12 hours
+    const dateTime = new Date(`${dateStr}T${timeStr}:00+05:30`)
+    
+    if (inTime && dateTime < inTime) {
+      setError('OUT time cannot be before IN time')
+      return false
+    }
+    
+    if (!reason.trim() || reason.trim().length < 3) {
+      setError('Please provide a reason (min 3 characters')
+      return false
+    }
+    
     if (inTime) {
       const durationMs = dateTime - inTime
-      const MIN_MS = 10 * 60 * 1000   // 10 minutes minimum
-      const MAX_MS = 12 * 60 * 60 * 1000 // 12 hours max
+      const MIN_MS = 10 * 60 * 1000
+      const MAX_MS = 20 * 60 * 60 * 1000
       
       if (durationMs < MIN_MS) {
-        setError('Session must be at least 10 minutes')
-        return
+        setError(`Session must be at least 10 minutes (current: ${durationMins} mins)`)
+        return false
       }
       
       if (durationMs > MAX_MS) {
-        setError('Duration cannot exceed 12 hours')
+        setError(`Duration cannot exceed 20 hours`)
+        return false
+      }
+      
+      if (durationMins > 12 * 60 && !isWW) {
+        setShowWWConfirm(true)
+        return false
+      }
+    }
+    
+    return true
+  }
+
+  const handleSubmit = () => {
+    if (showWWConfirm) {
+      if (!isWW) {
+        setError('Long durations require Watch & Ward confirmation')
         return
       }
     }
     
-    onSubmit(dateTime.toISOString())
+    if (!validateAndProceed()) return
+    
+    const outTimeISO = new Date(`${dateStr}T${timeStr}:00+05:30`).toISOString()
+    
+    onSubmit({
+      outTimeISO,
+      isWatchWard: isWW || exceeds12h,
+      reason: reason.trim(),
+    })
   }
-  
-  // For Satsang: hide date field, only show time
-  const showDateField = !isSatsangDay || mode !== 'forgot_out'
-  
+
+  const handleConfirmWW = () => {
+    setIsWW(true)
+    setShowWWConfirm(false)
+    setError('')
+    handleSubmit()
+  }
+
+  const handleDenyWW = () => {
+    setShowWWConfirm(false)
+    setError('Long durations require Watch & Ward confirmation')
+  }
+
+  const handleDateChange = (e) => {
+    setDateStr(e.target.value)
+    setTimeStr('')
+    setError('')
+    setIsWW(false)
+  }
+
+  const handleTimeChange = (e) => {
+    setTimeStr(e.target.value)
+    setError('')
+  }
+
+  const handleReasonChange = (e) => {
+    setReason(e.target.value)
+    if (error.includes('reason')) setError('')
+  }
+
+  const minDate = getMinDate()
+  const maxDate = getMaxDate()
+
+  if (showWWConfirm) {
+    return (
+      <div className="popup-card" style={{ maxWidth: 380 }}>
+        <div style={{ padding: '1.5rem', textAlign: 'center' }}>
+          <div style={{ width: 56, height: 56, background: 'rgba(59,130,246,0.15)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+            <AlertTriangle size={28} color="#3b82f6" />
+          </div>
+          <h3 style={{ marginBottom: '0.5rem', color: 'var(--text-primary)' }}>Duration Exceeds 12 Hours</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1rem' }}>
+            The session duration is {durationText}. Was this a Watch & Ward duty?
+          </p>
+          <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.75rem', marginBottom: '1rem', textAlign: 'left' }}>
+            <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>{sewadar?.sewadar_name || 'Unknown'}</div>
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>{badge}</div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--gold)', marginTop: '0.25rem' }}>
+              Duration: {durationText}
+            </div>
+          </div>
+          <div style={{ display: 'grid', gap: '0.75rem' }}>
+            <button className="btn btn-primary btn-full" onClick={handleConfirmWW}>
+              <Moon size={16} style={{ marginRight: '0.5rem' }} />
+              Yes - Watch & Ward
+            </button>
+            <button className="btn btn-outline btn-full" onClick={handleDenyWW}>
+              No - Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="popup-card" style={{ maxWidth: 380 }}>
       <div style={{ padding: '1.5rem' }}>
@@ -87,8 +215,7 @@ export default function ManualCloseTimePopup({
           <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>{badge}</div>
           {inTime && (
             <div style={{ fontSize: '0.78rem', color: 'var(--gold)', marginTop: '0.25rem' }}>
-              Original IN at {inTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}
-              {isSatsangDay && oldInDate && <span> on {oldInDate}</span>}
+              IN: {inTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })} on {formatISTDate(inTime)}
             </div>
           )}
         </div>
@@ -98,45 +225,82 @@ export default function ManualCloseTimePopup({
             ? 'When did the Watch & Ward shift end?' 
             : mode === 'forgot_out'
               ? 'You forgot to scan OUT last time. When did you leave?' 
-              : 'Session exceeds 12 hours. Please enter the OUT time manually.'
+              : 'Session exceeds 20 hours. Please enter the OUT time manually.'
           }
         </p>
         
         <div style={{ display: 'grid', gap: '0.75rem' }}>
-          {showDateField && (
-            <div>
-              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 500, marginBottom: '0.35rem' }}>Date</label>
-              <input
-                type="date"
-                className="input"
-                value={dateStr}
-                onChange={e => setDateStr(e.target.value)}
-              />
+          <div>
+            <label className="label">Date</label>
+            <input type="date" className="input" value={dateStr} onChange={handleDateChange} min={minDate} max={maxDate} />
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+              Select {minDate === maxDate ? formatISTDate(new Date(minDate)) : `${formatISTDate(new Date(minDate))} or ${formatISTDate(new Date(maxDate))}`}
+            </div>
+          </div>
+          
+          <div>
+            <label className="label">Time</label>
+            <input 
+              type="time" 
+              className="input" 
+              value={timeStr} 
+              onChange={handleTimeChange}
+            />
+          </div>
+
+          {durationText && (
+            <div style={{ 
+              padding: '0.5rem 0.75rem', 
+              background: exceeds12h ? 'rgba(234,179,8,0.15)' : 'rgba(34,197,94,0.1)', 
+              borderRadius: 8,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}>
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>Duration</span>
+              <span style={{ 
+                fontSize: '0.85rem', 
+                fontWeight: 700, 
+                color: exceeds12h ? '#ca8a04' : 'var(--green)'
+              }}>
+                {durationText}
+                {exceeds12h && <span style={{ fontSize: '0.7rem', marginLeft: '0.5rem' }}>(W&W needed)</span>}
+              </span>
+            </div>
+          )}
+
+          {durationText && durationMins > 0 && durationMins < 10 && (
+            <div style={{ color: 'var(--red)', fontSize: '0.82rem', padding: '0.5rem', background: 'rgba(220,38,38,0.1)', borderRadius: 6 }}>
+              Minimum session duration is 10 minutes
             </div>
           )}
           
           <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 500, marginBottom: '0.35rem' }}>
-              {isSatsangDay && mode === 'forgot_out' ? 'Time (on ' + oldInDate + ')' : 'Time'}
-            </label>
-            <input
-              type="time"
+            <label className="label">Reason <span style={{ color: 'var(--red)' }}>*</span></label>
+            <textarea
               className="input"
-              value={timeStr}
-              onChange={e => setTimeStr(e.target.value)}
+              rows={2}
+              placeholder="Why did you forget to scan OUT?"
+              value={reason}
+              onChange={handleReasonChange}
+              style={{ resize: 'none' }}
             />
           </div>
           
           {error && (
-            <div style={{ color: 'var(--red)', fontSize: '0.85rem', padding: '0.5rem', background: 'var(--red-bg)', borderRadius: 6 }}>
+            <div style={{ color: 'var(--red)', fontSize: '0.85rem', padding: '0.5rem', background: 'rgba(220,38,38,0.1)', borderRadius: 6, border: '1px solid rgba(220,38,38,0.3)' }}>
               {error}
             </div>
           )}
           
           <div style={{ display: 'grid', gap: '0.5rem', marginTop: '0.5rem' }}>
-            <button className="btn btn-primary btn-full" onClick={handleSubmit}>
+            <button 
+              className="btn btn-primary btn-full" 
+              onClick={handleSubmit}
+              disabled={!dateStr || !timeStr}
+            >
               <Clock size={16} style={{ marginRight: '0.5rem' }} />
-              Confirm
+              Close Session
             </button>
             <button className="btn btn-ghost btn-full" onClick={onClose}>
               Cancel

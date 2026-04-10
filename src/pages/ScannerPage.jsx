@@ -6,7 +6,7 @@ import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import ManualTimeInputPopup from '../components/ManualTimeInputPopup'
 import ManualCloseTimePopup from '../components/ManualCloseTimePopup'
 import { MapPin, AlertTriangle, CheckCircle, XCircle, PenLine, Moon } from 'lucide-react'
-import { showError } from '../components/Toast'
+import { showError, showSuccess } from '../components/Toast'
 import {
   evaluateScan,
   executeScan,
@@ -17,6 +17,7 @@ import {
   asoForceCloseSession,
   executeStandaloneOut,
   closeSessionWithTime,
+  closeForgottenSession,
   deleteSessionWithAttendance,
 } from '../lib/sessionLogic'
 
@@ -301,14 +302,21 @@ export default function ScannerPage() {
       const scanTime = nowIST()
       const isLateNight = isLateNightScan(scanTime)
 
-      if (isLateNight) {
+      // Check for open sessions BEFORE showing W&W confirmation
+      // If there's a previous-day open session, we need to handle that first
+      const openSession = await getOpenSession(supabase, badge)
+      const today = todayDateStr()
+      const openSessionDate = openSession?.date_ist ? String(openSession.date_ist).substring(0, 10) : null
+      const isPreviousDayOpen = openSession && openSessionDate && openSessionDate !== today
+
+      if (isLateNight && !isPreviousDayOpen) {
         pendingScanRef.current = { found, badge, scanTime, release }
         release()
         setWatchWardConfirm({ sewadar: found, badge })
         return
       }
 
-      await processSewadar(found, badge, scanTime, false, release)
+      await processSewadar(found, badge, scanTime, isPreviousDayOpen, release)
     } catch (e) {
       if (import.meta.env.DEV) console.error('[HANDLE SCAN ERROR]', e?.message || e, e?.stack)
       release()
@@ -707,40 +715,118 @@ export default function ScannerPage() {
                     )}
                   </div>
                   <div style={{ display: 'grid', gap: '0.75rem' }}>
-                    <button 
-                      className="btn btn-primary btn-full" 
-                      onClick={() => {
-                        // Yes - Watch & Ward - also ask for when they left, then compute duty type normally
-                        setPopupState({
-                          type: 'manual_close_time',
-                          sewadar: popupState.sewadar,
-                          badge: popupState.badge,
-                          openSession: popupState.openSession,
-                          isSatsangDay: popupState.oldSessionWasSatsang,
-                          oldInDate: popupState.oldSessionInDate,
-                          mode: 'watch_ward',
-                        })
-                      }}
-                    >
-                      Yes - Watch & Ward (Overnight)
-                    </button>
-                    <button 
-                      className="btn btn-outline btn-full" 
-                      onClick={() => {
-                        // No - forgot to scan OUT - show popup to enter time/date
-                        setPopupState({
-                          type: 'manual_close_time',
-                          sewadar: popupState.sewadar,
-                          badge: popupState.badge,
-                          openSession: popupState.openSession,
-                          isSatsangDay: popupState.oldSessionWasSatsang,
-                          oldInDate: popupState.oldSessionInDate,
-                          mode: 'forgot_out',
-                        })
-                      }}
-                    >
-                      No - Forgot to Scan OUT
-                    </button>
+                    {/* For OUT scans (action=close_and_confirm) */}
+                    {popupState.action === 'close_and_confirm' ? (
+                      <>
+                        <button 
+                          className="btn btn-primary btn-full" 
+                          onClick={async () => {
+                            // Yes - W&W - close old session as W&W only, no new session
+                            closePopup()
+                            try {
+                              const outTime = nowIST()
+                              const outTimeISO = new Date(outTime.replace(' ', 'T')).toISOString()
+                              
+                              await closeSessionWithTime(supabase, {
+                                sessionId: popupState.openSession?.id,
+                                badge_number: popupState.badge,
+                                outTimeISO,
+                                scanner_badge: profile.badge_number,
+                                scanner_name: profile.name,
+                                scanner_centre: profile.centre,
+                                reason: 'Watch & Ward session closed',
+                              })
+                              playBeep('OUT')
+                              setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: 'OUT', time: outTime })
+                              setTimeout(closePopup, 1200)
+                              fetchTodayCount()
+                              fetchRecentScans()
+                            } catch (err) {
+                              showError('Error: ' + (err?.message || String(err)))
+                            }
+                          }}
+                        >
+                          Yes - Watch & Ward
+                        </button>
+                        <button 
+                          className="btn btn-outline btn-full" 
+                          onClick={() => {
+                            setPopupState({
+                              type: 'manual_close_time',
+                              sewadar: popupState.sewadar,
+                              badge: popupState.badge,
+                              openSession: popupState.openSession,
+                              isSatsangDay: popupState.oldSessionWasSatsang,
+                              oldInDate: popupState.oldSessionInDate,
+                              mode: 'forgot_out',
+                              createNewSession: false,
+                            })
+                          }}
+                        >
+                          I Forgot
+                        </button>
+                      </>
+                    ) : (
+                      /* For IN scans (action not set = default IN flow) */
+                      <>
+                        <button 
+                          className="btn btn-primary btn-full" 
+                          onClick={async () => {
+                            // Yes - Watch & Ward - auto-close old session and create new W&W session
+                            closePopup()
+                            try {
+                              const newInTime = nowIST()
+                              const newInTimeISO = new Date(newInTime.replace(' ', 'T')).toISOString()
+                              const newDutyType = computeDutyType(newInTimeISO, true)
+                              
+                              await executeScan(supabase, {
+                                badge_number: popupState.badge,
+                                sewadar_name: popupState.sewadar?.sewadar_name,
+                                centre: popupState.sewadar?.centre,
+                                department: popupState.sewadar?.department,
+                                type: 'IN',
+                                scanTimeISO: newInTimeISO,
+                                dutyType: newDutyType,
+                                openSession: popupState.openSession,
+                                scanner_badge: profile.badge_number,
+                                scanner_name: profile.name,
+                                scanner_centre: profile.centre,
+                                latitude: userLocation?.lat || null,
+                                longitude: userLocation?.lng || null,
+                                manual_entry: false,
+                                submitted_by: profile.badge_number,
+                              })
+                              playBeep('IN')
+                              setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: 'IN', time: newInTime })
+                              setTimeout(closePopup, 1200)
+                              fetchTodayCount()
+                              fetchRecentScans()
+                            } catch (err) {
+                              showError('Error: ' + (err?.message || String(err)))
+                            }
+                          }}
+                        >
+                          Yes - Watch & Ward (Overnight)
+                        </button>
+                        <button 
+                          className="btn btn-outline btn-full" 
+                          onClick={() => {
+                            setPopupState({
+                              type: 'manual_close_time',
+                              sewadar: popupState.sewadar,
+                              badge: popupState.badge,
+                              openSession: popupState.openSession,
+                              isSatsangDay: popupState.oldSessionWasSatsang,
+                              oldInDate: popupState.oldSessionInDate,
+                              mode: 'forgot_out',
+                              createNewSession: true,
+                            })
+                          }}
+                        >
+                          No - Forgot to Scan OUT
+                        </button>
+                      </>
+                    )}
                     <button 
                       className="btn btn-ghost" 
                       onClick={closePopup}
@@ -937,45 +1023,65 @@ export default function ScannerPage() {
                 isSatsangDay={popupState.isSatsangDay}
                 oldInDate={popupState.oldInDate}
                 mode={popupState.mode}
-                onSubmit={async (outTime) => {
+                onSubmit={async (data) => {
                   try {
-                    const isWatchWard = popupState.mode === 'watch_ward'
+                    const { outTimeISO, isWatchWard, reason } = data
                     
                     // Close the previous session with user-provided time
-                    await closeSessionWithTime(supabase, {
-                      sessionId: popupState.openSession?.id,
-                      badge_number: popupState.badge,
-                      outTimeISO: outTime,
-                      scanner_badge: profile.badge_number,
-                      scanner_name: profile.name,
-                      scanner_centre: profile.centre,
-                      reason: isWatchWard ? 'Watch & Ward session closed' : 'User confirmed forgot to scan OUT',
-                    })
+                    if (popupState.mode === 'forgot_out') {
+                      await closeForgottenSession(supabase, {
+                        sessionId: popupState.openSession?.id,
+                        outTimeISO,
+                        isWatchWard,
+                        reason,
+                        scanner_badge: profile.badge_number,
+                        scanner_name: profile.name,
+                        scanner_centre: profile.centre,
+                      })
+                    } else {
+                      // For watch_ward mode, always treat as W&W
+                      await closeSessionWithTime(supabase, {
+                        sessionId: popupState.openSession?.id,
+                        badge_number: popupState.badge,
+                        outTimeISO,
+                        scanner_badge: profile.badge_number,
+                        scanner_name: profile.name,
+                        scanner_centre: profile.centre,
+                        reason: 'Watch & Ward session closed',
+                      })
+                    }
                     
-                    // Now create new IN session - compute duty type based on CURRENT day/time
-                    const newInTime = nowIST()
-                    const newInTimeISO = new Date(newInTime.replace(' ', 'T')).toISOString()
-                    const newDutyType = computeDutyType(newInTimeISO, false)
-                    
-                    await executeScan(supabase, {
-                      badge_number: popupState.badge,
-                      sewadar_name: popupState.sewadar?.sewadar_name,
-                      centre: popupState.sewadar?.centre,
-                      department: popupState.sewadar?.department,
-                      type: 'IN',
-                      scanTimeISO: newInTimeISO,
-                      dutyType: newDutyType,
-                      openSession: null,
-                      scanner_badge: profile.badge_number,
-                      scanner_name: profile.name,
-                      scanner_centre: profile.centre,
-                      latitude: userLocation?.lat || null,
-                      longitude: userLocation?.lng || null,
-                      manual_entry: false,
-                      submitted_by: profile.badge_number,
-                    })
-                    playBeep('IN')
-                    setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: 'IN', time: newInTime })
+                    // Only create new session if explicitly requested (IN scans)
+                    if (popupState.createNewSession) {
+                      const newInTime = nowIST()
+                      const newInTimeISO = new Date(newInTime.replace(' ', 'T')).toISOString()
+                      const newDutyType = computeDutyType(newInTimeISO, false)
+                      
+                      await executeScan(supabase, {
+                        badge_number: popupState.badge,
+                        sewadar_name: popupState.sewadar?.sewadar_name,
+                        centre: popupState.sewadar?.centre,
+                        department: popupState.sewadar?.department,
+                        type: 'IN',
+                        scanTimeISO: newInTimeISO,
+                        dutyType: newDutyType,
+                        openSession: null,
+                        scanner_badge: profile.badge_number,
+                        scanner_name: profile.name,
+                        scanner_centre: profile.centre,
+                        latitude: userLocation?.lat || null,
+                        longitude: userLocation?.lng || null,
+                        manual_entry: false,
+                        submitted_by: profile.badge_number,
+                      })
+                      playBeep('IN')
+                      setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: 'IN', time: newInTime })
+                    } else {
+                      // Just show OUT success
+                      playBeep('OUT')
+                      setPopupState({ type: 'success', sewadar: popupState.sewadar, attendanceType: 'OUT', time: outTimeISO })
+                    }
+                    showSuccess('Session closed successfully')
                     setTimeout(closePopup, 1200)
                     fetchTodayCount()
                     fetchRecentScans()
@@ -1393,9 +1499,6 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
             .from('attendance_sessions')
             .insert({
               badge_number: selected.badge_number,
-              sewadar_name: selected.sewadar_name,
-              centre: selected.centre,
-              department: selected.department || null,
               duty_type: 'satsang',
               in_time: inTimeISO,
               date_ist: inDate,
@@ -1416,9 +1519,6 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
             .from('attendance')
             .insert({
               badge_number: selected.badge_number,
-              sewadar_name: selected.sewadar_name,
-              centre: selected.centre,
-              department: selected.department || null,
               type: 'IN',
               scan_time: inTimeISO,
               duty_type: 'satsang',
@@ -1491,9 +1591,6 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
               .from('attendance')
               .insert({
                 badge_number: selected.badge_number,
-                sewadar_name: selected.sewadar_name,
-                centre: selected.centre,
-                department: selected.department || null,
                 type: 'OUT',
                 scan_time: outTimeISO,
                 duty_type: 'satsang',
@@ -1542,9 +1639,6 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
           .from('attendance_sessions')
           .insert({
             badge_number: selected.badge_number,
-            sewadar_name: selected.sewadar_name,
-            centre: selected.centre,
-            department: selected.department || null,
             duty_type: dutyType,
             in_time: inTimeISO,
             date_ist: inDate,
@@ -1566,9 +1660,6 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
           .from('attendance')
           .insert({
             badge_number: selected.badge_number,
-            sewadar_name: selected.sewadar_name,
-            centre: selected.centre,
-            department: selected.department || null,
             type: 'IN',
             scan_time: inTimeISO,
             duty_type: dutyType,
@@ -1598,9 +1689,6 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
           .from('attendance')
           .insert({
             badge_number: selected.badge_number,
-            sewadar_name: selected.sewadar_name,
-            centre: selected.centre,
-            department: selected.department || null,
             type: 'OUT',
             scan_time: outTimeISO,
             duty_type: dutyType,
