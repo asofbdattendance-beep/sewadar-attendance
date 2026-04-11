@@ -1,150 +1,192 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { supabase } from '../lib/supabase'
+import React, { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { supabase, ROLES, DUTY_TYPE_LABEL } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { ROLES, FLAG_TYPES } from '../lib/supabase'
+import { todayDateStr, formatDateStr, scanTimeToISTDate } from '../lib/dateUtils'
+import { detectTimeConflict, hasTimeConflict, hasTimeConflictForOut, hasSessionOverlap } from '../lib/sessionLogic'
 import {
   Search, Download, Flag, X, RefreshCw,
-  ChevronDown, Trash2, FileSpreadsheet, BarChart2,
-  Calendar, Users, Plane, FileText
+  Trash2, FileText, PenLine, BarChart2
 } from 'lucide-react'
 import DateRangePicker from '../components/DateRangePicker'
 import CentreComboBox from '../components/CentreComboBox'
 import SkeletonRows from '../components/SkeletonRows'
-import QuickFilterChips from '../components/QuickFilterChips'
-import TablePagination from '../components/TablePagination'
 import EmptyState from '../components/EmptyState'
+import ConfirmModal from '../components/ConfirmModal'
 import { showSuccess, showError } from '../components/Toast'
+import { deleteSessionWithAttendance, syncSessionWithAttendance } from '../lib/sessionLogic'
 
 const PAGE_SIZE = 50
-const SEARCH_DEBOUNCE = 300
-const CURRENT_YEAR = new Date().getFullYear()
-const YEARS = [CURRENT_YEAR, CURRENT_YEAR - 1, CURRENT_YEAR - 2]
-
-// IST offset in minutes
-const IST_OFFSET = 5 * 60 + 30
 
 function formatTime(iso) {
   if (!iso) return '—'
-  return new Date(iso).toLocaleTimeString('en-IN', {
+  // Handle both full ISO timestamps and just time strings (HH:mm:ss)
+  if (iso.includes('T')) {
+    return new Date(iso).toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'Asia/Kolkata'
+    })
+  }
+  // Just time string - return as-is
+  if (iso.match(/^\d{2}:\d{2}/)) {
+    const [h, m] = iso.split(':')
+    const hour = parseInt(h)
+    const ampm = hour >= 12 ? 'pm' : 'am'
+    const hour12 = hour % 12 || 12
+    return `${hour12}:${m} ${ampm}`
+  }
+  return iso
+}
+
+function extractISTDate(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+}
+
+function extractISTTime(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleTimeString('en-GB', {
     hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
     timeZone: 'Asia/Kolkata'
   })
 }
 
-function todayDateStr() {
-  // Return today's date in IST as YYYY-MM-DD
-  const now = new Date()
-  const istDate = new Date(now.getTime() + IST_OFFSET * 60000)
-  return istDate.toISOString().split('T')[0]
+function formatDuration(inTime, outTime) {
+  if (!inTime || !outTime) return null
+  const mins = Math.round((new Date(outTime) - new Date(inTime)) / 60000)
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
 }
 
-// Convert a YYYY-MM-DD date string to UTC ISO string at IST start-of-day (00:00 IST = prev day 18:30 UTC)
-function istDayStart(dateStr) {
-  // dateStr like "2025-03-19"
-  // 00:00:00 IST = 00:00:00+05:30
-  return `${dateStr}T00:00:00.000+05:30`
+function csvEscape(val) {
+  if (val === null || val === undefined) return ''
+  const str = String(val)
+  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    return '"' + str.replace(/"/g, '""') + '"'
+  }
+  return str
 }
 
-// Convert a YYYY-MM-DD date string to UTC ISO string at IST end-of-day (23:59:59.999 IST)
-function istDayEnd(dateStr) {
-  return `${dateStr}T23:59:59.999+05:30`
-}
-
-// Parse scan_time and return YYYY-MM-DD in IST
-function scanTimeToISTDate(isoString) {
-  const d = new Date(isoString)
-  // shift to IST then take date portion
-  const istTime = new Date(d.getTime() + IST_OFFSET * 60000)
-  return istTime.toISOString().split('T')[0]
-}
-
-// Format a bare YYYY-MM-DD for display without timezone shift
-function formatDateStr(dateStr) {
-  // Append noon IST to avoid any local-tz shift on display
-  return new Date(dateStr + 'T12:00:00+05:30').toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'Asia/Kolkata'
-  })
-}
-
-// ─────────────────────────────────────────────
-//  ATTENDANCE TAB — Paginated, server-searched
-// ─────────────────────────────────────────────
+// =====================================================
+// ATTENDANCE TAB - SESSION BASED
+// =====================================================
 function AttendanceTab() {
+  const navigate = useNavigate()
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE_USER
-  const isAdmin = isAso || isCentreUser
+  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
+  const canEdit = !!isAso
+  const canFlag = !!isAso || !!profile?.can_flags
+
+  function goToFlag(flagId) {
+    navigate(`/flags?id=${flagId}`)
+  }
+
+  // Helper to check if session is within 40 min edit window (for centre users only)
+  // Uses created_at (timestamp when record was created) not IN time
+  function canEditSession(session) {
+    const timeRef = session?.created_at || session?.in_time
+    if (!timeRef) return false
+    
+    const refTime = new Date(timeRef)
+    const now = new Date()
+    const diffMs = now - refTime
+    const diffMins = diffMs / (1000 * 60)
+    
+    return diffMins <= 40
+  }
 
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(false)
   const [totalCount, setTotalCount] = useState(0)
   const [page, setPage] = useState(1)
-  const [sortCol, setSortCol] = useState('scan_time')
-  const [sortDir, setSortDir] = useState('desc')
   const [searchTerm, setSearchTerm] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [dateRange, setDateRange] = useState({ from: todayDateStr(), to: todayDateStr() })
+  const [dateRangeAdvanced, setDateRangeAdvanced] = useState(false)
   const [centreFilter, setCentreFilter] = useState(null)
-  const [quickFilter, setQuickFilter] = useState('all')
-  const [quickFilterCounts, setQuickFilterCounts] = useState({ all: 0, in: 0, out: 0, flagged: 0, manual: 0 })
-  const [flagDetails, setFlagDetails] = useState({})
-  const [recentSearches, setRecentSearches] = useState([])
+  const [dutyFilter, setDutyFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
   const [centres, setCentres] = useState([])
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [flagModal, setFlagModal] = useState(null)
-  const [flagType, setFlagType] = useState('error_entry')
-  const [flagNote, setFlagNote] = useState('')
+  const [flagReason, setFlagReason] = useState('')
   const [flagSubmitting, setFlagSubmitting] = useState(false)
-  const [flagSuccess, setFlagSuccess] = useState(false)
-  const [deleteMsg, setDeleteMsg] = useState('')
+  const [editingSession, setEditingSession] = useState(null)
+  const [editInTime, setEditInTime] = useState('')
+  const [editOutTime, setEditOutTime] = useState('')
+  const [editInDate, setEditInDate] = useState('')
+  const [editOutDate, setEditOutDate] = useState('')
 
   const searchTimerRef = useRef(null)
-  const tableRef = useRef(null)
-  const highlightedRowRef = useRef(-1)
 
-  // Load centres + recent searches
   useEffect(() => {
-    fetchCentres().catch(console.error)
-    const saved = localStorage.getItem('records_recent_searches')
-    if (saved) setRecentSearches(JSON.parse(saved))
-    const savedSettings = localStorage.getItem('records_settings')
-    if (savedSettings) {
-      const s = JSON.parse(savedSettings)
-      if (s.sortCol) setSortCol(s.sortCol)
-      if (s.sortDir) setSortDir(s.sortDir)
-      if (s.page) setPage(s.page)
-    }
+    fetchCentres()
   }, [])
 
-  // Save settings
-  useEffect(() => {
-    localStorage.setItem('records_settings', JSON.stringify({ sortCol, sortDir, page }))
-  }, [sortCol, sortDir, page])
-
-  // Debounced search
   useEffect(() => {
     clearTimeout(searchTimerRef.current)
     searchTimerRef.current = setTimeout(() => {
       setSearchTerm(searchInput)
       setPage(1)
-    }, SEARCH_DEBOUNCE)
+    }, 300)
     return () => clearTimeout(searchTimerRef.current)
   }, [searchInput])
 
-  // Fetch records
   useEffect(() => {
-    fetchRecords().catch(console.error)
-  }, [page, sortCol, sortDir, searchTerm, dateRange, centreFilter, quickFilter, profile, centres])
+    fetchRecords()
+  }, [page, dateRange, centreFilter, dutyFilter, statusFilter, searchTerm])
+
+  const fetchRecordsRef = useRef(null)
+  fetchRecordsRef.current = fetchRecords
+
+  // Real-time updates
+  useEffect(() => {
+    let timer = null
+    const channel = supabase.channel('records-realtime-v3')
+    
+    channel.on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance_sessions' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT-RECORDS] sessions event:', payload.eventType)
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        if (fetchRecordsRef.current) fetchRecordsRef.current()
+      }, 100) // Reduced from 300ms to 100ms
+    })
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT-RECORDS] attendance event:', payload.eventType)
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        if (fetchRecordsRef.current) fetchRecordsRef.current()
+      }, 100) // Reduced from 300ms to 100ms
+    })
+    .subscribe((status, err) => {
+      if (import.meta.env.DEV) console.log('[RT-RECORDS] Channel status:', status)
+    })
+
+    return () => { 
+      if (import.meta.env.DEV) console.log('[RT-RECORDS] Cleanup')
+      clearTimeout(timer)
+      supabase.removeChannel(channel) 
+    }
+  }, [])
 
   async function fetchCentres() {
     let q = supabase.from('centres').select('centre_name, parent_centre').order('centre_name')
-    if (isCentreUser) {
-      q = supabase.from('centres').select('centre_name, parent_centre')
-        .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
-        .order('centre_name')
+    if (isCentreUser && profile?.centre) {
+      q = q.or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
     }
     const { data } = await q
     setCentres(data || [])
@@ -153,579 +195,779 @@ function AttendanceTab() {
   async function fetchRecords() {
     setLoading(true)
 
-    const start = istDayStart(dateRange.from)
-    const end   = istDayEnd(dateRange.to)
-
-    // ── Build centre scope ──
-    let centreScope = null
-    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
-      centreScope = [profile.centre]
-    } else if (isCentreUser) {
-      centreScope = [
-        profile.centre,
-        ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)
-      ]
-    } else if (centreFilter) {
-      centreScope = [centreFilter]
-    }
-
-    // ── Single RPC call — grouping + IST dates + cross-day pairing all done in Postgres ──
-    const { data, error } = await supabase.rpc('get_attendance_grouped', {
-      p_start:   start,
-      p_end:     end,
-      p_centres: centreScope,
-      p_search:  searchTerm.trim() || null,
-    })
-
-    setLoading(false)
-    if (error) { console.error('[Records] RPC error:', error); return }
-
-    // ── Normalise: RPC returns grouped rows, attach raw_in/raw_out stubs for flag lookups ──
-    let rows = (data || []).map(r => ({
-      badge_number: r.badge_number,
-      sewadar_name: r.sewadar_name,
-      centre:       r.centre,
-      department:   r.department,
-      date:         r.ist_date,
-      in_time:      r.in_time  || null,
-      out_time:     r.out_time || null,
-      in_scanner:   r.in_scanner  || null,
-      out_scanner:  r.out_scanner || null,
-      in_id:        r.in_id  || null,
-      out_id:       r.out_id || null,
-      manual_entry: r.manual_entry || false,
-      raw_in:  r.in_id  ? { id: r.in_id  } : null,
-      raw_out: r.out_id ? { id: r.out_id } : null,
-    }))
-
-    // ───── FETCH FLAGS FOR CURRENT PAGE ─────
-    const { flaggedCount } = await fetchFlagsForCurrentPage(rows)
-
-    // ───── QUICK FILTER COUNTS ─────
-    setQuickFilterCounts({
-      all: rows.length,
-      in: rows.filter(r => r.in_time && !r.out_time).length,
-      out: rows.filter(r => r.out_time && !r.in_time).length,
-      manual: rows.filter(r => r.manual_entry).length,
-      flagged: flaggedCount,
-    })
-
-    // ───── APPLY QUICK FILTERS ─────
-    if (quickFilter === 'in') {
-      rows = rows.filter(r => r.in_time && !r.out_time)
-    } else if (quickFilter === 'out') {
-      rows = rows.filter(r => r.out_time && !r.in_time)
-    } else if (quickFilter === 'manual') {
-      rows = rows.filter(r => r.manual_entry)
-    } else if (quickFilter === 'flagged') {
-      // Use freshly-built flagDetails from the state (updated by fetchFlagsForCurrentPage)
-      rows = rows.filter(r =>
-        (r.raw_in?.id && flagDetails[r.raw_in.id]) ||
-        (r.raw_out?.id && flagDetails[r.raw_out.id])
-      )
-    }
-
-    // ───── PAGINATION ─────
-    setTotalCount(rows.length)
-    const pageStart = (page - 1) * PAGE_SIZE
-    setRecords(rows.slice(pageStart, pageStart + PAGE_SIZE))
-  }
-
-  // Returns { flagMap: {attendance_id→flagInfo}, flaggedCount: number }
-  async function fetchFlagsForCurrentPage(rows) {
-    if (!rows || rows.length === 0) {
-      setFlagDetails({})
-      return { flagMap: {}, flaggedCount: 0 }
-    }
-
-    const ids = []
-    rows.forEach(r => {
-      if (r.raw_in?.id) ids.push(r.raw_in.id)
-      if (r.raw_out?.id) ids.push(r.raw_out.id)
-    })
-
-    if (ids.length === 0) {
-      setFlagDetails({})
-      return { flagMap: {}, flaggedCount: 0 }
-    }
+    const isSingleDay = dateRange.from === dateRange.to
+    const fromDate = dateRange.from
+    const toDate = dateRange.to
 
     let q = supabase
-      .from('queries')
-      .select('attendance_id, flag_type, issue_description, raised_by_name, raised_by_badge, created_at, status')
-      .in('attendance_id', ids)
-      .eq('status', 'open')
-
-    if (isCentreUser && profile?.centre) {
-      const scope = [profile.centre]
-      const childData = centres
-        .filter(c => c.parent_centre === profile.centre)
-        .map(c => c.centre_name)
-      scope.push(...childData)
-      q = q.in('target_centre', scope)
-    }
-
-    const { data, error } = await q
-
-    if (error) {
-      console.error(error)
-      return { flagMap: {}, flaggedCount: 0 }
-    }
-
-    const newMap = {}
-    ;(data || []).forEach(q => {
-      newMap[q.attendance_id] = {
-        flag_type: q.flag_type,
-        issue_description: q.issue_description,
-        raised_by_name: q.raised_by_name,
-        raised_by_badge: q.raised_by_badge,
-        created_at: q.created_at,
-        status: q.status,
-      }
-    })
-
-    const flaggedCount = rows.filter(r =>
-      (r.raw_in && newMap[r.raw_in.id]) ||
-      (r.raw_out && newMap[r.raw_out.id])
-    ).length
-
-    setFlagDetails(prev => ({ ...prev, ...newMap }))
-    return { flagMap: newMap, flaggedCount }
-  }
-
-  const handleSort = (col) => {
-    if (sortCol === col) {
-      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+      .from('v_sessions_full')
+      .select('*', { count: 'exact' })
+    
+    if (isSingleDay) {
+      q = q.eq('date_ist', fromDate)
     } else {
-      setSortCol(col)
-      setSortDir('desc')
+      q = q.gte('date_ist', fromDate).lte('date_ist', toDate)
     }
-    setPage(1)
-  }
+    
+    q = q.order('date_ist', { ascending: false }).order('in_time', { ascending: false })
 
-  function addRecentSearch(term) {
-    if (!term.trim()) return
-    const updated = [term, ...recentSearches.filter(s => s !== term)].slice(0, 5)
-    setRecentSearches(updated)
-    localStorage.setItem('records_recent_searches', JSON.stringify(updated))
-  }
+    // Centre scope
+    if (centreFilter) {
+      q = q.eq('sewadar_centre', centreFilter)
+      if (import.meta.env.DEV) console.log('[Records] Centre filter:', centreFilter)
+    } else if (isCentreUser && profile?.centre) {
+      let childCentres = centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)
+      if (childCentres.length === 0 && centres.length === 0) {
+        const { data: childData } = await supabase
+          .from('centres')
+          .select('centre_name')
+          .eq('parent_centre', profile.centre)
+        childCentres = (childData || []).map(c => c.centre_name)
+      }
+      const scope = [profile.centre, ...childCentres]
+      q = q.in('sewadar_centre', scope)
+      if (import.meta.env.DEV) console.log('[Records] Centre scope (user):', scope)
+    }
 
-  async function submitFlag() {
-    if (!flagModal || !profile) return
-    setFlagSubmitting(true)
-    const record = flagModal.raw_in || flagModal.raw_out
-    const { error } = await supabase.from('queries').insert({
-      raised_by_badge: profile.badge_number,
-      raised_by_name: profile.name,
-      raised_by_centre: profile.centre,
-      raised_by_role: profile.role,
-      attendance_id: record?.id || null,
-      issue_description: flagNote.trim() || FLAG_TYPES.find(f => f.value === flagType)?.label || flagType,
-      flag_type: flagType,
-      target_centre: flagModal.centre,
-      status: 'open',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    if (error) { showError('Failed to raise flag: ' + error.message); setFlagSubmitting(false); return }
-    if (record?.id) {
-      setFlagDetails(prev => ({
-        ...prev,
-        [record.id]: {
-          flag_type: flagType,
-          issue_description: flagNote.trim() || FLAG_TYPES.find(f => f.value === flagType)?.label || flagType,
-          raised_by_name: profile.name,
-          raised_by_badge: profile.badge_number,
-          created_at: new Date().toISOString(),
-          status: 'open',
+    // Search
+    if (searchTerm.trim()) {
+      q = q.or(`badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`)
+    }
+
+    // Duty type filter
+    if (dutyFilter) {
+      q = q.eq('duty_type', dutyFilter)
+    }
+
+    // Status filter
+    if (statusFilter === 'open') {
+      q = q.eq('is_open', true)
+    } else if (statusFilter === 'closed') {
+      q = q.eq('is_open', false)
+    }
+
+    const { data, count, error } = await q.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
+    setLoading(false)
+    if (error) {
+      if (import.meta.env.DEV) console.warn('[Records] fetch failed:', error)
+      return
+    }
+    
+    if (import.meta.env.DEV) {
+      console.log('[Records] Fetched:', data?.length, 'records, total:', count)
+      if (data?.length > 0) {
+        console.log('[Records] Sample centre values:', [...new Set(data.map(r => r.sewadar_centre))].slice(0, 5))
+      }
+    }
+
+    const sessions = data || []
+    const flaggedIds = sessions.filter(s => s.flagged).map(s => s.id)
+
+    if (flaggedIds.length > 0) {
+      const { data: flagsData } = await supabase
+        .from('queries')
+        .select('id, session_id, issue_description, status')
+        .in('session_id', flaggedIds)
+        .neq('status', 'resolved')
+
+      const flagsMap = Object.fromEntries((flagsData || []).map(f => [f.session_id, f]))
+
+      for (const session of sessions) {
+        if (session.flagged && flagsMap[session.id]) {
+          session.flag_reason = flagsMap[session.id].issue_description
+          session.flag_status = flagsMap[session.id].status
+          session.flag_id = flagsMap[session.id].id
         }
-      }))
-      setQuickFilterCounts(prev => ({ ...prev, flagged: (prev.flagged || 0) + 1 }))
+      }
     }
+
+    setRecords(sessions)
+    setTotalCount(count || 0)
+  }
+
+  async function deleteSession(record) {
+    setDeleteConfirm(record)
+  }
+
+  async function exportAttendanceCSV() {
+    showSuccess('Preparing export...')
+    
+    try {
+      const isSingleDay = dateRange.from === dateRange.to
+      const fromDate = dateRange.from
+      const toDate = dateRange.to
+      
+      let q = supabase
+        .from('v_sessions')
+        .select('badge_number, sewadar_name, sewadar_centre, sewadar_department, date_ist, in_time, in_scanner_name, out_time, out_scanner_name, duty_type, is_open')
+      
+      if (isSingleDay) {
+        q = q.eq('date_ist', fromDate)
+      } else {
+        q = q.gte('date_ist', fromDate).lte('date_ist', toDate)
+      }
+      
+      q = q.order('date_ist', { ascending: false }).order('in_time', { ascending: false })
+
+      // Centre scope
+      if (isCentreUser && profile?.centre) {
+        const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
+        q = q.in('sewadar_centre', scope)
+      } else if (centreFilter) {
+        q = q.eq('sewadar_centre', centreFilter)
+      }
+
+      // Search
+      if (searchTerm.trim()) {
+        q = q.or(`badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`)
+      }
+
+      // Duty type filter
+      if (dutyFilter) {
+        q = q.eq('duty_type', dutyFilter)
+      }
+
+      // Status filter
+      if (statusFilter === 'open') {
+        q = q.eq('is_open', true)
+      } else if (statusFilter === 'closed') {
+        q = q.eq('is_open', false)
+      }
+
+      const { data: allSessions } = await q
+
+      if (!allSessions?.length) {
+        showError('No data to export')
+        return
+      }
+
+      const header = ['Badge', 'Name', 'Centre', 'Department', 'Duty Type', 'IN Date', 'IN Time', 'IN Scanner', 'OUT Date', 'OUT Time', 'OUT Scanner', 'Duration', 'Status']
+      const rows = allSessions.map(r => {
+        const inDate = formatDateStr(r.date_ist)
+        const outDate = r.out_time ? formatDateStr(scanTimeToISTDate(r.out_time)) : ''
+        return [
+          csvEscape(r.badge_number),
+          csvEscape(r.sewadar_name),
+          csvEscape(r.sewadar_centre),
+          csvEscape(r.sewadar_department || ''),
+          csvEscape(DUTY_TYPE_LABEL[r.duty_type] || r.duty_type),
+          csvEscape(inDate),
+          formatTime(r.in_time),
+          csvEscape(r.in_scanner_name || r.scanner_name || ''),
+          csvEscape(outDate),
+          formatTime(r.out_time),
+          csvEscape(r.out_scanner_name || ''),
+          formatDuration(r.in_time, r.out_time) || '',
+          r.is_open ? 'Open' : r.force_closed ? 'Corrected' : 'Complete',
+        ]
+      })
+      const csv = [header, ...rows].map(r => r.join(',')).join('\n')
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+      a.download = `attendance_${dateRange.from}_${dateRange.to}.csv`
+      a.click()
+      showSuccess(`Exported ${allSessions.length} records`)
+    } catch (err) {
+      showError('Export failed: ' + err.message)
+    }
+  }
+
+  async function doDelete() {
+    if (!deleteConfirm || !profile) return
+    const { id, badge_number } = deleteConfirm
+
+    try {
+      await deleteSessionWithAttendance(supabase, {
+        sessionId: id,
+        deletedByBadge: profile.badge_number,
+        reason: 'Manual deletion from records page'
+      })
+
+      showSuccess('Session deleted')
+      fetchRecords()
+    } catch (err) {
+      showError('Delete failed: ' + err.message)
+    }
+    setDeleteConfirm(null)
+  }
+
+  async function doFlag() {
+    if (!flagModal) {
+      showError('No session selected')
+      return
+    }
+    if (!flagReason.trim()) {
+      showError('Please enter a reason for flagging')
+      return
+    }
+    if (!profile) {
+      showError('Profile not loaded. Please refresh the page.')
+      return
+    }
+    setFlagSubmitting(true)
+
+    try {
+      const { data: existing } = await supabase
+        .from('queries')
+        .select('id')
+        .eq('session_id', flagModal.id)
+        .in('status', ['open', 'in_progress'])
+        .maybeSingle()
+
+      if (existing) {
+        setFlagSubmitting(false)
+        showError('This session already has an open flag')
+        return
+      }
+
+      const { data: flag, error: flagError } = await supabase
+        .from('queries')
+        .insert({
+          session_id: flagModal.id,
+          raised_by_badge: profile.badge_number,
+          raised_by_name: profile.name,
+          raised_by_centre: profile.centre,
+          raised_by_role: profile.role,
+          issue_description: flagReason.trim(),
+          reason: flagReason.trim(),
+          status: 'open',
+          flag_type: 'session_flag',
+          badge_number: flagModal.badge_number,
+        })
+        .select()
+        .single()
+
+      if (flagError) throw new Error('Flag failed: ' + flagError.message)
+
+      await supabase.from('attendance_sessions').update({
+        flagged: true,
+        flag_reason: flagReason.trim(),
+        flagged_by: profile.badge_number,
+        flagged_at: new Date().toISOString(),
+      }).eq('id', flagModal.id)
+
+      await supabase.from('flag_audit_log').insert({
+        flag_id: flag.id,
+        action: 'FLAG_RAISED',
+        actor_badge: profile.badge_number,
+        actor_name: profile.name,
+        details: `Flag raised: "${flagReason.trim()}"`,
+      })
+
+      showSuccess('Query raised — check Queries tab')
+      fetchRecords()
+    } catch (err) {
+      console.error('Flag error:', err)
+      showError(err.message || 'Failed to raise flag')
+    }
+
     setFlagSubmitting(false)
-    setFlagSuccess(true)
-    setTimeout(() => {
-      setFlagModal(null); setFlagSuccess(false)
-      setFlagType('error_entry'); setFlagNote('')
-    }, 1500)
+    setFlagModal(null)
+    setFlagReason('')
   }
 
-  async function deleteRecord(id, badge, type) {
-    if (!id) return
-    if (!confirm(`Delete ${type} record for ${badge}?\n\nThis cannot be undone.`)) return
-    const { error } = await supabase.from('attendance').delete().eq('id', id)
-    if (error) { showError('Delete failed: ' + error.message); return }
-    await supabase.from('logs').insert({
-      user_badge: profile.badge_number, action: 'DELETE_ATTENDANCE',
-      details: `Deleted ${type} id=${id} badge=${badge}`, timestamp: new Date().toISOString()
-    }).catch(e => console.warn('Log insert failed:', e))
-    showSuccess(`${type} record deleted`)
-    fetchRecords()
+  async function saveSessionEdit() {
+    if (!editingSession) return
+
+    try {
+      // If session is open, only allow editing IN time
+      const isOpenSession = editingSession.is_open
+
+      const updates = {}
+      let newInTimeISO = null
+      let newOutTimeISO = null
+
+      if (editInDate && editInTime) {
+        const inDateTime = new Date(`${editInDate}T${editInTime}:00+05:30`)
+        if (isNaN(inDateTime.getTime())) {
+          showError('Invalid IN date/time')
+          return
+        }
+        newInTimeISO = inDateTime.toISOString()
+        updates.in_time = newInTimeISO
+        updates.date_ist = editInDate
+      } else if (editingSession.in_time) {
+        newInTimeISO = editingSession.in_time
+      }
+
+      // Only allow OUT time editing if session is not open
+      if (!isOpenSession && editOutDate && editOutTime) {
+        const outDateTime = new Date(`${editOutDate}T${editOutTime}:00+05:30`)
+        if (isNaN(outDateTime.getTime())) {
+          showError('Invalid OUT date/time')
+          return
+        }
+        newOutTimeISO = outDateTime.toISOString()
+        updates.out_time = newOutTimeISO
+      }
+
+      if (!newInTimeISO) {
+        showError('IN time is required')
+        return
+      }
+
+      // If open session, don't check OUT time conflicts
+      const checkOutTime = !isOpenSession && newOutTimeISO
+
+      // Check time conflict before saving
+      const badgeNumber = editingSession.badge_number
+      
+      // Fetch existing sessions for this badge (exclude current session)
+      const { data: existingSessions } = await supabase
+        .from('v_sessions')
+        .select('id, badge_number, in_time, out_time, date_ist, duty_type')
+        .eq('badge_number', badgeNumber)
+        .neq('id', editingSession.id)
+        .eq('is_open', false)
+
+      // Fetch jatha records for this person (any jatha that overlaps with proposed time)
+      const { data: jathaRecords } = await supabase
+        .from('jatha_attendance')
+        .select('id, date_from, date_to')
+        .eq('badge_number', badgeNumber)
+        .lte('date_from', isOpenSession ? newInTimeISO.substring(0, 10) : newOutTimeISO.substring(0, 10))
+        .gte('date_to', newInTimeISO.substring(0, 10))
+
+      // Detect conflicts
+      const conflictResult = detectTimeConflict({
+        sessions: existingSessions || [],
+        jathas: jathaRecords || [],
+        proposedInISO: newInTimeISO,
+        proposedOutISO: newOutTimeISO,
+        excludeSessionId: editingSession.id,
+        badgeNumber
+      })
+
+      if (conflictResult.hasConflict) {
+        if (conflictResult.type === 'jatha') {
+          showError(`Cannot save: ${conflictResult.message}`)
+        } else {
+          showError(`Time conflict: ${conflictResult.message}`)
+        }
+        return
+      }
+
+      if (Object.keys(updates).length === 0) {
+        setEditingSession(null)
+        return
+      }
+
+      // Use sync function to keep session and attendance consistent
+      await syncSessionWithAttendance(supabase, {
+        sessionId: editingSession.id,
+        updates,
+        updatedBy: profile?.badge_number,
+        reason: 'Manual edit from Records page',
+      })
+
+      showSuccess('Session and attendance updated')
+      setEditingSession(null)
+      fetchRecords()
+    } catch (err) {
+      showError('Update failed: ' + err.message)
+    }
   }
 
-  function SortHeader({ col, label }) {
-    return (
-      <th
-        onClick={() => handleSort(col)}
-        style={{ cursor: 'pointer', userSelect: 'none' }}
-        title={`Sort by ${label}`}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-          {label}
-          {sortCol === col && (
-            <span style={{ color: 'var(--excel-green)', fontSize: '0.6rem' }}>
-              {sortDir === 'asc' ? '▲' : '▼'}
-            </span>
-          )}
-        </div>
-      </th>
-    )
+  function getStatusBadge(session) {
+    if (session.is_open) {
+      return <span style={{ fontSize: '0.7rem', background: 'rgba(234,179,8,0.15)', color: '#ca8a04', border: '1px solid rgba(234,179,8,0.3)', borderRadius: 6, padding: '2px 8px', fontWeight: 700 }}>OPEN</span>
+    }
+    if (session.force_closed) {
+      return <span style={{ fontSize: '0.7rem', background: 'rgba(156,163,175,0.15)', color: '#6b7280', border: '1px solid rgba(156,163,175,0.3)', borderRadius: 6, padding: '2px 8px', fontWeight: 700 }}>CORRECTED</span>
+    }
+    return <span style={{ fontSize: '0.7rem', background: 'rgba(34,197,94,0.15)', color: '#16a34a', border: '1px solid rgba(34,197,94,0.3)', borderRadius: 6, padding: '2px 8px', fontWeight: 700 }}>COMPLETE</span>
   }
 
   return (
     <div>
-      {/* Search + Filters row */}
-      <div style={{
-        display: 'flex',
-        gap: '0.75rem',
-        marginBottom: '1rem',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        padding: '0.75rem',
-        background: 'var(--bg-elevated)',
-        border: '1px solid var(--border)',
-        borderRadius: 10
-      }}>
-        {/* Search box */}
-        <div className="search-box" style={{
-          flex: 1,
-          minWidth: 260,
-          maxWidth: 400,
-          position: 'relative'
-        }}>
-          <Search size={15} />
-          <input
-            type="text"
-            placeholder="Search badge or name…"
-            value={searchInput}
-            onChange={e => setSearchInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                addRecentSearch(searchInput)
-                setSearchTerm(searchInput)
-                setPage(1)
-              }
-            }}
-          />
-          {searchInput && (
-            <button onClick={() => { setSearchInput(''); setSearchTerm(''); setPage(1) }}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
-              <X size={13} />
-            </button>
-          )}
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap', alignItems: 'center', padding: '0.6rem 0.75rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10 }}>
+        <div className="search-box" style={{ flex: '1 1 220px', minWidth: 180 }}>
+          <Search size={14} />
+          <input type="text" placeholder="Search badge or name…" value={searchInput}
+            onChange={e => setSearchInput(e.target.value)} style={{ minWidth: 0 }} />
+          {searchInput && <button onClick={() => setSearchInput('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}><X size={13} /></button>}
         </div>
 
-        {/* Centre filter — ASO only */}
         {isAso && (
-          <CentreComboBox
-            value={centreFilter}
-            onChange={val => { setCentreFilter(val); setPage(1) }}
-            centres={centres}
-            includeAll={true}
-          />
+          <CentreComboBox value={centreFilter} onChange={val => { setCentreFilter(val); setPage(1) }} centres={centres} includeAll={true} grouped={true} />
         )}
 
-        {/* Date range */}
-        <DateRangePicker
-          value={dateRange}
-          onChange={val => { setDateRange(val); setPage(1) }}
-        />
-      </div>
+        {isCentreUser && (
+          <CentreComboBox value={centreFilter} onChange={val => { setCentreFilter(val); setPage(1) }} centres={centres.filter(c => c.centre_name === profile?.centre || c.parent_centre === profile?.centre)} includeAll={true} grouped={false} />
+        )}
 
-      {/* Quick filter chips + Refresh */}
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center' }}>
-        <QuickFilterChips
-          value={quickFilter}
-          onChange={val => { setQuickFilter(val); setPage(1) }}
-          counts={quickFilterCounts}
-        />
-        <button className="btn btn-ghost" onClick={fetchRecords} style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}>
-          <RefreshCw size={13} /> Refresh
-        </button>
-      </div>
+        <DateRangePicker value={dateRange} onChange={val => { setDateRange(val); setPage(1) }} showAdvanced={dateRangeAdvanced} onAdvancedChange={setDateRangeAdvanced} />
 
-      {/* Recent searches */}
-      {recentSearches.length > 0 && searchInput === '' && (
-        <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', alignSelf: 'center' }}>Recent:</span>
-          {recentSearches.map(s => (
-            <button key={s} onClick={() => { setSearchInput(s); setSearchTerm(s) }}
-              style={{
-                fontSize: '0.72rem', padding: '0.2rem 0.5rem', background: 'var(--bg)', border: '1px solid var(--border)',
-                borderRadius: 999, cursor: 'pointer', color: 'var(--text-secondary)', fontFamily: 'inherit'
-              }}>
-              {s}
+        <div style={{ display: 'flex', gap: '0.35rem' }}>
+          {['', 'satsang', 'gate_entry', 'watch_ward'].map(d => (
+            <button key={d} className={`btn ${dutyFilter === d ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setDutyFilter(d); setPage(1) }} style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}>
+              {d === '' ? 'All' : d === 'satsang' ? 'Satsang' : d === 'gate_entry' ? 'Gate' : 'W&W'}
             </button>
           ))}
         </div>
-      )}
 
-      {deleteMsg && (
-        <div style={{
-          background: 'rgba(76,175,125,0.1)', border: '1px solid rgba(76,175,125,0.2)',
-          borderRadius: 'var(--radius)', padding: '0.6rem 1rem', marginBottom: '0.75rem',
-          color: 'var(--green)', fontSize: '0.82rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center'
-        }}>
-          <span>{deleteMsg}</span>
-          <button onClick={() => setDeleteMsg('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}><X size={14} /></button>
+        <div style={{ display: 'flex', gap: '0.35rem' }}>
+          {['', 'open', 'closed'].map(s => (
+            <button key={s} className={`btn ${statusFilter === s ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setStatusFilter(s); setPage(1) }} style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}>
+              {s === '' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
         </div>
-      )}
+
+        <div style={{ display: 'flex', gap: '0.4rem', flexShrink: 0, marginLeft: 'auto' }}>
+          <button className="btn btn-ghost" onClick={fetchRecords} title="Refresh"><RefreshCw size={14} /></button>
+          <button className="btn btn-excel" onClick={exportAttendanceCSV} disabled={!records.length}><Download size={14} /></button>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+        <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem' }}>
+          <span style={{ color: 'var(--text-muted)' }}>Showing </span><strong>{records.length}</strong><span style={{ color: 'var(--text-muted)' }}> of </span><strong>{totalCount}</strong><span style={{ color: 'var(--text-muted)' }}> sessions</span>
+        </div>
+      </div>
 
       {/* Table */}
-      <div className="records-page-content">
-        <div className="records-table-wrap">
-          {loading ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <tbody>
-                {/* ── FIX: col count matches thead ── */}
-                <SkeletonRows rows={15} cols={isAdmin ? 8 : 7} />
-              </tbody>
-            </table>
-          ) : records.length === 0 ? (
-            <EmptyState
-              icon={FileText}
-              title={searchTerm ? `No results for "${searchTerm}"` : 'No records found'}
-              message={
-                searchTerm
-                  ? 'Try a different search term or adjust your date range'
-                  : 'No attendance records in the selected date range'
-              }
-              searchTerm={searchTerm}
-              action={() => { setSearchInput(''); setSearchTerm(''); setDateRange({ from: todayDateStr(), to: todayDateStr() }) }}
-              actionLabel="Clear filters"
-            />
-          ) : (
-            <table className="records-table records-table-desktop" ref={tableRef} tabIndex={0}
-              onKeyDown={e => {
-                if (e.key === 'ArrowDown') {
-                  e.preventDefault()
-                  highlightedRowRef.current = Math.min(highlightedRowRef.current + 1, records.length - 1)
-                } else if (e.key === 'ArrowUp') {
-                  e.preventDefault()
-                  highlightedRowRef.current = Math.max(highlightedRowRef.current - 1, 0)
-                }
-              }}
-            >
-              <thead>
-                <tr>
-                  <th style={{ width: '120px' }}>Badge</th>
-                  <th style={{ width: '220px' }}>Name</th>
-                  {/* ── FIX: conditional Centre column in thead ── */}
-                  {isAdmin && <th style={{ width: '200px' }}>Centre</th>}
-                  <th style={{ width: '120px' }}>Date</th>
-                  <th style={{ width: '140px' }}>IN</th>
-                  <th style={{ width: '140px' }}>OUT</th>
-                  <th style={{ width: '160px' }}>Status</th>
-                  <th style={{ width: '100px' }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {records.map((r, i) => (
-                  <tr
-                    key={`${r.badge_number}-${r.date}`}
-                    ref={highlightedRowRef.current === i ? tableRef : null}
-                    style={{
-                      background: highlightedRowRef.current === i
-                        ? 'var(--green-bg)'
-                        : (r.raw_in && flagDetails[r.raw_in.id]) || (r.raw_out && flagDetails[r.raw_out.id])
-                          ? 'rgba(220,38,38,0.04)'
-                          : 'transparent',
-                      outline: highlightedRowRef.current === i ? '2px solid var(--excel-green)' : 'none',
-                      outlineOffset: -2,
-                    }}
-                  >
-                    <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.03em', lineHeight: 1.4 }}>
-                      {r.badge_number}
-                    </td>
+      <div className="records-table-wrap" style={{ width: "100%" }}>
+        {loading ? (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <tbody><SkeletonRows rows={15} cols={7} /></tbody>
+          </table>
+        ) : records.length === 0 ? (
+          <EmptyState icon={FileText} title={searchTerm ? `No results for "${searchTerm}"` : 'No records found'} message="No attendance sessions in selected date range" />
+        ) : (
+          <table className="records-table" style={{ width: "100%" }}>
+            <thead>
+              <tr>
+                <th>Badge</th>
+                <th>Name</th>
+                {isAso && <th>Centre</th>}
+                <th>Duty</th>
+                <th>Date</th>
+                <th>IN</th>
+                <th>OUT</th>
+                <th>Dur</th>
+                <th>Status</th>
+                <th>Remarks</th>
+                <th style={{ width: '90px' }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {records.map(r => {
+                const inDate = formatDateStr(r.date_ist)
+                const outDateIST = r.out_time ? scanTimeToISTDate(r.out_time) : ''
+                const outDate = outDateIST ? formatDateStr(outDateIST) : ''
+                const sameDay = outDateIST && r.date_ist === outDateIST
+                
+                return (
+                  <tr key={r.id}>
+                    <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.82rem', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.badge_number}</td>
+                    <td style={{ fontWeight: 600, fontSize: '0.875rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.sewadar_name}</td>
+                    {isAso && <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.sewadar_centre}</td>}
                     <td>
-                      <div style={{ fontWeight: 500, fontSize: '0.9rem' }}>{r.sewadar_name}</div>
-                      {r.manual_entry && (
-                        <span style={{ fontSize: '0.65rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 6px', fontWeight: 700, marginTop: 2, display: 'inline-block' }}>MANUAL</span>
+                      <span style={{ 
+                        fontSize: '0.6rem', 
+                        background: r.duty_type === 'satsang' ? 'rgba(168,85,247,0.15)' : r.duty_type === 'watch_ward' ? 'rgba(59,130,246,0.15)' : 'rgba(107,114,128,0.15)',
+                        color: r.duty_type === 'satsang' ? '#9333ea' : r.duty_type === 'watch_ward' ? '#3b82f6' : '#6b7280',
+                        border: '1px solid',
+                        borderColor: r.duty_type === 'satsang' ? 'rgba(168,85,247,0.3)' : r.duty_type === 'watch_ward' ? 'rgba(59,130,246,0.3)' : 'rgba(107,114,128,0.3)',
+                        borderRadius: 6, padding: '2px 6px', fontWeight: 700 
+                      }}>
+                        {r.duty_type === 'watch_ward' ? 'W&W' : r.duty_type === 'satsang' ? 'Satsang' : 'Gate'}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: '0.7rem', fontFamily: 'monospace', lineHeight: 1.3 }}>
+                      {sameDay ? (
+                        <span>{inDate}</span>
+                      ) : outDate ? (
+                        <span style={{ color: r.duty_type === 'watch_ward' ? '#3b82f6' : 'var(--text-primary)' }}>
+                          {inDate} → {outDate}
+                        </span>
+                      ) : (
+                        <span>{inDate}</span>
                       )}
                     </td>
-                    {/* ── FIX: conditional Centre td ── */}
-                    {isAdmin && (
-                      <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{r.centre}</td>
-                    )}
-                    <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                      {/* ── FIX: use formatDateStr to avoid off-by-one in IST ── */}
-                      {formatDateStr(r.date)}
+                    <td style={{ fontSize: '0.82rem', lineHeight: 1.35 }}>
+                      <div style={{ fontWeight: 500 }}>{formatTime(r.in_time)}</div>
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.in_scanner_name || r.scanner_name || ''}</div>
+                    </td>
+                    <td style={{ fontSize: '0.82rem', lineHeight: 1.35 }}>
+                      <div style={{ fontWeight: 500 }}>{formatTime(r.out_time)}</div>
+                      <div style={{ fontSize: '0.68rem', color: r.out_scanner_name ? 'var(--gold)' : 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.out_scanner_name || ''}</div>
+                    </td>
+                    <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 500 }}>{formatDuration(r.in_time, r.out_time) || '—'}</td>
+                    <td>{getStatusBadge(r)}</td>
+                    <td style={{ maxWidth: '120px' }}>
+                      {r.flagged ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                          <span style={{ fontSize: '0.75rem', color: '#dc2626', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            🚩 {r.flag_reason || 'Flagged'}
+                          </span>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {r.remark || (r.manual_in || r.manual_out ? 'Manual' : '—')}
+                        </span>
+                      )}
                     </td>
                     <td>
-                      <span className={`time-cell ${r.in_time ? 'has-time' : ''}`} style={{ fontSize: '0.82rem' }}>
-                        {formatTime(r.in_time)}
-                      </span>
-                      {r.in_scanner && <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>{r.in_scanner}</div>}
-                    </td>
-                    <td>
-                      <span className={`time-cell ${r.out_time ? 'has-time out-time' : ''}`}>
-                        {formatTime(r.out_time)}
-                      </span>
-                      {r.out_scanner && <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1 }}>{r.out_scanner}</div>}
-                    </td>
-                    <td>
-                      {(() => {
-                        const inFlag = r.raw_in ? flagDetails[r.raw_in.id] : null
-                        const outFlag = r.raw_out ? flagDetails[r.raw_out.id] : null
-                        const flagInfo = inFlag || outFlag
-                        if (r.in_time && r.out_time && !flagInfo)
-                          return <span className="status-complete">Complete</span>
-                        if (r.in_time && !r.out_time && !flagInfo)
-                          return <span className="status-in-only">IN only</span>
-                        if (r.out_time && !r.in_time && !flagInfo)
-                          return <span className="status-out-only">OUT only</span>
-                        if (!r.in_time && !r.out_time && !flagInfo)
-                          return <span className="status-none">—</span>
-                        const flagTypeLabel = FLAG_TYPES.find(f => f.value === flagInfo?.flag_type)?.label || flagInfo?.flag_type || 'Flag'
-                        const remark = flagInfo?.issue_description?.trim() || flagTypeLabel
-                        const flagStatusLabel = r.in_time && r.out_time ? 'Complete' : r.in_time ? 'IN only' : r.out_time ? 'OUT only' : '—'
-                        return (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                            <span className={flagStatusLabel === 'Complete' ? 'status-complete' : flagStatusLabel === 'IN only' ? 'status-in-only' : flagStatusLabel === 'OUT only' ? 'status-out-only' : 'status-none'}>
-                              {flagStatusLabel}
-                            </span>
-                            <span
-                              title={`${flagTypeLabel}${flagInfo?.issue_description ? '\nRemark: ' + flagInfo.issue_description : ''}\nBy: ${flagInfo?.raised_by_name || flagInfo?.raised_by_badge || '—'}\nOn: ${flagInfo?.created_at ? new Date(flagInfo.created_at).toLocaleDateString('en-IN') : '—'}\nStatus: ${flagInfo?.status || 'open'}`}
-                              style={{
-                                display: 'inline-flex', alignItems: 'flex-start', gap: '4px',
-                                fontSize: '0.72rem', fontWeight: 600,
-                                color: 'var(--red)', background: 'var(--red-bg)',
-                                border: '1px solid rgba(220,38,38,0.25)',
-                                borderRadius: 4, padding: '2px 6px',
-                                cursor: 'pointer', maxWidth: '100%',
-                              }}
-                            >
-                              <Flag size={11} style={{ flexShrink: 0, marginTop: '1px' }} />
-                              <span style={{ lineHeight: 1.4, wordBreak: 'break-word' }}>{remark}</span>
-                            </span>
-                          </div>
-                        )
-                      })()}
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-                        <button className="records-flag-btn" title="Raise flag"
-                          onClick={() => { setFlagModal(r); setFlagType('error_entry'); setFlagNote('') }}>
-                          <Flag size={13} />
-                        </button>
-                        {isAso && r.in_id && (
-                          <button className="records-delete-btn" title="Delete IN"
-                            onClick={() => deleteRecord(r.in_id, r.badge_number, 'IN')}>
-                            <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>IN</span>
+                      <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                        {canFlag && !r.flagged && (
+                          <button 
+                            className="records-delete-btn" 
+                            title="Flag this session" 
+                            onClick={() => { setFlagModal(r); setFlagReason('') }}
+                          >
+                            <Flag size={13} color="var(--text-muted)" />
                           </button>
                         )}
-                        {isAso && r.out_id && (
-                          <button className="records-delete-btn" title="Delete OUT"
-                            onClick={() => deleteRecord(r.out_id, r.badge_number, 'OUT')}>
-                            <Trash2 size={12} /><span style={{ fontSize: '0.65rem', marginLeft: 1 }}>OUT</span>
-                          </button>
+                        {canEditSession(r) && (
+                          <>
+                            <button className="records-delete-btn" title="Edit session (within 40 min)" onClick={() => { 
+                              setEditingSession(r)
+                              setEditInDate(extractISTDate(r.in_time))
+                              setEditInTime(extractISTTime(r.in_time))
+                              setEditOutDate(extractISTDate(r.out_time))
+                              setEditOutTime(extractISTTime(r.out_time))
+                            }}>
+                              <PenLine size={13} color="var(--blue)" />
+                            </button>
+                            <button className="records-delete-btn" title="Delete session" onClick={() => deleteSession(r)}>
+                              <Trash2 size={13} />
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        {/* Pagination */}
-        {!loading && (
-          <TablePagination
-            page={page}
-            pageSize={PAGE_SIZE}
-            total={totalCount}
-            onPageChange={p => setPage(p)}
-          />
-        )}
-
-        {/* Export */}
-        {!loading && records.length > 0 && (
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-            <button className="btn btn-ghost" onClick={() => {
-              const csv = [
-                ['Badge Number', 'Name', 'Centre', 'Department', 'Date', 'IN Time', 'OUT Time', 'Status', 'Manual Entry'].join(','),
-                ...records.map(r => [
-                  r.badge_number, `"${r.sewadar_name}"`, r.centre, r.department || '',
-                  r.date,
-                  r.in_time ? formatTime(r.in_time) : '',
-                  r.out_time ? formatTime(r.out_time) : '',
-                  r.in_time && r.out_time ? 'Complete' : r.in_time ? 'IN only' : r.out_time ? 'OUT only' : '',
-                  r.manual_entry ? 'Yes' : 'No'
-                ].join(','))
-              ].join('\n')
-              const a = document.createElement('a')
-              a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-              a.download = `attendance_${dateRange.from}_to_${dateRange.to}.csv`
-              a.click()
-            }} style={{ fontSize: '0.82rem' }}>
-              <Download size={14} /> Export CSV
-            </button>
-          </div>
+                )
+              })}
+            </tbody>
+          </table>
         )}
       </div>
 
-      {/* Flag Modal */}
-      {flagModal && (
-        <div className="overlay" onClick={() => { setFlagModal(null); setFlagSuccess(false) }}>
-          <div className="overlay-sheet flag-modal" onClick={e => e.stopPropagation()}>
-            {flagSuccess ? (
-              <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
-                <div style={{ width: 52, height: 52, background: 'var(--green-bg)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+      {/* Mobile card view */}
+      <div className="rec-mobile-cards" style={{ marginTop: '0.75rem' }}>
+        {loading ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {[1,2,3].map(i => (
+              <div key={i} style={{ height: 100, background: 'var(--bg-elevated)', borderRadius: 10, border: '1px solid var(--border)' }} />
+            ))}
+          </div>
+        ) : records.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+            No records found
+          </div>
+        ) : (
+          records.map(r => (
+            <div key={r.id} className="rec-mobile-card" style={{ marginBottom: '0.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>{r.sewadar_name}</div>
+                  <div style={{ fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--gold)', fontWeight: 700 }}>{r.badge_number}</div>
                 </div>
-                <p style={{ fontWeight: 600, color: 'var(--green)' }}>Flag raised successfully</p>
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    {r.is_open ? '🟡 OPEN' : r.force_closed ? '⚪ CORRECTED' : '🟢 COMPLETE'}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 2 }}>{r.sewadar_centre}</div>
+                </div>
               </div>
-            ) : (
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <Flag size={18} color="var(--red)" /><h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Raise Flag</h3>
-                  </div>
-                  <button onClick={() => setFlagModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={18} /></button>
-                </div>
-                <div className="flag-modal-record">
-                  <div className="flag-modal-record-name">{flagModal.sewadar_name}</div>
-                  <div className="flag-modal-record-meta">
-                    <span style={{ fontFamily: 'monospace', color: 'var(--gold)' }}>{flagModal.badge_number}</span>
-                    <span>·</span>
-                    <span>{formatDateStr(flagModal.date)}</span>
-                    {flagModal.in_time && <><span>·</span><span className="flag-modal-in">IN {formatTime(flagModal.in_time)}</span></>}
-                    {flagModal.out_time && <><span>·</span><span className="flag-modal-out">OUT {formatTime(flagModal.out_time)}</span></>}
-                    {flagModal.manual_entry && <><span>·</span><span style={{ color: 'var(--gold)', fontWeight: 700 }}>MANUAL</span></>}
-                  </div>
-                </div>
-                <div style={{ marginBottom: '1rem' }}>
-                  <label className="label">Reason</label>
-                  <div style={{ position: 'relative' }}>
-                    <select className="input" value={flagType} onChange={e => setFlagType(e.target.value)} style={{ appearance: 'none', paddingRight: '2.5rem' }}>
-                      {FLAG_TYPES.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-                    </select>
-                    <ChevronDown size={16} style={{ position: 'absolute', right: '0.85rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-muted)' }} />
-                  </div>
-                </div>
-                <div style={{ marginBottom: '1.25rem' }}>
-                  <label className="label">Note <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(optional)</span></label>
-                  <textarea className="input" rows={3} placeholder="Add details…"
-                    value={flagNote} onChange={e => setFlagNote(e.target.value)} style={{ resize: 'none' }} />
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                  <button className="btn btn-outline btn-full" onClick={() => setFlagModal(null)}>Cancel</button>
-                  <button className="btn btn-full flag-submit-btn" onClick={submitFlag} disabled={flagSubmitting}>
-                    {flagSubmitting ? 'Submitting…' : 'Submit Flag'}
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.7rem', background: r.duty_type === 'satsang' ? 'rgba(168,85,247,0.15)' : r.duty_type === 'watch_ward' ? 'rgba(59,130,246,0.15)' : 'rgba(107,114,128,0.15)', color: r.duty_type === 'satsang' ? '#9333ea' : r.duty_type === 'watch_ward' ? '#3b82f6' : '#6b7280', border: '1px solid', borderColor: r.duty_type === 'satsang' ? 'rgba(168,85,247,0.3)' : r.duty_type === 'watch_ward' ? 'rgba(59,130,246,0.3)' : 'rgba(107,114,128,0.3)', borderRadius: 6, padding: '2px 6px', fontWeight: 700 }}>
+                  {r.duty_type === 'watch_ward' ? 'W&W' : r.duty_type === 'satsang' ? 'Satsang' : 'Gate'}
+                </span>
+                <span style={{ fontSize: '0.72rem', fontFamily: 'monospace', background: 'var(--bg)', color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: 5, padding: '2px 8px' }}>
+                  IN {formatTime(r.in_time)}
+                </span>
+                {r.out_time && (
+                  <span style={{ fontSize: '0.72rem', fontFamily: 'monospace', background: 'rgba(220,38,38,0.08)', color: 'var(--red)', border: '1px solid rgba(220,38,38,0.2)', borderRadius: 5, padding: '2px 8px' }}>
+                    OUT {formatTime(r.out_time)}
+                  </span>
+                )}
+                {r.flagged && (
+                  <span 
+                    onClick={() => r.flag_id && goToFlag(r.flag_id)}
+                    style={{ 
+                      fontSize: '0.65rem', 
+                      background: r.flag_status === 'resolved' ? 'rgba(34,197,94,0.1)' : 'rgba(220,38,38,0.1)', 
+                      color: r.flag_status === 'resolved' ? 'var(--green)' : 'var(--red)', 
+                      border: `1px solid ${r.flag_status === 'resolved' ? 'rgba(34,197,94,0.3)' : 'rgba(220,38,38,0.25)'}`, 
+                      borderRadius: 5, 
+                      padding: '2px 6px', 
+                      fontWeight: 700,
+                      cursor: r.flag_id ? 'pointer' : 'default',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4
+                    }}
+                  >
+                    🚩 {r.flag_status === 'resolved' ? 'Flag Resolved' : (r.flag_id ? 'View Flag' : 'Flagged')}{r.flag_reason && r.flag_status !== 'resolved' && <span style={{ marginLeft: 4, fontWeight: 400, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>: {r.flag_reason}</span>}
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.5rem' }}>
+                {canFlag && !r.flagged && (
+                  <button
+                    onClick={() => { setFlagModal(r); setFlagReason('') }}
+                    style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: '0.72rem', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
+                  >
+                    <Flag size={11} /> Flag
                   </button>
+                )}
+                {canEditSession(r) && (
+                  <>
+                    <button
+                      onClick={() => { 
+                        if (import.meta.env.DEV) console.log(`Edit: created=${r.created_at}, in=${r.in_time}, canEdit=${canEditSession(r)}`)
+                        setEditingSession(r)
+                        setEditInDate(r.in_time ? r.in_time.split('T')[0] : '')
+                        setEditInTime(r.in_time ? r.in_time.slice(11, 16) : '')
+                        setEditOutDate(r.out_time ? r.out_time.split('T')[0] : '')
+                        setEditOutTime(r.out_time ? r.out_time.slice(11, 16) : '')
+                      }}
+                      style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: '0.72rem', color: 'var(--blue)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
+                    >
+                      <PenLine size={11} /> Edit
+                    </button>
+                    <button
+                      onClick={() => deleteSession(r)}
+                      style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', fontSize: '0.72rem', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}
+                    >
+                      <Trash2 size={11} /> Delete
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Pagination */}
+      {!loading && totalCount > PAGE_SIZE && (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem', marginTop: '1rem' }}>
+          <button className="btn btn-ghost" onClick={() => setPage(1)} disabled={page === 1} style={{ padding: '0.35rem 0.6rem' }}>«</button>
+          <button className="btn btn-ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} style={{ padding: '0.35rem 0.6rem' }}>‹</button>
+          <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>Page {page} of {Math.ceil(totalCount / PAGE_SIZE)}</span>
+          <button className="btn btn-ghost" onClick={() => setPage(p => Math.min(Math.ceil(totalCount / PAGE_SIZE), p + 1))} disabled={page >= Math.ceil(totalCount / PAGE_SIZE)} style={{ padding: '0.35rem 0.6rem' }}>›</button>
+          <button className="btn btn-ghost" onClick={() => setPage(Math.ceil(totalCount / PAGE_SIZE))} disabled={page >= Math.ceil(totalCount / PAGE_SIZE)} style={{ padding: '0.35rem 0.6rem' }}>»</button>
+        </div>
+      )}
+
+      <ConfirmModal open={!!deleteConfirm} onConfirm={doDelete} onCancel={() => setDeleteConfirm(null)}
+        title="Delete Session?" message={`Delete attendance session for ${deleteConfirm?.sewadar_name}? This will also delete all associated attendance records.`} confirmLabel="Delete" danger />
+
+      {editingSession && (
+        <div className="overlay" onClick={() => setEditingSession(null)}>
+          <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <PenLine size={18} color="var(--blue)" />
+                <h3 style={{ fontWeight: 700, color: 'var(--blue)' }}>
+                  {editingSession.is_open ? 'Edit IN Time' : 'Edit Session Times'}
+                </h3>
+              </div>
+              <button onClick={() => setEditingSession(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '1.2rem' }}>×</button>
+            </div>
+
+            <div style={{ background: 'var(--blue-bg)', border: '1px solid rgba(37,99,235,0.2)', borderRadius: 8, padding: '0.6rem 0.85rem', marginBottom: '1rem', fontSize: '0.8rem', color: 'var(--blue)' }}>
+              {editingSession.is_open 
+                ? "⚠️ Session is still open. You can only edit the IN time. OUT will be set when the person scans OUT."
+                : "⏱️ You can edit this session within 40 minutes of IN time"
+              }
+            </div>
+
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '0.85rem 1rem', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+                <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>{editingSession.sewadar_name}</span>
+                <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.78rem', fontWeight: 700 }}>{editingSession.badge_number}</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gap: '1rem', marginBottom: '1.5rem' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>IN Time</label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <input type="date" value={editInDate} onChange={e => setEditInDate(e.target.value)} style={{ width: '180px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
+                  <input type="time" value={editInTime} onChange={e => setEditInTime(e.target.value)} style={{ width: '150px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
                 </div>
-              </>
-            )}
+              </div>
+
+              {editingSession.is_open ? (
+                <div style={{ opacity: 0.5, pointerEvents: 'none' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-muted)' }}>OUT Time</label>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <input type="text" value="Session still open" disabled style={{ width: '180px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-muted)', fontSize: '1rem' }} />
+                    <input type="text" value="--" disabled style={{ width: '150px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-muted)', fontSize: '1rem' }} />
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>OUT Time</label>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <input type="date" value={editOutDate} onChange={e => setEditOutDate(e.target.value)} style={{ width: '180px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
+                    <input type="time" value={editOutTime} onChange={e => setEditOutTime(e.target.value)} style={{ width: '150px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+              <button onClick={() => setEditingSession(null)} className="btn btn-secondary" style={{ padding: '0.5rem 1rem' }}>Cancel</button>
+              <button onClick={saveSessionEdit} className="btn btn-primary" style={{ padding: '0.5rem 1rem' }}>Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {flagModal && (
+        <div className="overlay" onClick={() => setFlagModal(null)}>
+          <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Flag size={18} color="#dc2626" />
+                <h3 style={{ fontWeight: 700, color: '#dc2626' }}>Raise Flag</h3>
+              </div>
+              <button onClick={() => setFlagModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '1.2rem' }}>×</button>
+            </div>
+
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '0.85rem 1rem', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+                <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>{flagModal.sewadar_name}</span>
+                <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontSize: '0.78rem', fontWeight: 700 }}>{flagModal.badge_number}</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.25rem', fontSize: '0.78rem' }}>
+                <div style={{ color: 'var(--text-muted)' }}>Centre: <strong style={{ color: 'var(--text-primary)' }}>{flagModal.sewadar_centre}</strong></div>
+                <div style={{ color: 'var(--text-muted)' }}>Duty: <strong style={{ color: 'var(--text-primary)' }}>
+                  {flagModal.duty_type === 'watch_ward' ? 'W&W' : flagModal.duty_type === 'satsang' ? 'Satsang' : 'Gate Entry'}
+                </strong></div>
+                <div style={{ color: 'var(--text-muted)' }}>Date: <strong style={{ color: 'var(--text-primary)' }}>{formatDateStr(flagModal.date_ist)}</strong></div>
+                <div style={{ color: 'var(--text-muted)' }}>IN: <strong style={{ color: 'var(--text-primary)' }}>{formatTime(flagModal.in_time)}</strong></div>
+                <div style={{ color: 'var(--text-muted)' }}>OUT: <strong style={{ color: 'var(--text-primary)' }}>{flagModal.out_time ? formatTime(flagModal.out_time) : '—'}</strong></div>
+                <div style={{ color: 'var(--text-muted)' }}>Status: <strong style={{ color: 'var(--text-primary)' }}>{flagModal.is_open ? 'Open' : 'Closed'}</strong></div>
+              </div>
+            </div>
+
+            <label style={{ fontWeight: 600, fontSize: '0.8rem', display: 'block', marginBottom: '0.5rem' }}>
+              Why are you flagging this entry? *
+            </label>
+            <textarea
+              className="input"
+              rows={3}
+              placeholder="Describe the issue clearly (e.g. Wrong time, duplicate entry, wrong duty type, etc.)..."
+              value={flagReason}
+              onChange={e => setFlagReason(e.target.value)}
+              style={{ resize: 'none', marginBottom: '0.75rem' }}
+            />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+              <button className="btn btn-outline" onClick={() => setFlagModal(null)}>Cancel</button>
+              <button className="btn" style={{ background: '#dc2626', color: 'white', border: 'none' }} onClick={doFlag} disabled={!flagReason.trim() || flagSubmitting}>
+                {flagSubmitting ? 'Raising...' : 'Raise Flag'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -733,357 +975,266 @@ function AttendanceTab() {
   )
 }
 
-// ─────────────────────────────────────────────
-//  REPORTS TAB
-// ─────────────────────────────────────────────
+// =====================================================
+// REPORTS TAB
+// =====================================================
 function ReportsTab() {
   const { profile } = useAuth()
   const isAso = profile?.role === ROLES.ASO
-  const isCentreUser = profile?.role === ROLES.CENTRE_USER
-  const isAdmin = isAso || isCentreUser
+  const isCentreUser = profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER
 
-  const [activeReport, setActiveReport] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [reportData, setReportData] = useState(null)
-  const [yearFilter, setYearFilter] = useState(CURRENT_YEAR)
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
-  const [centreFilter, setCentreFilter] = useState('')
+  const [year, setYear] = useState(new Date().getFullYear().toString())
+  const [reportType, setReportType] = useState('satsang')
+  const [data, setData] = useState([])
   const [centres, setCentres] = useState([])
-  const [centresLoaded, setCentresLoaded] = useState(false)
+  const [centreFilter, setCentreFilter] = useState(null)
 
-  if (!isAdmin) return (
-    <div style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-muted)' }}>
-      <FileSpreadsheet size={36} style={{ margin: '0 auto 0.75rem', opacity: 0.3, display: 'block' }} />
-      <p>Reports are available for Centre User and ASO roles.</p>
-    </div>
-  )
+  useEffect(() => {
+    fetchCentres()
+  }, [])
 
-  async function ensureCentres() {
-    if (centresLoaded) return
-    let q = supabase.from('centres').select('centre_name').order('centre_name')
-    if (isCentreUser) q = supabase.from('centres').select('centre_name').or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`).order('centre_name')
+  useEffect(() => {
+    fetchReport()
+  }, [year, reportType, centreFilter, profile])
+
+  // Real-time updates
+  useEffect(() => {
+    let timer = null
+    const channel = supabase.channel('reports-realtime')
+    
+    channel.on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance_sessions' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] sessions changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => fetchReport(), 300)
+    })
+    .subscribe((status) => {
+      if (import.meta.env.DEV) console.log('[RT] Reports channel status:', status)
+    })
+
+    return () => { 
+      clearTimeout(timer)
+      supabase.removeChannel(channel) 
+    }
+  }, [])
+
+  async function fetchCentres() {
+    let q = supabase.from('centres').select('centre_name, parent_centre').order('centre_name')
+    if (isCentreUser && profile?.centre) {
+      q = q.or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
+    }
     const { data } = await q
-    setCentres(data?.map(c => c.centre_name) || [])
-    setCentresLoaded(true)
+    setCentres(data || [])
   }
 
-  function dlCSV(csvStr, filename) {
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csvStr], { type: 'text/csv' }))
-    a.download = filename; a.click()
-  }
+  async function fetchReport() {
+    setLoading(true)
+    
+    if (reportType === 'satsang') {
+      // Satsang days by sewadar
+      let q = supabase
+        .from('v_sessions')
+        .select('badge_number, sewadar_name, sewadar_centre, date_ist, duty_type')
+        .eq('duty_type', 'satsang')
+        .eq('is_open', false)
+        .gte('date_ist', `${year}-01-01`)
+        .lte('date_ist', `${year}-12-31`)
+        .order('sewadar_name')
 
-  async function getCentreNames() {
-    if (isAso && !centreFilter) return null
-    if (centreFilter) return [centreFilter]
-    if (isCentreUser) {
-      const { data } = await supabase.from('centres').select('centre_name').or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
-      return data?.map(c => c.centre_name) || [profile.centre]
-    }
-    return [profile.centre]
-  }
-
-  // ── Reports use IST boundaries too ──
-  function getReportRange() {
-    if (dateFrom && dateTo) {
-      return {
-        start: istDayStart(dateFrom),
-        end: istDayEnd(dateTo),
+      if (isCentreUser && profile?.centre) {
+        const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
+        q = q.in('sewadar_centre', scope)
+      } else if (centreFilter) {
+        q = q.eq('sewadar_centre', centreFilter)
       }
+
+      const { data: sessions } = await q
+
+      // Group by badge and count unique dates
+      const badgeMap = {}
+      sessions?.forEach(s => {
+        if (!badgeMap[s.badge_number]) {
+          badgeMap[s.badge_number] = { badge_number: s.badge_number, name: s.sewadar_name, centre: s.sewadar_centre, days: new Set() }
+        }
+        badgeMap[s.badge_number].days.add(s.date_ist)
+      })
+
+      setData(Object.values(badgeMap).map(b => ({
+        badge_number: b.badge_number,
+        sewadar_name: b.name,
+        centre: b.centre,
+        count: b.days.size
+      })).sort((a, b) => b.count - a.count))
+
+    } else if (reportType === 'duty_summary') {
+      // Duty summary by sewadar
+      let q = supabase
+        .from('v_sessions')
+        .select('badge_number, sewadar_name, sewadar_centre, duty_type, is_open')
+        .gte('date_ist', `${year}-01-01`)
+        .lte('date_ist', `${year}-12-31`)
+        .order('sewadar_name')
+
+      if (isCentreUser && profile?.centre) {
+        const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
+        q = q.in('sewadar_centre', scope)
+      } else if (centreFilter) {
+        q = q.eq('sewadar_centre', centreFilter)
+      }
+
+      const { data: sessions } = await q
+
+      const badgeMap = {}
+      sessions?.forEach(s => {
+        if (!badgeMap[s.badge_number]) {
+          badgeMap[s.badge_number] = { badge_number: s.badge_number, name: s.sewadar_name, centre: s.sewadar_centre, satsang: 0, gate_entry: 0, watch_ward: 0, open: 0 }
+        }
+        if (s.duty_type === 'satsang') badgeMap[s.badge_number].satsang++
+        else if (s.duty_type === 'gate_entry') badgeMap[s.badge_number].gate_entry++
+        else if (s.duty_type === 'watch_ward') badgeMap[s.badge_number].watch_ward++
+        if (s.is_open) badgeMap[s.badge_number].open++
+      })
+
+      setData(Object.values(badgeMap))
+
+    } else if (reportType === 'open_now') {
+      // Who's inside now
+      let q = supabase
+        .from('v_sessions')
+        .select('badge_number, sewadar_name, sewadar_centre, sewadar_department, in_time, duty_type')
+        .eq('is_open', true)
+        .order('in_time', { ascending: false })
+
+      if (isCentreUser && profile?.centre) {
+        const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
+        q = q.in('sewadar_centre', scope)
+      }
+
+      const { data: sessions } = await q
+      setData((sessions || []).map(s => ({ ...s, centre: s.sewadar_centre, department: s.sewadar_department })))
     }
-    return {
-      start: istDayStart(`${yearFilter}-01-01`),
-      end: istDayEnd(`${yearFilter}-12-31`),
+
+    setLoading(false)
+  }
+
+  function exportCSV() {
+    if (!data.length) return
+
+    let header, rows
+    if (reportType === 'satsang') {
+      header = ['Badge', 'Name', 'Centre', 'Satsang Days']
+      rows = data.map(r => [r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), r.count])
+    } else if (reportType === 'duty_summary') {
+      header = ['Badge', 'Name', 'Centre', 'Satsang', 'Gate Entry', 'Watch & Ward', 'Open']
+      rows = data.map(r => [r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), r.satsang, r.gate_entry, r.watch_ward, r.open])
+    } else {
+      header = ['Badge', 'Name', 'Centre', 'Department', 'IN Time', 'Duty Type']
+      rows = data.map(r => [r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''), formatTime(r.in_time), r.duty_type])
     }
-  }
 
-  async function runCentreWiseReport() {
-    setLoading(true); setActiveReport('centrewise'); setReportData(null)
-    const centreNames = await getCentreNames()
-    const { start, end } = getReportRange()
-    let q = supabase.from('attendance').select('centre, badge_number, type, scan_time').gte('scan_time', start).lte('scan_time', end)
-    if (centreNames) q = q.in('centre', centreNames)
-    const { data } = await q.limit(50000)
-    if (!data) { setLoading(false); return }
-    const centreMap = {}
-    data.forEach(r => {
-      if (!centreMap[r.centre]) centreMap[r.centre] = { centre: r.centre, totalScans: 0, ins: 0, outs: 0, uniqueSewadars: new Set() }
-      centreMap[r.centre].totalScans++
-      if (r.type === 'IN') centreMap[r.centre].ins++
-      else centreMap[r.centre].outs++
-      centreMap[r.centre].uniqueSewadars.add(r.badge_number)
-    })
-    const rows = Object.values(centreMap).map(c => ({ ...c, uniqueCount: c.uniqueSewadars.size })).sort((a, b) => b.totalScans - a.totalScans)
-    setReportData({ type: 'centrewise', rows, start, end })
-    setLoading(false)
+    const csv = [header, ...rows].map(r => r.join(',')).join('\n')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.download = `${reportType}_${year}.csv`
+    a.click()
   }
-
-  async function runYearlySatsangReport() {
-    setLoading(true); setActiveReport('satsang'); setReportData(null)
-    const centreNames = await getCentreNames()
-    const { start, end } = getReportRange()
-    // jatha uses date fields (no time), keep as plain date strings
-    const jathaFrom = dateFrom || `${yearFilter}-01-01`
-    const jathaTo   = dateTo   || `${yearFilter}-12-31`
-    let attQ = supabase.from('attendance').select('badge_number, sewadar_name, centre, department, scan_time, type').gte('scan_time', start).lte('scan_time', end).eq('type', 'IN')
-    let jathaQ = supabase.from('jatha_attendance').select('badge_number, sewadar_name, centre, department, date_from, satsang_days').gte('date_from', jathaFrom).lte('date_from', jathaTo)
-    if (centreNames) { attQ = attQ.in('centre', centreNames); jathaQ = jathaQ.in('centre', centreNames) }
-    const [attRes, jathaRes] = await Promise.all([attQ.limit(50000), jathaQ.limit(10000)])
-    const sewadarMap = {}
-    ;(attRes.data || []).forEach(r => {
-      // use IST date for satsang day classification
-      const d = scanTimeToISTDate(r.scan_time)
-      const day = new Date(d + 'T12:00:00+05:30').getDay()
-      if (!sewadarMap[r.badge_number]) sewadarMap[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, dutyDays: new Set(), satsangDaysAtt: new Set(), jathaSatsangDays: 0, jathaCount: 0 }
-      sewadarMap[r.badge_number].dutyDays.add(d)
-      if (day === 0 || day === 3) sewadarMap[r.badge_number].satsangDaysAtt.add(d)
-    })
-    ;(jathaRes.data || []).forEach(r => {
-      if (!sewadarMap[r.badge_number]) sewadarMap[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, dutyDays: new Set(), satsangDaysAtt: new Set(), jathaSatsangDays: 0, jathaCount: 0 }
-      sewadarMap[r.badge_number].jathaSatsangDays += (r.satsang_days || 0)
-      sewadarMap[r.badge_number].jathaCount++
-    })
-    const rows = Object.values(sewadarMap).map(s => ({ badge: s.badge, name: s.name, centre: s.centre, dept: s.dept, dutyDays: s.dutyDays.size, satsangDaysAtt: s.satsangDaysAtt.size, jathaCount: s.jathaCount, jathaSatsangDays: s.jathaSatsangDays, totalSatsangDays: s.satsangDaysAtt.size + s.jathaSatsangDays })).sort((a, b) => b.totalSatsangDays - a.totalSatsangDays)
-    setReportData({ type: 'satsang', rows, year: yearFilter })
-    setLoading(false)
-  }
-
-  async function runJathaReport() {
-    setLoading(true); setActiveReport('jatha'); setReportData(null)
-    const centreNames = await getCentreNames()
-    const jathaFrom = dateFrom || `${yearFilter}-01-01`
-    const jathaTo   = dateTo   || `${yearFilter}-12-31`
-    let q = supabase.from('jatha_attendance').select('*').gte('date_from', jathaFrom).lte('date_from', jathaTo).order('date_from', { ascending: false })
-    if (centreNames) q = q.in('centre', centreNames)
-    const { data } = await q.limit(10000)
-    setReportData({ type: 'jatha', rows: data || [], year: yearFilter })
-    setLoading(false)
-  }
-
-  async function runSewadarCountReport() {
-    setLoading(true); setActiveReport('sewadarcount'); setReportData(null)
-    const centreNames = await getCentreNames()
-    const { start, end } = getReportRange()
-    let q = supabase.from('attendance').select('badge_number, sewadar_name, centre, department, type, scan_time').gte('scan_time', start).lte('scan_time', end)
-    if (centreNames) q = q.in('centre', centreNames)
-    const { data } = await q.limit(50000)
-    if (!data) { setLoading(false); return }
-    const map = {}
-    data.forEach(r => {
-      if (!map[r.badge_number]) map[r.badge_number] = { badge: r.badge_number, name: r.sewadar_name, centre: r.centre, dept: r.department, ins: 0, outs: 0, days: new Set() }
-      if (r.type === 'IN') map[r.badge_number].ins++
-      else map[r.badge_number].outs++
-      // use IST date for counting unique days
-      map[r.badge_number].days.add(scanTimeToISTDate(r.scan_time))
-    })
-    const rows = Object.values(map).map(s => ({ ...s, totalDays: s.days.size })).sort((a, b) => b.totalDays - a.totalDays)
-    setReportData({ type: 'sewadarcount', rows, start, end })
-    setLoading(false)
-  }
-
-  function exportCurrentReport() {
-    if (!reportData) return
-    if (reportData.type === 'centrewise') {
-      const h = ['Centre', 'Total Scans', 'IN Count', 'OUT Count', 'Unique Sewadars']
-      dlCSV([h, ...reportData.rows.map(r => [r.centre, r.totalScans, r.ins, r.outs, r.uniqueCount])].map(r => r.join(',')).join('\n'), `centre_wise_${yearFilter}.csv`)
-    } else if (reportData.type === 'satsang') {
-      const h = ['Badge', 'Name', 'Centre', 'Department', 'Duty Days', 'Satsang Days (Daily)', 'Jathas', 'Satsang Days (Jatha)', 'Total Satsang Days']
-      dlCSV([h, ...reportData.rows.map(r => [r.badge, `"${r.name}"`, r.centre, r.dept || '', r.dutyDays, r.satsangDaysAtt, r.jathaCount, r.jathaSatsangDays, r.totalSatsangDays])].map(r => r.join(',')).join('\n'), `yearly_satsang_${reportData.year}.csv`)
-    } else if (reportData.type === 'jatha') {
-      const h = ['Badge', 'Name', 'Centre', 'Jatha Type', 'Destination', 'Department', 'From', 'To', 'Satsang Days', 'Flagged', 'Remarks']
-      dlCSV([h, ...reportData.rows.map(r => [r.badge_number, `"${r.sewadar_name}"`, r.centre, r.jatha_type, r.jatha_centre, r.jatha_dept, r.date_from, r.date_to, r.satsang_days, r.flag ? 'Yes' : 'No', `"${r.remarks || ''}"`])].map(r => r.join(',')).join('\n'), `jatha_${reportData.year}.csv`)
-    } else if (reportData.type === 'sewadarcount') {
-      const h = ['Badge', 'Name', 'Centre', 'Department', 'IN Scans', 'OUT Scans', 'Days Present']
-      dlCSV([h, ...reportData.rows.map(r => [r.badge, `"${r.name}"`, r.centre, r.dept || '', r.ins, r.outs, r.totalDays])].map(r => r.join(',')).join('\n'), `sewadar_count_${yearFilter}.csv`)
-    }
-  }
-
-  const reportCards = [
-    { id: 'centrewise', label: 'Centre-wise Count', desc: 'Total scans per centre', icon: BarChart2, action: runCentreWiseReport },
-    { id: 'satsang', label: 'Yearly Satsang Days', desc: 'Daily + jatha combined', icon: Calendar, action: runYearlySatsangReport },
-    { id: 'jatha', label: 'Jatha Summary', desc: 'All jatha records', icon: Plane, action: runJathaReport },
-    { id: 'sewadarcount', label: 'Sewadar Count', desc: 'Days present per sewadar', icon: Users, action: runSewadarCountReport },
-  ]
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '1.25rem', flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={yearFilter} onChange={e => setYearFilter(Number(e.target.value))}
-          style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.75rem', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem' }}>
-          {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center', padding: '0.75rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10 }}>
+        <select value={reportType} onChange={e => setReportType(e.target.value)}
+          style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.6rem', background: 'var(--bg)', fontSize: '0.85rem' }}>
+          <option value="satsang">Satsang Days</option>
+          <option value="duty_summary">Duty Summary</option>
+          <option value="open_now">Who&apos;s Inside Now</option>
         </select>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.75rem' }}>
-          <Calendar size={13} color="var(--text-muted)" />
-          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} style={{ border: 'none', background: 'none', color: 'var(--text-primary)', fontSize: '0.82rem', outline: 'none' }} />
-          <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>→</span>
-          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} style={{ border: 'none', background: 'none', color: 'var(--text-primary)', fontSize: '0.82rem', outline: 'none' }} />
-        </div>
-        <button onClick={ensureCentres} style={{ display: 'none' }} />
-        {centresLoaded && centres.length > 1 && (
-          <select value={centreFilter} onChange={e => setCentreFilter(e.target.value)}
-            style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '0.35rem 0.75rem', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem' }}>
-            <option value="">All Centres</option>
-            {centres.map(c => <option key={c} value={c}>{c}</option>)}
+
+        {reportType !== 'open_now' && (
+          <select value={year} onChange={e => setYear(e.target.value)}
+            style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.6rem', background: 'var(--bg)', fontSize: '0.85rem' }}>
+            {[2024, 2025, 2026].map(y => <option key={y} value={y}>{y}</option>)}
           </select>
+        )}
+
+        {reportType !== 'open_now' && isAso && (
+          <CentreComboBox value={centreFilter} onChange={setCentreFilter} centres={centres} includeAll={true} grouped={true} />
+        )}
+
+        {reportType !== 'open_now' && isCentreUser && (
+          <CentreComboBox value={centreFilter} onChange={setCentreFilter} centres={centres.filter(c => c.centre_name === profile?.centre || c.parent_centre === profile?.centre)} includeAll={true} grouped={false} />
+        )}
+
+        <button className="btn btn-excel" onClick={exportCSV} disabled={!data.length}><Download size={14} /> Export</button>
+      </div>
+
+      {/* Stats */}
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+        <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem' }}>
+          <strong>{data.length}</strong> records
+        </div>
+        {reportType === 'satsang' && (
+          <div style={{ background: 'rgba(168,85,247,0.1)', border: '1px solid rgba(168,85,247,0.3)', borderRadius: 8, padding: '0.4rem 0.85rem', fontSize: '0.8rem', color: '#9333ea' }}>
+            Total: <strong>{data.reduce((a, b) => a + b.count, 0)}</strong> satsang days
+          </div>
         )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem', marginBottom: '1.25rem' }}>
-        {reportCards.map(({ id, label, desc, icon: Icon, action }) => (
-          <button key={id} onClick={() => { ensureCentres(); action() }}
-            style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.3rem',
-              padding: '0.85rem', border: `1.5px solid ${activeReport === id ? 'var(--gold)' : 'var(--border)'}`,
-              borderRadius: 10, background: activeReport === id ? 'var(--gold-bg)' : 'var(--bg-elevated)',
-              cursor: 'pointer', textAlign: 'left', transition: 'all 0.12s', fontFamily: 'inherit'
-            }}>
-            <Icon size={18} color={activeReport === id ? 'var(--gold)' : 'var(--text-muted)'} />
-            <span style={{ fontWeight: 700, fontSize: '0.82rem', color: activeReport === id ? 'var(--gold)' : 'var(--text-primary)' }}>{label}</span>
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{desc}</span>
-          </button>
-        ))}
-      </div>
-
-      {loading && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '3rem 0' }}>
-          <div className="spinner" style={{ marginRight: '0.75rem' }} />
-          <span className="text-muted">Generating report…</span>
-        </div>
-      )}
-
-      {!loading && reportData && (
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-            <div>
-              <h3 style={{ fontWeight: 700, marginBottom: '0.2rem', fontSize: '0.95rem' }}>
-                {reportData.type === 'centrewise' && 'Centre-wise Attendance'}
-                {reportData.type === 'satsang' && `Yearly Satsang Days — ${reportData.year}`}
-                {reportData.type === 'jatha' && `Jatha Summary — ${reportData.year}`}
-                {reportData.type === 'sewadarcount' && 'Sewadar Attendance Count'}
-              </h3>
-              <p className="text-muted text-xs">{reportData.rows.length} rows</p>
-            </div>
-            <button className="btn btn-ghost" onClick={exportCurrentReport} style={{ fontSize: '0.82rem' }}>
-              <Download size={14} /> Download CSV
-            </button>
-          </div>
-
-          <div className="table-wrap" style={{ border: 'none' }}>
-            {reportData.type === 'centrewise' && (
-              <table>
-                <thead><tr><th>Centre</th><th>Total</th><th>IN</th><th>OUT</th><th>Unique</th></tr></thead>
-                <tbody>{reportData.rows.map(r => (
-                  <tr key={r.centre}>
-                    <td style={{ fontWeight: 500 }}>{r.centre}</td>
-                    <td>{r.totalScans.toLocaleString()}</td>
-                    <td><span className="badge badge-green">{r.ins}</span></td>
-                    <td><span className="badge badge-red">{r.outs}</span></td>
-                    <td style={{ fontWeight: 600, color: 'var(--blue)' }}>{r.uniqueCount}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            )}
-            {reportData.type === 'satsang' && (
-              <table>
-                <thead><tr><th>Badge</th><th>Name</th><th>Centre</th><th>Duty Days</th><th>Satsang (Daily)</th><th>Jathas</th><th>Satsang (Jatha)</th><th style={{ background: 'var(--gold-bg)', color: 'var(--gold)' }}>Total</th></tr></thead>
-                <tbody>{reportData.rows.map(r => (
-                  <tr key={r.badge}>
-                    <td style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--gold)' }}>{r.badge}</td>
-                    <td style={{ fontWeight: 500 }}>{r.name}</td>
-                    <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>{r.centre}</td>
-                    <td>{r.dutyDays}</td>
-                    <td><span className="badge badge-green">{r.satsangDaysAtt}</span></td>
-                    <td>{r.jathaCount}</td>
-                    <td><span className="badge" style={{ background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)' }}>{r.jathaSatsangDays}</span></td>
-                    <td><strong style={{ color: 'var(--gold)', fontSize: '1rem' }}>{r.totalSatsangDays}</strong></td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            )}
-            {reportData.type === 'jatha' && (
-              <table>
-                <thead><tr><th>Badge</th><th>Name</th><th>Centre</th><th>Destination</th><th>From</th><th>To</th><th>Satsang Days</th><th>Flag</th></tr></thead>
-                <tbody>{reportData.rows.map(r => (
-                  <tr key={r.id}>
-                    <td style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--gold)' }}>{r.badge_number}</td>
-                    <td style={{ fontWeight: 500 }}>{r.sewadar_name}</td>
-                    <td style={{ fontSize: '0.82rem' }}>{r.centre}</td>
-                    <td style={{ fontSize: '0.82rem' }}>{r.jatha_centre} <span style={{ color: 'var(--text-muted)' }}>· {r.jatha_dept}</span></td>
-                    <td style={{ fontSize: '0.82rem', whiteSpace: 'nowrap' }}>{r.date_from}</td>
-                    <td style={{ fontSize: '0.82rem', whiteSpace: 'nowrap' }}>{r.date_to}</td>
-                    <td><span className="badge badge-green">{r.satsang_days}</span></td>
-                    <td>{r.flag ? <span className="badge badge-red">Yes</span> : '—'}</td>
-                  </tr>
-                ))}
-                  {reportData.rows.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>No jatha records.</td></tr>}
-                </tbody>
-              </table>
-            )}
-            {reportData.type === 'sewadarcount' && (
-              <table>
-                <thead><tr><th>Badge</th><th>Name</th><th>Centre</th><th>Dept</th><th>IN</th><th>OUT</th><th>Days</th></tr></thead>
-                <tbody>{reportData.rows.map(r => (
-                  <tr key={r.badge}>
-                    <td style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--gold)' }}>{r.badge}</td>
-                    <td style={{ fontWeight: 500 }}>{r.name}</td>
-                    <td style={{ fontSize: '0.82rem' }}>{r.centre}</td>
-                    <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>{r.dept || '—'}</td>
-                    <td><span className="badge badge-green">{r.ins}</span></td>
-                    <td><span className="badge badge-red">{r.outs}</span></td>
-                    <td style={{ fontWeight: 700, color: 'var(--blue)' }}>{r.totalDays}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            )}
-          </div>
-        </div>
-      )}
-
-      {!loading && !reportData && (
-        <div style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-muted)' }}>
-          <FileSpreadsheet size={40} style={{ margin: '0 auto 0.75rem', opacity: 0.3, display: 'block' }} />
-          <p style={{ fontSize: '0.9rem' }}>Pick a report type above to generate data</p>
+      {/* Table */}
+      {loading ? (
+        <div className="text-center" style={{ padding: '2rem' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
+      ) : data.length === 0 ? (
+        <EmptyState icon={BarChart2} title="No data" message="No records found for selected filters" />
+      ) : (
+        <div className="records-table-wrap" style={{ width: "100%" }}>
+          <table className="records-table" style={{ width: "100%" }}>
+            <thead>
+              <tr>
+                <th>Badge</th>
+                <th>Name</th>
+                {isAso && <th>Centre</th>}
+                {reportType === 'satsang' && <th>Satsang Days</th>}
+                {reportType === 'duty_summary' && <th>Satsang</th>}
+                {reportType === 'duty_summary' && <th>Gate Entry</th>}
+                {reportType === 'duty_summary' && <th>Watch & Ward</th>}
+                {reportType === 'duty_summary' && <th>Open</th>}
+                {reportType === 'open_now' && <th>Department</th>}
+                {reportType === 'open_now' && <th>IN Time</th>}
+                {reportType === 'open_now' && <th>Duty Type</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((r, i) => (
+                <tr key={i}>
+                  <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 700 }}>{r.badge_number}</td>
+                  <td>{r.sewadar_name}</td>
+                  {isAso && <td>{r.centre}</td>}
+                  {reportType === 'satsang' && <td style={{ fontWeight: 700, color: '#9333ea' }}>{r.count}</td>}
+                  {reportType === 'duty_summary' && <td>{r.satsang}</td>}
+                  {reportType === 'duty_summary' && <td>{r.gate_entry}</td>}
+                  {reportType === 'duty_summary' && <td>{r.watch_ward}</td>}
+                  {reportType === 'duty_summary' && <td>{r.open}</td>}
+                  {reportType === 'open_now' && <td>{r.department || '—'}</td>}
+                  {reportType === 'open_now' && <td>{formatTime(r.in_time)}</td>}
+                  {reportType === 'open_now' && <td>{DUTY_TYPE_LABEL[r.duty_type]}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
   )
 }
 
-// ─────────────────────────────────────────────
-//  MAIN PAGE
-// ─────────────────────────────────────────────
 export default function RecordsPage() {
-  const [tab, setTab] = useState('records')
-
   return (
-    <div className="page-wide pb-nav" style={{ maxWidth: '100%', padding: '0 1rem' }}>
-      <div className="flex items-center justify-between mt-2 mb-3">
-        <h2 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1.2rem' }}>Records</h2>
-      </div>
-
-      <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '1.25rem', background: 'var(--bg-elevated)', borderRadius: 10, padding: '0.25rem', border: '1px solid var(--border)' }}>
-        {[
-          { key: 'records', label: 'Attendance' },
-          { key: 'reports', label: 'Excel Reports' },
-        ].map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            style={{
-              flex: 1, padding: '0.55rem', borderRadius: 8, border: 'none',
-              background: tab === t.key ? 'var(--bg)' : 'transparent',
-              color: tab === t.key ? 'var(--text-primary)' : 'var(--text-muted)',
-              fontWeight: tab === t.key ? 700 : 400, fontSize: '0.88rem',
-              cursor: 'pointer', fontFamily: 'inherit',
-              boxShadow: tab === t.key ? '0 1px 3px rgba(0,0,0,0.15)' : 'none',
-              transition: 'all 0.12s'
-            }}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'records' && <AttendanceTab />}
-      {tab === 'reports' && <ReportsTab />}
+    <div className="page-wide pb-nav">
+      <AttendanceTab />
     </div>
   )
 }

@@ -6,21 +6,24 @@
 //   3. All errors are surfaced clearly in the message banner
 //   4. Add User modal: search & lock sewadar first, then enter email + password only
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, JATHA_TYPE, JATHA_TYPE_LABEL } from '../lib/supabase'
+import { todayDateStr } from '../lib/dateUtils'
 import {
   UserPlus, Trash2, Shield, MapPin, ToggleLeft, ToggleRight,
   RefreshCw, Download, FileSpreadsheet, Calendar,
   ChevronDown, ChevronRight, Users, Building2, Plane,
-  Pencil, X, Check, Search, PlusCircle, Eye, EyeOff, Lock
+  Pencil, X, Check, Search, PlusCircle, Eye, EyeOff, Lock, History
 } from 'lucide-react'
 import CentreComboBox from '../components/CentreComboBox'
 import SkeletonRows from '../components/SkeletonRows'
 import TablePagination from '../components/TablePagination'
 import EmptyState from '../components/EmptyState'
+import ConfirmModal from '../components/ConfirmModal'
 import { showSuccess, showError } from '../components/Toast'
+import { deleteAttendanceWithSessionUpdate, syncAttendanceWithSession } from '../lib/sessionLogic'
 
 const PAGE_SIZE = 50
 const SEARCH_DEBOUNCE = 300
@@ -43,6 +46,28 @@ export default function SuperAdminPage() {
   const [dateRange, setDateRange] = useState({ from:'', to:'' })
   const [expandedParent, setExpandedParent] = useState(null)
   const [expandedChild, setExpandedChild] = useState(null)
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
+
+  // Permissions management
+  const [permissionsModal, setPermissionsModal] = useState(null)
+  const [permissions, setPermissions] = useState({
+    can_scan: true,
+    can_records: true,
+    can_reports: false,
+    can_jatha: false,
+    can_manual_entry: false,
+    can_flags: false,
+    can_edit_jatha: false,
+  })
+  const [savingPermissions, setSavingPermissions] = useState(false)
+
+  // Audit Log tab state
+  const [logPage, setLogPage] = useState(1)
+  const [logSearch, setLogSearch] = useState('')
+  const [logActionFilter, setLogActionFilter] = useState('')
+  const [logLoading, setLogLoading] = useState(false)
+  const [logData, setLogData] = useState([])
+  const [logTotal, setLogTotal] = useState(0)
 
   // ── Add User: sewadar-search flow ──
   // Step 1: search sewadars; Step 2: locked sewadar + email/password/role
@@ -52,7 +77,7 @@ export default function SuperAdminPage() {
   const [lockedSewadar, setLockedSewadar]           = useState(null)   // sewadar row from DB
   const [newUserEmail, setNewUserEmail]             = useState('')
   const [newUserPassword, setNewUserPassword]       = useState('')
-  const [newUserRole, setNewUserRole]               = useState('sc_sp_user')
+  const [newUserRole, setNewUserRole]               = useState('centre')
   const [newUserCentre, setNewUserCentre]           = useState('')
 
   // Sewadar tab state
@@ -70,15 +95,16 @@ export default function SuperAdminPage() {
 
   // Attendance tab state
   const [attSearch, setAttSearch] = useState('')
-  const [attSearchInput, setAttSearchInput] = useState('')
-  const [attDate, setAttDate] = useState(new Date().toISOString().split('T')[0])
+  const [attSearchInput, _setAttSearchInput] = useState('')
+  const [attDate, setAttDate] = useState(todayDateStr())
   const [attRecords, setAttRecords] = useState([])
-  const [attTotal, setAttTotal] = useState(0)
+  const [_attTotal, setAttTotal] = useState(0)
   const [attPage, setAttPage] = useState(1)
   const [attLoading, setAttLoading] = useState(false)
   const [editingAtt, setEditingAtt] = useState(null)
   const [editAttTime, setEditAttTime] = useState('')
   const [editAttType, setEditAttType] = useState('')
+  const [editAttDate, setEditAttDate] = useState('')
 
   // Jatha Centres
   const [jathaCentres, setJathaCentres] = useState([])
@@ -90,6 +116,7 @@ export default function SuperAdminPage() {
   const [jathaTypeFilter, setJathaTypeFilter] = useState('')
 
   const searchTimerRef = useRef(null)
+  const msgTimerRef = useRef(null)
 
   // ── Audit log helper ──
   async function logAction(userProfile, action, details) {
@@ -100,7 +127,27 @@ export default function SuperAdminPage() {
         details,
         timestamp: new Date().toISOString(),
       })
-    } catch {}
+    } catch (e) { if (import.meta.env.DEV) console.warn('Audit log failed:', e) }
+  }
+
+  // Cleanup searchTimerRef on unmount
+  useEffect(() => {
+    return () => clearTimeout(searchTimerRef.current)
+  }, [])
+
+  function extractISTDate(iso) {
+    if (!iso) return ''
+    return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+  }
+
+  function extractISTTime(iso) {
+    if (!iso) return ''
+    return new Date(iso).toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Asia/Kolkata'
+    })
   }
 
   // Debounced sewadar search (main sewadars tab)
@@ -112,7 +159,7 @@ export default function SuperAdminPage() {
     }, SEARCH_DEBOUNCE)
     return () => clearTimeout(searchTimerRef.current)
   }, [sewadarSearchInput])
-
+  
   // Debounced attendance search
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -124,14 +171,56 @@ export default function SuperAdminPage() {
 
   // Fetch centres on mount
   useEffect(() => {
-    fetchCentresData().catch(console.error)
+    fetchCentresData().catch(() => {})
   }, [])
 
-  useEffect(() => { if (tab === 'users')        fetchUsers().catch(console.error)        }, [tab])
-  useEffect(() => { if (tab === 'sewadars')     fetchSewadars().catch(console.error)     }, [tab, sewadarPage, sewadarSearch, sewadarCentreFilter])
-  useEffect(() => { if (tab === 'attendance')   fetchAttendance().catch(console.error)   }, [tab, attDate, attSearch, attPage])
-  useEffect(() => { if (tab === 'jatha_centres')fetchJathaCentres().catch(console.error) }, [tab, jathaTypeFilter])
-  useEffect(() => { if (tab === 'reports')      fetchReports().catch(console.error)      }, [tab, dateRange])
+  // Real-time updates
+  useEffect(() => {
+    let timer = null
+    const channel = supabase.channel('superadmin-realtime')
+    
+    channel.on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'sewadars' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] sewadars changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => { if (tab === 'sewadars') fetchSewadars().catch(() => {}) }, 100) // Reduced from 300ms
+    })
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance_sessions' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] sessions changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => { if (tab === 'attendance') fetchAttendance().catch(() => {}) }, 100) // Reduced from 300ms
+    })
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'jatha_centres' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT] jatha_centres changed', payload)
+      clearTimeout(timer)
+      timer = setTimeout(() => { if (tab === 'jatha_centres') fetchJathaCentres().catch(() => {}) }, 100) // Reduced from 300ms
+    })
+    .subscribe((status) => {
+      if (import.meta.env.DEV) console.log('[RT] SuperAdmin channel status:', status)
+    })
+
+    return () => { 
+      clearTimeout(timer)
+      supabase.removeChannel(channel) 
+    }
+  }, [tab])
+
+  useEffect(() => { if (tab === 'users')        fetchUsers().catch(() => {})        }, [tab])
+  useEffect(() => { if (tab === 'sewadars')     fetchSewadars().catch(() => {})     }, [tab, sewadarPage, sewadarSearch, sewadarCentreFilter])
+  useEffect(() => { if (tab === 'attendance')   fetchAttendance().catch(() => {})   }, [tab, attDate, attSearch, attPage])
+  useEffect(() => { if (tab === 'jatha_centres')fetchJathaCentres().catch(() => {}) }, [tab, jathaTypeFilter])
+  useEffect(() => { if (tab === 'reports')      fetchReports().catch(() => {})      }, [tab, dateRange])
 
   async function fetchCentresData() {
     const { data } = await supabase.from('centres').select('id, centre_name, parent_centre, geo_enabled, latitude, longitude, geo_radius').order('centre_name')
@@ -148,8 +237,11 @@ export default function SuperAdminPage() {
   )
 
   function showMsg(msg, type = 'success') {
+    clearTimeout(msgTimerRef.current)
     setMessage({ text: msg, type })
-    if (type === 'success') setTimeout(() => setMessage(m => m.text === msg ? { text: '', type: '' } : m), 4000)
+    if (type === 'success') {
+      msgTimerRef.current = setTimeout(() => setMessage(m => m.text === msg ? { text: '', type: '' } : m), 4000)
+    }
   }
 
   // ── Users ──
@@ -165,13 +257,13 @@ export default function SuperAdminPage() {
       const { error } = await supabase.from('users').update({ is_active: !u.is_active }).eq('id', u.id)
       if (error) { showMsg('Update failed: ' + error.message, 'error'); return }
       await logAction(profile, 'TOGGLE_USER', `is_active=${!u.is_active} for ${u.badge_number}`)
-      showMsg(`User ${!u.is_active ? 'activated' : 'deactivated'}`)
+      const newState = !u.is_active ? 'activated' : 'deactivated'
+      showSuccess(`User ${newState}`)
       fetchUsers()
     } catch (err) { showMsg('Update failed: ' + err.message, 'error') }
   }
 
   async function deleteUser(u) {
-    if (!confirm(`Delete user ${u.name}?\n\nThis removes their login access. Attendance records are preserved.`)) return
     try {
       const { error, count } = await supabase.from('users').delete({ count: 'exact' }).eq('id', u.id)
       if (error) { showMsg('Delete failed: ' + error.message, 'error'); return }
@@ -186,23 +278,107 @@ export default function SuperAdminPage() {
     } catch (err) { showMsg('Delete failed: ' + err.message, 'error') }
   }
 
+  // ── Permissions Management ──
+  async function openPermissionsModal(u) {
+    if (u.role === ROLES.ASO) {
+      showMsg('ASO has all permissions by default', 'info')
+      return
+    }
+    if (u.role !== ROLES.CENTRE && u.role !== ROLES.SC_SP_USER) {
+      showMsg('Only Centre users can have permissions managed', 'info')
+      return
+    }
+    setPermissionsModal(u)
+    
+    const { data } = await supabase
+      .from('user_permissions')
+      .select('*')
+      .eq('user_id', u.id)
+      .single()
+    
+    if (data) {
+      setPermissions({
+        can_scan: data.can_scan ?? true,
+        can_records: data.can_records ?? true,
+        can_reports: data.can_reports ?? false,
+        can_jatha: data.can_jatha ?? false,
+        can_manual_entry: data.can_manual_entry ?? false,
+        can_flags: data.can_flags ?? false,
+        can_edit_jatha: data.can_edit_jatha ?? false,
+      })
+    } else {
+      setPermissions({
+        can_scan: true,
+        can_records: true,
+        can_reports: false,
+        can_jatha: false,
+        can_manual_entry: false,
+        can_flags: false,
+        can_edit_jatha: false,
+      })
+    }
+  }
+
+  async function savePermissions() {
+    if (!permissionsModal) return
+    setSavingPermissions(true)
+    
+    try {
+      const { error } = await supabase
+        .from('user_permissions')
+        .upsert({
+          user_id: permissionsModal.id,
+          ...permissions,
+          updated_by: profile.badge_number,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' })
+      
+      if (error) throw error
+      
+      await logAction(profile, 'UPDATE_PERMISSIONS', `Updated permissions for ${permissionsModal.badge_number}`)
+      showSuccess('Permissions saved')
+      setPermissionsModal(null)
+    } catch (err) {
+      showMsg('Failed to save: ' + err.message, 'error')
+    }
+    setSavingPermissions(false)
+  }
+
+  function togglePermission(key) {
+    setPermissions(p => ({ ...p, [key]: !p[key] }))
+  }
+
   // ── Search sewadars for Add User modal ──
   async function searchSewadarsForUser(term) {
     if (!term.trim() || term.trim().length < 2) { setUserSewadarResults([]); return }
     setUserSewadarSearching(true)
-    const { data } = await supabase.from('sewadars')
-      .select('badge_number, sewadar_name, centre, department')
-      .or(`badge_number.ilike.%${term.toUpperCase()}%,sewadar_name.ilike.%${term}%`)
-      .limit(8)
-    setUserSewadarResults(data || [])
-    setUserSewadarSearching(false)
+    try {
+      const [{ data: sewadars }, { data: existingBadges }] = await Promise.all([
+        supabase.from('sewadars')
+          .select('badge_number, sewadar_name, centre, department')
+          .or(`badge_number.ilike.%${term.toUpperCase()}%,sewadar_name.ilike.%${term}%`)
+          .limit(50),
+        supabase.from('user_credentials').select('badge_number'),
+      ])
+      if (sewadars?.length) {
+        const takenSet = new Set((existingBadges || []).map(b => b.badge_number))
+        setUserSewadarResults(sewadars.map(s => ({ ...s, hasLogin: takenSet.has(s.badge_number) })))
+      } else {
+        setUserSewadarResults([])
+      }
+    } catch (e) {
+      showMsg('Search failed: ' + e.message, 'error')
+      setUserSewadarResults([])
+    } finally {
+      setUserSewadarSearching(false)
+    }
   }
 
   function lockSewadar(s) {
+    if (s.hasLogin) { showMsg('This sewadar already has a login account.', 'error'); return }
     setLockedSewadar(s)
     setUserSewadarInput(s.badge_number)
     setUserSewadarResults([])
-    // Pre-fill centre from sewadar's centre
     setNewUserCentre(s.centre)
   }
 
@@ -212,7 +388,7 @@ export default function SuperAdminPage() {
     setUserSewadarResults([])
     setNewUserEmail('')
     setNewUserPassword('')
-    setNewUserRole('sc_sp_user')
+    setNewUserRole('centre')
     setNewUserCentre('')
     setShowPw(false)
     setCreatedUserCard(null)
@@ -230,8 +406,29 @@ export default function SuperAdminPage() {
       const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
       if (!supabaseUrl || !supabaseAnonKey) throw new Error('Missing Supabase config')
 
+      const badgeToCreate = lockedSewadar.badge_number
+
+      const [{ data: existingUser }, { data: existingCred }] = await Promise.all([
+        supabase.from('users').select('badge_number').eq('badge_number', badgeToCreate).maybeSingle(),
+        supabase.from('user_credentials').select('badge_number').eq('badge_number', badgeToCreate).maybeSingle(),
+      ])
+
+      if (existingUser) {
+        throw new Error('A login already exists for this badge number (in users table). Each sewadar can only have one account.')
+      }
+      if (existingCred) {
+        throw new Error('A login already exists for this badge number (in credentials log). Each sewadar can only have one account.')
+      }
+
+      const { data: { user: authUser } } = await supabase.auth.getUser()
       const { data: { session } } = await supabase.auth.getSession()
-      const token = session?.access_token || ''
+      const token = session?.access_token
+
+      if (!authUser || !token) {
+        showMsg('Session expired. Please log in again.', 'error')
+        setSaving(false)
+        return
+      }
 
       const res = await fetch(`${supabaseUrl}/functions/v1/create-user`, {
         method: 'POST',
@@ -239,6 +436,7 @@ export default function SuperAdminPage() {
           'Content-Type': 'application/json',
           'apikey': supabaseAnonKey,
           'Authorization': `Bearer ${token}`,
+          'x-user-id': authUser.id,
         },
         body: JSON.stringify({
           email:        newUserEmail,
@@ -254,21 +452,42 @@ export default function SuperAdminPage() {
       if (!res.ok)   throw new Error(json.error || `Error: ${res.status}`)
       if (json.error) throw new Error(json.error)
 
+      // Store plain password for success card display (admin sees it once)
       const credRecord = {
         name:         lockedSewadar.sewadar_name,
         badge_number: lockedSewadar.badge_number,
         email:        newUserEmail,
-        password:     newUserPassword,
+        password:     newUserPassword,  // Plaintext shown to admin ONCE
         role:         newUserRole,
         centre:       newUserCentre || lockedSewadar.centre,
         created_by:   profile.badge_number,
         created_at:   new Date().toISOString(),
       }
 
-      // Save credentials to user_credentials table for later retrieval
-      await supabase.from('user_credentials').insert(credRecord).then(({ error: ce }) => {
-        if (ce) console.warn('[SuperAdmin] Could not save credentials log:', ce.message)
+      // Save HASHED credentials via secure edge function for audit log
+      const credRes = await fetch(`${supabaseUrl}/functions/v1/save-credential`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': supabaseAnonKey,
+          'x-user-id': authUser.id,
+        },
+        body: JSON.stringify({
+          name:         lockedSewadar.sewadar_name,
+          badge_number: lockedSewadar.badge_number,
+          email:        newUserEmail,
+          password:     newUserPassword,
+          role:         newUserRole,
+          centre:       newUserCentre || lockedSewadar.centre,
+          created_by:   profile.badge_number,
+        }),
       })
+
+      const credJson = await credRes.json()
+      if (!credRes.ok) {
+        if (import.meta.env.DEV) console.warn('[SuperAdmin] Could not save hashed credentials:', credJson.error)
+        // Continue anyway - the user was created in Supabase Auth
+      }
 
       await logAction(profile, 'CREATE_USER',
         `Created ${newUserRole} ${lockedSewadar.badge_number.toUpperCase()} email=${newUserEmail}`)
@@ -290,7 +509,7 @@ export default function SuperAdminPage() {
       if (ch?.length) await supabase.from('centres').update({ geo_enabled: value }).in('id', ch.map(c => c.id))
       await logAction(profile, 'GEO_TOGGLE_CASCADE', `geo_enabled=${value} for ${centreName} + ${ch?.length||0} sub-centres`)
     }
-    fetchCentresData()
+    await fetchCentresData()
   }
 
   // ── Reports ──
@@ -309,25 +528,86 @@ export default function SuperAdminPage() {
     setReportData({ users: ur.data||[], centres: cr.data||[], logs: lr.data||[], credentials: kredsRes.data||[] })
     setReportLoading(false)
   }
+
+  // ── Audit Log ──
+  async function fetchAuditLogs() {
+    setLogLoading(true)
+    const offset = (logPage - 1) * PAGE_SIZE
+    let q = supabase.from('logs').select('*', { count: 'exact' })
+      .order('timestamp', { ascending: false })
+      .range(offset, offset + PAGE_SIZE - 1)
+
+    if (logActionFilter) q = q.eq('action', logActionFilter)
+    if (logSearch.trim()) {
+      q = q.or(`user_badge.ilike.%${logSearch.trim()}%,action.ilike.%${logSearch.trim()}%,details.ilike.%${logSearch.trim()}%`)
+    }
+
+    const { data, count, error } = await q
+    if (!error) {
+      // Get unique badges to fetch user details
+      const badges = [...new Set((data || []).map(l => l.user_badge).filter(Boolean))]
+      let userMap = {}
+      if (badges.length > 0) {
+        const { data: users } = await supabase.from('users').select('badge_number, name, centre').in('badge_number', badges)
+        userMap = Object.fromEntries((users || []).map(u => [u.badge_number, { name: u.name, centre: u.centre }]))
+      }
+      // Attach user info to log entries
+      const enrichedData = (data || []).map(l => ({
+        ...l,
+        user_name: userMap[l.user_badge]?.name || null,
+        user_centre: userMap[l.user_badge]?.centre || null
+      }))
+      setLogData(enrichedData)
+      setLogTotal(count || 0)
+    }
+    setLogLoading(false)
+  }
+
+  useEffect(() => { if (tab === 'logs') fetchAuditLogs().catch(() => {}) }, [tab, logPage, logActionFilter, logSearch])
+
+  function exportAuditLogsCSV() {
+    const header = ['Timestamp', 'User Badge', 'Name', 'Centre', 'Action', 'Details']
+    const rows = logData.map(l => [
+      new Date(l.timestamp).toISOString(),
+      l.user_badge || '',
+      l.user_name || '',
+      l.user_centre || '',
+      l.action || '',
+      (l.details || '').replace(/"/g, '""')
+    ].map(v => `"${v}"`).join(','))
+    const csv = [header.join(','), ...rows].join('\n')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.download = `audit_log_${new Date().toISOString().split('T')[0]}.csv`
+    a.click()
+  }
   function dlCSV(csv, fn) {
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
     a.download = fn; a.click()
   }
-  const exportUsers   = () => dlCSV(['Name,Email,Badge,Role,Centre,Active,Created', ...reportData.users.map(u => [`"${u.name}"`, u.email, u.badge_number, u.role, u.centre, u.is_active?'Yes':'No', new Date(u.created_at).toLocaleDateString('en-IN')].join(','))].join('\n'), 'users_export.csv')
-  const exportCentres = () => dlCSV(['Centre,Parent,Geo,Radius,Lat,Lng', ...reportData.centres.map(c => [c.centre_name, c.parent_centre||'', c.geo_enabled?'Y':'N', c.geo_radius||'', c.latitude||'', c.longitude||''].join(','))].join('\n'), 'centres_export.csv')
-  const exportLogs    = () => dlCSV(['Time,Badge,Action,Details', ...reportData.logs.map(l => [new Date(l.timestamp).toLocaleString('en-IN'), l.user_badge, l.action, `"${l.details||''}"`].join(','))].join('\n'), 'logs_export.csv')
+  const csvEscape = (val) => {
+    if (val === null || val === undefined) return ''
+    const str = String(val)
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return '"' + str.replace(/"/g, '""') + '"'
+    }
+    return str
+  }
+  const exportUsers   = () => dlCSV(['Name,Email,Badge,Role,Centre,Active,Created', ...reportData.users.map(u => [csvEscape(u.name), csvEscape(u.email), u.badge_number, u.role, csvEscape(u.centre), u.is_active?'Yes':'No', new Date(u.created_at).toLocaleDateString('en-IN')].join(','))].join('\n'), 'users_export.csv')
+  const exportCentres = () => dlCSV(['Centre,Parent,Geo,Radius,Lat,Lng', ...reportData.centres.map(c => [csvEscape(c.centre_name), csvEscape(c.parent_centre||''), c.geo_enabled?'Y':'N', c.geo_radius||'', c.latitude||'', c.longitude||''].join(','))].join('\n'), 'centres_export.csv')
+  const exportLogs    = () => dlCSV(['Time,Badge,Action,Details', ...reportData.logs.map(l => [new Date(l.timestamp).toLocaleString('en-IN'), l.user_badge, l.action, csvEscape(l.details||'')].join(','))].join('\n'), 'logs_export.csv')
   const exportCredentials = () => {
     const rows = [
-      'Name,Badge,Email,Password,Role,Centre,Created By,Created At',
+      'Name,Badge,Email,Password (Hashed),Role,Centre,Created By,Created At',
       ...reportData.credentials.map(c => [
-        '"' + (c.name||'') + '"',
+        csvEscape(c.name||''),
         c.badge_number,
-        c.email,
-        '"' + (c.password||'') + '"',
+        csvEscape(c.email),
+        c.password_hash ? '[SECURED - SHA-256 HASHED]' : csvEscape(c.password||'[NOT SET]'),
         c.role,
-        c.centre,
-        c.created_by || '',
+        csvEscape(c.centre),
+        csvEscape(c.created_by||''),
         c.created_at ? new Date(c.created_at).toLocaleString('en-IN') : ''
       ].join(','))
     ]
@@ -365,7 +645,13 @@ export default function SuperAdminPage() {
   }
 
   async function deleteSewadar(s) {
-    if (!confirm(`Delete ${s.sewadar_name} (${s.badge_number})?\n\nAttendance history is preserved.`)) return
+    setDeleteConfirm({ type: 'sewadar', record: s })
+  }
+
+  async function doDeleteSewadar() {
+    const s = deleteConfirm?.record
+    setDeleteConfirm(null)
+    if (!s) return
     try {
       const { error, count } = await supabase.from('sewadars').delete({ count: 'exact' }).eq('id', s.id)
       if (error) { showMsg('Delete failed: ' + error.message, 'error'); return }
@@ -402,7 +688,7 @@ export default function SuperAdminPage() {
   async function fetchAttendance() {
     setAttLoading(true)
     const offset = (attPage - 1) * PAGE_SIZE
-    let q = supabase.from('attendance').select('*', { count: 'exact' })
+    let q = supabase.from('v_attendance').select('*', { count: 'exact' })
       .gte('scan_time', new Date(attDate + 'T00:00:00').toISOString())
       .lte('scan_time', new Date(attDate + 'T23:59:59.999').toISOString())
       .order('scan_time', { ascending: false })
@@ -414,15 +700,19 @@ export default function SuperAdminPage() {
   }
 
   async function deleteAttRecord(r) {
-    if (!confirm(`Delete ${r.type} record for ${r.badge_number} at ${new Date(r.scan_time).toLocaleTimeString('en-IN')}?\n\nThis cannot be undone.`)) return
+    setDeleteConfirm({ type: 'att', record: r })
+  }
+
+  async function doDeleteAtt() {
+    const r = deleteConfirm?.record
+    setDeleteConfirm(null)
+    if (!r) return
     try {
-      const { error, count } = await supabase.from('attendance').delete({ count: 'exact' }).eq('id', r.id)
-      if (error) { showMsg(`Delete failed: ${error.message}`, 'error'); return }
-      if (count === 0) {
-        const { data: checkData } = await supabase.from('attendance').select('id').eq('id', r.id).maybeSingle()
-        if (!checkData) { showMsg('Record already deleted or does not exist'); fetchAttendance(); return }
-        showMsg('Delete was blocked by RLS policy. Make sure you are logged in as ASO.', 'error'); return
-      }
+      await deleteAttendanceWithSessionUpdate(supabase, {
+        attendanceId: r.id,
+        deletedByBadge: profile?.badge_number,
+        reason: 'Manual deletion from admin panel'
+      })
       await logAction(profile, 'DELETE_ATTENDANCE', `Deleted ${r.type} id=${r.id} badge=${r.badge_number}`)
       showMsg('Record deleted successfully')
       fetchAttendance()
@@ -431,17 +721,40 @@ export default function SuperAdminPage() {
 
   async function saveAttEdit() {
     const updates = {}
-    if (editAttTime) {
-      const localDateTime = new Date(`${attDate}T${editAttTime}:00`)
-      updates.scan_time = localDateTime.toISOString()
+    if (!editAttDate || !editAttTime) {
+      showMsg('Date and time are required.', 'error')
+      return
     }
+    if (!/^\d{2}:\d{2}$/.test(editAttTime)) {
+      showMsg('Invalid time format. Use HH:MM.', 'error')
+      return
+    }
+    const istDateTime = new Date(`${editAttDate}T${editAttTime}:00+05:30`)
+    if (isNaN(istDateTime.getTime())) {
+      showMsg('Invalid date/time combination.', 'error')
+      return
+    }
+    updates.scan_time = istDateTime.toISOString()
     if (editAttType && editAttType !== editingAtt.type) updates.type = editAttType
+
     if (!Object.keys(updates).length) { setEditingAtt(null); return }
+
     try {
-      const { error } = await supabase.from('attendance').update(updates).eq('id', editingAtt.id)
-      if (error) { showMsg('Update failed: ' + error.message, 'error'); return }
+      // Update attendance record first
+      const { error: attError } = await supabase.from('attendance').update(updates).eq('id', editingAtt.id)
+      if (attError) { showMsg('Update failed: ' + attError.message, 'error'); return }
+
+      // Sync with session using the unified function
+      if (editingAtt.session_id) {
+        await syncAttendanceWithSession(supabase, {
+          attendanceId: editingAtt.id,
+          updates,
+          updatedBy: profile?.badge_number,
+        })
+      }
+
       await logAction(profile, 'EDIT_ATTENDANCE', `Edited id=${editingAtt.id} badge=${editingAtt.badge_number}: ${JSON.stringify(updates)}`)
-      showMsg('Record updated successfully')
+      showMsg('Attendance and session updated')
       setEditingAtt(null); fetchAttendance()
     } catch (err) { showMsg('Update failed: ' + err.message, 'error') }
   }
@@ -477,7 +790,13 @@ export default function SuperAdminPage() {
     fetchJathaCentres()
   }
   async function deleteJathaCentre(jc) {
-    if (!confirm(`Delete "${jc.centre_name} — ${jc.department}"? Existing jatha records are unaffected.`)) return
+    setDeleteConfirm({ type: 'jatha_centre', record: jc })
+  }
+
+  async function doDeleteJathaCentre() {
+    const jc = deleteConfirm?.record
+    setDeleteConfirm(null)
+    if (!jc) return
     try {
       const { error, count } = await supabase.from('jatha_centres').delete({ count: 'exact' }).eq('id', jc.id)
       if (error) { showMsg('Delete failed: ' + error.message, 'error'); return }
@@ -499,8 +818,8 @@ export default function SuperAdminPage() {
     children: centres.filter(c => c.parent_centre === p),
     config: centres.find(c => c.centre_name === p)
   }))
-  const roleColor = { aso: 'var(--gold)', centre_user: 'var(--blue)', sc_sp_user: 'var(--green)' }
-  const roleName  = { aso: 'ASO', centre_user: 'CENTRE USER', sc_sp_user: 'SC_SP USER' }
+  const roleColor = { aso: 'var(--gold)', centre: 'var(--blue)', sc_sp_user: 'var(--purple)' }
+  const roleName  = { aso: 'ASO', centre: 'CENTRE', sc_sp_user: 'SC/SP' }
 
   const TAB_BTN = (key, label, Icon) => (
     <button key={key} onClick={() => setTab(key)}
@@ -517,7 +836,7 @@ export default function SuperAdminPage() {
   )
 
   return (
-    <div className="page-wide pb-nav" style={{ maxWidth: 960 }}>
+    <div className="page-wide pb-nav">
       <div className="mt-2 mb-3">
         <h2 style={{ fontFamily:'Cinzel,serif', color:'var(--gold)', fontSize:'1.2rem' }}>Control Panel</h2>
         <p className="text-muted text-xs mt-1">Area Secretary · Write access only</p>
@@ -543,6 +862,7 @@ export default function SuperAdminPage() {
           {TAB_BTN('jatha_centres', 'Jatha Centres',  Plane)}
           {TAB_BTN('attendance',    'Correct Att',    Pencil)}
           {TAB_BTN('reports',       'Reports',        FileSpreadsheet)}
+          {TAB_BTN('logs',          'Audit Log',     History)}
         </div>
       </div>
 
@@ -550,7 +870,7 @@ export default function SuperAdminPage() {
       {tab === 'users' && (
         <div>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1rem' }}>
-            <p className="text-muted text-xs">New users are created via a secure server-side Edge Function.</p>
+              <p className="text-muted text-xs">New users are created via a secure server-side Edge Function.</p>
             <button className="btn btn-gold" onClick={() => setShowAddUser(true)}>
               <UserPlus size={15} /> Add User
             </button>
@@ -570,6 +890,11 @@ export default function SuperAdminPage() {
                       {u.is_active ? <ToggleRight size={22} color="var(--green)" /> : <ToggleLeft size={22} color="var(--text-muted)" />}
                     </button></td>
                     <td>
+                      {u.role !== ROLES.ASO && (
+                        <button className="btn btn-ghost" style={{ padding:'0.25rem', color:'var(--gold)' }} onClick={() => openPermissionsModal(u)} title="Permissions">
+                          <Shield size={15} />
+                        </button>
+                      )}
                       {u.role !== ROLES.ASO && (
                         <button className="btn btn-ghost" style={{ padding:'0.25rem', color:'var(--red)' }} onClick={() => deleteUser(u)}>
                           <Trash2 size={15} />
@@ -640,8 +965,8 @@ export default function SuperAdminPage() {
                             </td>
                             <td><input className="input" type="number" style={{ padding:'0.3rem', fontSize:'0.82rem', width:60 }} value={sewadarForm.age ?? (s.age??'')} onChange={e => setSewadarForm(f => ({...f, age:e.target.value}))} /></td>
                             <td style={{ display:'flex', gap:4 }}>
-                              <button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveSewadar}><Check size={15} /></button>
-                              <button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => { setEditingSewadar(null); setSewadarForm({}) }}><X size={15} /></button>
+                           <button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveSewadar}><Check size={15} /></button>
+                           <button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => { setEditingSewadar(null) }}><X size={15} /></button>
                             </td>
                           </>
                         ) : (
@@ -653,7 +978,7 @@ export default function SuperAdminPage() {
                             <td style={{ fontSize:'0.82rem' }}>{s.gender||'—'}</td>
                             <td style={{ fontSize:'0.82rem' }}>{s.age||'—'}</td>
                             <td style={{ display:'flex', gap:4 }}>
-                              <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--blue)' }} onClick={() => { setEditingSewadar(s.id); setSewadarForm({}) }}><Pencil size={14} /></button>
+                              <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--blue)' }} onClick={() => { setEditingSewadar(s.id); setSewadarForm({ ...s }) }}><Pencil size={14} /></button>
                               <button className="btn btn-ghost" style={{ padding:'0.2rem', color:'var(--red)' }} onClick={() => deleteSewadar(s)}><Trash2 size={14} /></button>
                             </td>
                           </>
@@ -703,9 +1028,9 @@ export default function SuperAdminPage() {
                   </div>
                   {expandedParent===parent && config && (
                     <div className="centre-geo-config"><div className="centre-geo-fields">
-                      <div className="geo-field"><label>Latitude</label><input defaultValue={config.latitude||''} placeholder="28.4595" onBlur={e => updateCentreGeo(config.id,'latitude',parseFloat(e.target.value)||null,null)}/></div>
-                      <div className="geo-field"><label>Longitude</label><input defaultValue={config.longitude||''} placeholder="77.0266" onBlur={e => updateCentreGeo(config.id,'longitude',parseFloat(e.target.value)||null,null)}/></div>
-                      <div className="geo-field"><label>Radius (m)</label><input defaultValue={config.geo_radius||200} onBlur={e => updateCentreGeo(config.id,'geo_radius',parseInt(e.target.value)||200,null)}/></div>
+                      <div className="geo-field"><label>Latitude</label><input defaultValue={config.latitude||''} placeholder="28.4595" onBlur={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateCentreGeo(config.id,'latitude',v,null) }}/></div>
+                      <div className="geo-field"><label>Longitude</label><input defaultValue={config.longitude||''} placeholder="77.0266" onBlur={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateCentreGeo(config.id,'longitude',v,null) }}/></div>
+                      <div className="geo-field"><label>Radius (m)</label><input defaultValue={config.geo_radius||200} onBlur={e => { const v = parseInt(e.target.value); if (!isNaN(v)) updateCentreGeo(config.id,'geo_radius',v,null) }}/></div>
                     </div></div>
                   )}
                   {expandedParent===parent && children.map(child => (
@@ -726,9 +1051,9 @@ export default function SuperAdminPage() {
                       </div>
                       {expandedChild===child.id && (
                         <div className="centre-geo-config centre-child-geo-config"><div className="centre-geo-fields">
-                          <div className="geo-field"><label>Latitude</label><input key={`lat-${child.id}`} defaultValue={child.latitude||''} onBlur={e => updateCentreGeo(child.id,'latitude',parseFloat(e.target.value)||null,null)}/></div>
-                          <div className="geo-field"><label>Longitude</label><input key={`lng-${child.id}`} defaultValue={child.longitude||''} onBlur={e => updateCentreGeo(child.id,'longitude',parseFloat(e.target.value)||null,null)}/></div>
-                          <div className="geo-field"><label>Radius (m)</label><input key={`rad-${child.id}`} defaultValue={child.geo_radius||200} onBlur={e => updateCentreGeo(child.id,'geo_radius',parseInt(e.target.value)||200,null)}/></div>
+                          <div className="geo-field"><label>Latitude</label><input key={`lat-${child.id}`} defaultValue={child.latitude||''} onBlur={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateCentreGeo(child.id,'latitude',v,null) }}/></div>
+                          <div className="geo-field"><label>Longitude</label><input key={`lng-${child.id}`} defaultValue={child.longitude||''} onBlur={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateCentreGeo(child.id,'longitude',v,null) }}/></div>
+                          <div className="geo-field"><label>Radius (m)</label><input key={`rad-${child.id}`} defaultValue={child.geo_radius||200} onBlur={e => { const v = parseInt(e.target.value); if (!isNaN(v)) updateCentreGeo(child.id,'geo_radius',v,null) }}/></div>
                         </div></div>
                       )}
                     </div>
@@ -832,39 +1157,42 @@ export default function SuperAdminPage() {
           <p className="text-muted text-xs mb-2">{attRecords.length} records{attSearch ? ` matching "${attSearch}"` : ''} for {attDate}</p>
           {attLoading ? <div className="spinner" style={{ margin:'2rem auto' }}/> : (
             <div className="table-wrap"><table>
-              <thead><tr><th>Time</th><th>Type</th><th>Name</th><th>Badge</th><th>Centre</th><th>Scanned By</th><th></th></tr></thead>
+              <thead><tr><th style={{ width:'140px' }}>Time</th><th style={{ width:'50px' }}>Type</th><th style={{ width:'110px' }}>Name</th><th style={{ width:'80px' }}>Badge</th><th style={{ width:'90px' }}>Centre</th><th style={{ width:'80px' }}>Scanned By</th><th style={{ width:'60px' }}></th></tr></thead>
               <tbody>
                 {attRecords.map(r => (
                   <tr key={r.id} style={editingAtt?.id===r.id ? { background:'#fffbeb' } : {}}>
-                    <td style={{ fontSize:'0.82rem', whiteSpace:'nowrap' }}>
+                    <td style={{ fontSize:'0.8rem', whiteSpace:'nowrap' }}>
                       {editingAtt?.id===r.id
-                        ? <input type="time" value={editAttTime} onChange={e => setEditAttTime(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem 0.4rem', fontSize:'0.82rem', background:'white', color:'var(--text-primary)' }}/>
-                        : new Date(r.scan_time).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' })}
+                        ? <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+                            <input type="date" value={editAttDate} onChange={e => setEditAttDate(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.4rem 0.5rem', fontSize:'0.85rem', background:'white', color:'var(--text-primary)', width:'130px' }}/>
+                            <input type="time" value={editAttTime} onChange={e => setEditAttTime(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.4rem 0.5rem', fontSize:'0.85rem', background:'white', color:'var(--text-primary)', width:'130px' }}/>
+                          </div>
+                        : new Date(r.scan_time).toLocaleDateString('en-IN', { day:'2-digit', month:'2-digit' }) + ' ' + new Date(r.scan_time).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' })}
                     </td>
                     <td>
                       {editingAtt?.id===r.id
-                        ? <select value={editAttType} onChange={e => setEditAttType(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem 0.4rem', fontSize:'0.82rem', background:'white', color:'var(--text-primary)' }}><option value="IN">IN</option><option value="OUT">OUT</option></select>
+                        ? <select value={editAttType} onChange={e => setEditAttType(e.target.value)} style={{ border:'1px solid var(--border)', borderRadius:4, padding:'0.2rem', fontSize:'0.75rem', background:'white', color:'var(--text-primary)' }}><option value="IN">IN</option><option value="OUT">OUT</option></select>
                         : <span className={`badge ${r.type==='IN' ? 'badge-green' : 'badge-red'}`}>{r.type}</span>}
                     </td>
-                    <td style={{ fontWeight:500 }}>{r.sewadar_name}</td>
+                    <td style={{ fontWeight:500, fontSize:'0.85rem' }}>{r.sewadar_name}</td>
                     <td style={{ fontFamily:'monospace', fontSize:'0.82rem', color:'var(--gold)' }}>{r.badge_number}</td>
-                    <td style={{ fontSize:'0.82rem', color:'var(--text-muted)' }}>{r.centre}</td>
-                    <td style={{ fontSize:'0.78rem', color:'var(--text-muted)' }}>{r.scanner_name||'—'}</td>
+                    <td style={{ fontSize:'0.78rem', color:'var(--text-muted)' }}>{r.sewadar_centre}</td>
+                    <td style={{ fontSize:'0.75rem', color:'var(--text-muted)' }}>{r.scanner_name||'—'}</td>
                     <td>
                       <div style={{ display:'flex', gap:4, alignItems:'center' }}>
                         {editingAtt?.id===r.id ? (
                           <>
-                            <button className="btn btn-ghost" style={{ color:'var(--green)', padding:'0.2rem' }} onClick={saveAttEdit}><Check size={14}/></button>
-                            <button className="btn btn-ghost" style={{ color:'var(--text-muted)', padding:'0.2rem' }} onClick={() => setEditingAtt(null)}><X size={14}/></button>
+                            <button style={{ background:'#22c55e', border:'none', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'white', display:'flex', alignItems:'center' }} onClick={saveAttEdit}><Check size={12}/></button>
+                            <button style={{ background:'#6b7280', border:'none', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'white', display:'flex', alignItems:'center' }} onClick={() => setEditingAtt(null)}><X size={12}/></button>
                           </>
                         ) : (
                           <>
-                            <button className="btn btn-ghost" style={{ color:'var(--blue)', padding:'0.2rem' }} title="Edit"
-                              onClick={() => { setEditingAtt(r); setEditAttTime(new Date(r.scan_time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})); setEditAttType(r.type) }}>
-                              <Pencil size={13}/>
+                            <button style={{ background:'none', border:'1px solid #3b82f6', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'#3b82f6', display:'flex', alignItems:'center' }} title="Edit"
+                              onClick={() => { setEditingAtt(r); setEditAttDate(extractISTDate(r.scan_time)); setEditAttTime(extractISTTime(r.scan_time)); setEditAttType(r.type) }}>
+                              <Pencil size={12}/>
                             </button>
-                            <button className="btn btn-ghost" style={{ color:'var(--red)', padding:'0.2rem' }} title="Delete" onClick={() => deleteAttRecord(r)}>
-                              <Trash2 size={13}/>
+                            <button style={{ background:'none', border:'1px solid #dc2626', borderRadius:4, padding:'2px 6px', cursor:'pointer', color:'#dc2626', display:'flex', alignItems:'center' }} title="Delete" onClick={() => deleteAttRecord(r)}>
+                              <Trash2 size={12}/>
                             </button>
                           </>
                         )}
@@ -905,11 +1233,11 @@ export default function SuperAdminPage() {
                     <div>
                       <h3 style={{ fontWeight:700, fontSize:'0.95rem' }}>User Credentials Log</h3>
                       <p style={{ fontSize:'0.75rem', color:'var(--text-muted)', marginTop:2 }}>
-                        Passwords stored at creation time. Export CSV to update your Google Sheet.
+                        Passwords are securely hashed. Use Supabase Auth for password resets.
                       </p>
                     </div>
                     <button className="btn btn-ghost" onClick={exportCredentials} style={{ fontSize:'0.82rem' }}>
-                      <Download size={14} /> Export for Google Sheets
+                      <Download size={14} /> Export Log
                     </button>
                   </div>
                   <div className="table-wrap">
@@ -932,8 +1260,8 @@ export default function SuperAdminPage() {
                             <td style={{ fontFamily:'monospace', fontSize:'0.82rem', color:'var(--gold)' }}>{c.badge_number}</td>
                             <td style={{ fontSize:'0.82rem' }}>{c.email}</td>
                             <td>
-                              <span style={{ fontFamily:'monospace', fontSize:'0.82rem', background:'var(--bg-elevated)', border:'1px solid var(--border)', borderRadius:4, padding:'2px 6px', letterSpacing:'0.03em' }}>
-                                {c.password}
+                              <span style={{ fontFamily:'monospace', fontSize:'0.82rem', background:'var(--green-bg)', border:'1px solid rgba(22,163,74,0.3)', borderRadius:4, padding:'2px 6px', letterSpacing:'0.03em', color:'var(--green)' }}>
+                                {c.password_hash ? '✓ SECURED' : '[NOT SET]'}
                               </span>
                             </td>
                             <td><span className="badge" style={{ fontSize:'0.72rem' }}>{c.role}</span></td>
@@ -948,6 +1276,103 @@ export default function SuperAdminPage() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── AUDIT LOG ── */}
+      {tab === 'logs' && (
+        <div>
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div className="search-box" style={{ flex: '1 1 200px', minWidth: 180 }}>
+              <Search size={14} />
+              <input type="text" placeholder="Search badge, action, details..." value={logSearch}
+                onChange={e => { setLogSearch(e.target.value); setLogPage(1) }} style={{ minWidth: 0 }} />
+              {logSearch && <button onClick={() => { setLogSearch(''); setLogPage(1) }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}><X size={13} /></button>}
+            </div>
+            <select value={logActionFilter} onChange={e => { setLogActionFilter(e.target.value); setLogPage(1) }}
+              style={{ padding: '0.4rem 0.6rem', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem' }}>
+              <option value="">All Actions</option>
+              <option value="LOGIN">LOGIN</option>
+              <option value="LOGOUT">LOGOUT</option>
+              <option value="MARK_IN">MARK_IN</option>
+              <option value="MARK_OUT">MARK_OUT</option>
+              <option value="MANUAL_IN">MANUAL_IN</option>
+              <option value="MANUAL_OUT">MANUAL_OUT</option>
+              <option value="FORCE_CLOSE_SESSION">FORCE_CLOSE</option>
+              <option value="CREATE_FLAG">CREATE_FLAG</option>
+              <option value="RESOLVE_FLAG">RESOLVE_FLAG</option>
+              <option value="JATHA_CREATE">JATHA_CREATE</option>
+              <option value="JATHA_UPDATE">JATHA_UPDATE</option>
+              <option value="JATHA_DELETE">JATHA_DELETE</option>
+              <option value="CREATE_USER">CREATE_USER</option>
+              <option value="EDIT_ATTENDANCE">EDIT_ATTENDANCE</option>
+              <option value="DELETE_SESSION">DELETE_SESSION</option>
+            </select>
+            <button className="btn btn-ghost" onClick={exportAuditLogsCSV} style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}>
+              <Download size={14} /> Export
+            </button>
+          </div>
+
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.6rem' }}>
+            {logTotal} log entries · page {logPage} of {Math.ceil(logTotal / PAGE_SIZE) || 1}
+          </div>
+
+          <div className="table-wrap" style={{ borderRadius: 12, border: '1px solid var(--border)', background: 'var(--bg-elevated)', overflow: 'hidden' }}>
+            {logLoading ? (
+              <div style={{ padding: '2rem', textAlign: 'center' }}><div className="spinner" /></div>
+            ) : logData.length === 0 ? (
+              <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>No audit logs found</div>
+            ) : (
+              <div style={{ maxHeight: '60vh', overflowY: 'auto', overflowX: 'auto', borderRadius: 8, border: '1px solid var(--border)' }}>
+                <table style={{ width: '100%', minWidth: '900px', borderCollapse: 'collapse', tableLayout: 'auto' }}>
+                  <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
+                    <tr style={{ background: 'linear-gradient(135deg, var(--gold) 0%, #c9a227 100%)' }}>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Timestamp</th>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Badge</th>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Name</th>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Centre</th>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Action</th>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                  {logData.map((l, i) => (
+                    <tr key={l.id || i} style={{ background: i % 2 === 0 ? 'var(--bg)' : 'rgba(255,255,255,0.3)', borderBottom: '1px solid var(--border)' }}>
+                      <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.78rem', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                        {new Date(l.timestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      </td>
+                      <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.78rem', fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        {l.user_badge || '—'}
+                      </td>
+                      <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.78rem', fontWeight: 500, whiteSpace: 'nowrap' }}>
+                        {l.user_name || '—'}
+                      </td>
+                      <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.78rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                        {l.user_centre || '—'}
+                      </td>
+                      <td style={{ padding: '0.5rem 0.75rem', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: '0.72rem', fontWeight: 600, background: 'var(--gold-bg)', color: 'var(--gold)', borderRadius: 4, padding: '2px 6px' }}>
+                          {l.action || '—'}
+                        </span>
+                      </td>
+                      <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.78rem', wordBreak: 'break-word', whiteSpace: 'normal' }}>
+                        {l.details || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              </div>
+            )}
+          </div>
+
+          {Math.ceil(logTotal / PAGE_SIZE) > 1 && (
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', marginTop: '1rem' }}>
+              <button className="btn btn-ghost" onClick={() => setLogPage(p => Math.max(1, p - 1))} disabled={logPage === 1}>Previous</button>
+              <span style={{ padding: '0.4rem 0.8rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>Page {logPage}</span>
+              <button className="btn btn-ghost" onClick={() => setLogPage(p => p + 1)} disabled={logPage >= Math.ceil(logTotal / PAGE_SIZE)}>Next</button>
             </div>
           )}
         </div>
@@ -1020,15 +1445,19 @@ export default function SuperAdminPage() {
                     }}>
                       {userSewadarResults.map(s => (
                         <button key={s.badge_number} onClick={() => lockSewadar(s)}
-                          style={{ display:'flex', width:'100%', alignItems:'center', gap:'0.75rem', padding:'0.65rem 0.9rem', background:'none', border:'none', borderBottom:'1px solid var(--border)', cursor:'pointer', textAlign:'left', fontFamily:'inherit', transition:'background 0.1s' }}
-                          onMouseEnter={e => e.currentTarget.style.background = 'var(--bg)'}
+                          style={{ display:'flex', width:'100%', alignItems:'center', gap:'0.75rem', padding:'0.65rem 0.9rem', background:'none', border:'none', borderBottom:'1px solid var(--border)', cursor: s.hasLogin ? 'not-allowed' : 'pointer', textAlign:'left', fontFamily:'inherit', transition:'background 0.1s', opacity: s.hasLogin ? 0.45 : 1 }}
+                          onMouseEnter={e => { if (!s.hasLogin) e.currentTarget.style.background = 'var(--bg)' }}
                           onMouseLeave={e => e.currentTarget.style.background = 'none'}
                         >
                           <div style={{ flex:1 }}>
                             <div style={{ fontWeight:600, fontSize:'0.88rem', color:'var(--text-primary)' }}>{s.sewadar_name}</div>
                             <div style={{ fontSize:'0.72rem', color:'var(--text-muted)', marginTop:1 }}>{s.centre}{s.department ? ` · ${s.department}` : ''}</div>
                           </div>
-                          <span style={{ fontFamily:'monospace', fontSize:'0.78rem', color:'var(--gold)', fontWeight:700 }}>{s.badge_number}</span>
+                          {s.hasLogin ? (
+                            <span style={{ fontSize:'0.65rem', background:'var(--red-bg)', color:'var(--red)', border:'1px solid rgba(198,40,40,0.3)', borderRadius:999, padding:'1px 7px', fontWeight:700 }}>Has Login</span>
+                          ) : (
+                            <span style={{ fontFamily:'monospace', fontSize:'0.78rem', color:'var(--gold)', fontWeight:700 }}>{s.badge_number}</span>
+                          )}
                         </button>
                       ))}
                     </div>
@@ -1036,7 +1465,7 @@ export default function SuperAdminPage() {
 
                   {userSewadarInput.length >= 2 && userSewadarResults.length === 0 && !userSewadarSearching && (
                     <div style={{ position:'absolute', top:'calc(100% + 4px)', left:0, right:0, zIndex:100, background:'var(--bg-elevated)', border:'1px solid var(--border)', borderRadius:10, padding:'0.85rem', textAlign:'center', color:'var(--text-muted)', fontSize:'0.82rem', boxShadow:'0 4px 20px rgba(0,0,0,0.12)' }}>
-                      No sewadars found for "{userSewadarInput}"
+                      No sewadars found for &ldquo;{userSewadarInput}&rdquo;
                     </div>
                   )}
                 </div>
@@ -1069,8 +1498,8 @@ export default function SuperAdminPage() {
                     <label className="label">Role</label>
                     <select className="input" value={newUserRole} onChange={e => setNewUserRole(e.target.value)}>
                       <option value="aso">ASO</option>
-                      <option value="centre_user">CENTRE USER</option>
-                      <option value="sc_sp_user">SC_SP USER</option>
+                      <option value="centre">CENTRE</option>
+                      <option value="sc_sp_user">SC/SP USER</option>
                     </select>
                   </div>
                   <div>
@@ -1085,8 +1514,11 @@ export default function SuperAdminPage() {
                 {newUserRole === ROLES.ASO && (
                   <div className="super-admin-note mb-2">ASO has access to ALL centres and full system control.</div>
                 )}
-                {newUserRole === ROLES.CENTRE_USER && (
-                  <div className="super-admin-note mb-2">Centre User governs <strong>{newUserCentre}</strong> and all its sub-centres.</div>
+                {newUserRole === ROLES.CENTRE && (
+                  <div className="super-admin-note mb-2">Centre user governs <strong>{newUserCentre}</strong> and all its sub-centres. Permissions can be configured after creation.</div>
+                )}
+                {newUserRole === ROLES.SC_SP_USER && (
+                  <div className="super-admin-note mb-2">SC/SP User has limited access to own centre data only. Permissions can be configured after creation.</div>
                 )}
               </>
             )}
@@ -1149,7 +1581,7 @@ export default function SuperAdminPage() {
                 </button>
               )}
               {createdUserCard && (
-                <button className="btn btn-gold btn-full" onClick={() => { setCreatedUserCard(null); setLockedSewadar(null); setUserSewadarInput(''); setNewUserEmail(''); setNewUserPassword(''); setNewUserRole('sc_sp_user') }}>
+                <button className="btn btn-gold btn-full" onClick={() => { setCreatedUserCard(null); setLockedSewadar(null); setUserSewadarInput(''); setNewUserEmail(''); setNewUserPassword(''); setNewUserRole('centre') }}>
                   + Add Another
                 </button>
               )}
@@ -1208,6 +1640,87 @@ export default function SuperAdminPage() {
               <button className="btn btn-outline btn-full" onClick={() => setShowAddJatha(false)}>Cancel</button>
               <button className="btn btn-gold btn-full" onClick={createJathaCentre} disabled={saving}>{saving?'Adding…':'Add Entry'}</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      <ConfirmModal
+        open={!!deleteConfirm}
+        onConfirm={() => {
+          if (deleteConfirm?.type === 'att') doDeleteAtt()
+          else if (deleteConfirm?.type === 'jatha_centre') doDeleteJathaCentre()
+          else if (deleteConfirm?.type === 'sewadar') doDeleteSewadar()
+        }}
+        onCancel={() => setDeleteConfirm(null)}
+        title={`Delete ${deleteConfirm?.type === 'att' ? deleteConfirm?.record?.type + ' Record' : deleteConfirm?.type === 'sewadar' ? 'Sewadar' : 'Jatha Centre'}?`}
+        message={
+          deleteConfirm?.type === 'att'
+            ? `Delete ${deleteConfirm?.record?.type} record for ${deleteConfirm?.record?.badge_number}?\nThis cannot be undone.`
+            : deleteConfirm?.type === 'sewadar'
+            ? `Delete ${deleteConfirm?.record?.sewadar_name} (${deleteConfirm?.record?.badge_number})?\nAttendance history is preserved.`
+            : `Delete "${deleteConfirm?.record?.centre_name} — ${deleteConfirm?.record?.department}"?\nExisting jatha records are unaffected.`
+        }
+        confirmLabel="Delete"
+        danger
+      />
+
+      {/* ── PERMISSIONS MODAL ── */}
+      {permissionsModal && (
+        <div className="overlay" onClick={() => setPermissionsModal(null)}>
+          <div className="overlay-sheet" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Shield size={18} color="var(--gold)" />
+                <h3 style={{ fontFamily: 'Cinzel, serif', color: 'var(--gold)', fontSize: '1rem', fontWeight: 700 }}>User Permissions</h3>
+              </div>
+              <button onClick={() => setPermissionsModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '1.3rem', lineHeight: 1 }}>×</button>
+            </div>
+
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1rem' }}>
+              <div style={{ fontWeight: 600, color: 'var(--gold)' }}>{permissionsModal.name}</div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{permissionsModal.badge_number} · {permissionsModal.centre}</div>
+            </div>
+
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+              Configure what this centre user can access. ASO has full access by default.
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.25rem' }}>
+              {[
+                { key: 'can_scan', label: 'Scanner', desc: 'Can mark attendance via scanner' },
+                { key: 'can_records', label: 'Records', desc: 'Can view attendance records' },
+                { key: 'can_reports', label: 'Reports', desc: 'Can view reports' },
+                { key: 'can_jatha', label: 'Jatha', desc: 'Can mark jatha attendance' },
+                { key: 'can_manual_entry', label: 'Manual Entry', desc: 'Can do manual attendance entry' },
+                { key: 'can_flags', label: 'Flags', desc: 'Can view and manage flags' },
+                { key: 'can_edit_jatha', label: 'Edit Jatha', desc: 'Can edit/delete jatha records' },
+              ].map(perm => (
+                <div key={perm.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem', background: 'var(--bg)', borderRadius: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{perm.label}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{perm.desc}</div>
+                  </div>
+                  <button
+                    onClick={() => togglePermission(perm.key)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0.25rem' }}
+                  >
+                    {permissions[perm.key] ? (
+                      <ToggleRight size={28} color="var(--green)" />
+                    ) : (
+                      <ToggleLeft size={28} color="var(--text-muted)" />
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <button
+              className="btn btn-gold btn-full"
+              onClick={savePermissions}
+              disabled={savingPermissions}
+            >
+              {savingPermissions ? 'Saving…' : 'Save Permissions'}
+            </button>
           </div>
         </div>
       )}

@@ -1,0 +1,11 @@
+# Supabase Edge Functions Configuration
+# https://supabase.com/docs/guides/functions
+
+[functions.save-credential]
+verify_jwt = false
+
+[functions.create-user]
+verify_jwt = false
+
+[auth]
+enabled = true

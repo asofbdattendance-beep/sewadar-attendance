@@ -1,0 +1,35 @@
+# supabase.toml
+# Supabase CLI configuration
+project_id = "jxflsfsdcnfjsawvbspl"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[inbucket]
+enabled = true
+port = 54324
+
+[functions]
+# Point to the functions directory
+functions_dir = "./supabase/functions"
+
+[edge_runtime]
+enabled = true
+
+[functions.create-user]
+verify_jwt = false
+
+[functions.save-credential]
+verify_jwt = false

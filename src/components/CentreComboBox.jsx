@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { ChevronDown, Search, X } from 'lucide-react'
 
-export default function CentreComboBox({ value, onChange, centres = [], includeAll = true, allowClear = false }) {
+export default function CentreComboBox({ value, onChange, centres = [], includeAll = true, allowClear = false, grouped = true }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [highlighted, setHighlighted] = useState(0)
@@ -25,6 +25,10 @@ export default function CentreComboBox({ value, onChange, centres = [], includeA
     }
   }, [open])
 
+  useEffect(() => {
+    setHighlighted(0)
+  }, [centres.length, search])
+
   const parents = [...new Set(centres.filter(c => !c.parent_centre).map(c => c.centre_name))]
   const childrenMap = {}
   centres.forEach(c => {
@@ -40,14 +44,22 @@ export default function CentreComboBox({ value, onChange, centres = [], includeA
 
   const flatOptions = []
   if (includeAll) flatOptions.push({ label: 'All Centres', value: '__all__', isAll: true })
-  filteredParents.forEach(p => {
-    flatOptions.push({ label: p, value: p, isParent: true })
-    if (childrenMap[p] && search === '') {
-      childrenMap[p].forEach(c => {
-        flatOptions.push({ label: c.centre_name, value: c.centre_name, parent: p })
-      })
-    }
-  })
+  
+  if (grouped) {
+    filteredParents.forEach(p => {
+      flatOptions.push({ label: p, value: p, isParent: true })
+      if (childrenMap[p] && search === '') {
+        childrenMap[p].forEach(c => {
+          flatOptions.push({ label: c.centre_name, value: c.centre_name, parent: p })
+        })
+      }
+    })
+  } else {
+    const allOptions = centres.map(c => c.centre_name).filter(c => c.toLowerCase().includes(search.toLowerCase())).sort()
+    allOptions.forEach(c => {
+      flatOptions.push({ label: c, value: c })
+    })
+  }
 
   const handleSelect = (val) => {
     onChange(val === '__all__' ? null : val)
@@ -79,11 +91,11 @@ export default function CentreComboBox({ value, onChange, centres = [], includeA
     if (!value) return 'All Centres'
     const found = centres.find(c => c.centre_name === value)
     if (!found) return value
-    return value
+    return found.centre_name
   }
 
   return (
-    <div ref={ref} style={{ position: 'relative', flex: 1, minWidth: 160 }}>
+    <div ref={ref} style={{ position: 'relative', flex: '1 1 auto', minWidth: 0, maxWidth: '100%' }}>
       <button
         onClick={() => setOpen(o => !o)}
         onKeyDown={handleKeyDown}
