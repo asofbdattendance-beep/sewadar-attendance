@@ -328,6 +328,7 @@ export async function getActiveJatha(supabase, badgeNumber, dateIST) {
     .from('jatha_attendance')
     .select('id, jatha_type, jatha_centre, jatha_dept, date_from, date_to')
     .eq('badge_number', badgeNumber)
+    .neq('status', 'cancelled')
     .lte('date_from', dateIST)
     .gte('date_to', dateIST)
     .limit(1)
@@ -921,6 +922,7 @@ export async function closeSessionWithTime(supabase, {
     .from('jatha_attendance')
     .select('id, date_from, date_to')
     .eq('badge_number', badge_number)
+    .neq('status', 'cancelled')
     .lte('date_from', outTimeISO)
     .gte('date_to', session.in_time)
 
@@ -1073,6 +1075,7 @@ export async function closeForgottenSession(supabase, {
     .from('jatha_attendance')
     .select('id, date_from, date_to')
     .eq('badge_number', session.badge_number)
+    .neq('status', 'cancelled')
     .lte('date_from', outTimeISO)
     .gte('date_to', session.in_time)
 

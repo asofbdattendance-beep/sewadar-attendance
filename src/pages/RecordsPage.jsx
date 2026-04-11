@@ -108,6 +108,7 @@ function AttendanceTab() {
   const [searchTerm, setSearchTerm] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [dateRange, setDateRange] = useState({ from: todayDateStr(), to: todayDateStr() })
+  const [dateRangeAdvanced, setDateRangeAdvanced] = useState(false)
   const [centreFilter, setCentreFilter] = useState(null)
   const [dutyFilter, setDutyFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -154,29 +155,29 @@ function AttendanceTab() {
       schema: 'public', 
       table: 'attendance_sessions' 
     }, (payload) => {
-      console.log('[RT-RECORDS] sessions event:', payload.eventType)
+      if (import.meta.env.DEV) console.log('[RT-RECORDS] sessions event:', payload.eventType)
       clearTimeout(timer)
       timer = setTimeout(() => {
         if (fetchRecordsRef.current) fetchRecordsRef.current()
-      }, 300)
+      }, 100) // Reduced from 300ms to 100ms
     })
     .on('postgres_changes', { 
       event: '*', 
       schema: 'public', 
       table: 'attendance' 
     }, (payload) => {
-      console.log('[RT-RECORDS] attendance event:', payload.eventType)
+      if (import.meta.env.DEV) console.log('[RT-RECORDS] attendance event:', payload.eventType)
       clearTimeout(timer)
       timer = setTimeout(() => {
         if (fetchRecordsRef.current) fetchRecordsRef.current()
-      }, 300)
+      }, 100) // Reduced from 300ms to 100ms
     })
     .subscribe((status, err) => {
-      console.log('[RT-RECORDS] Channel status:', status)
+      if (import.meta.env.DEV) console.log('[RT-RECORDS] Channel status:', status)
     })
 
     return () => { 
-      console.log('[RT-RECORDS] Cleanup')
+      if (import.meta.env.DEV) console.log('[RT-RECORDS] Cleanup')
       clearTimeout(timer)
       supabase.removeChannel(channel) 
     }
@@ -194,13 +195,21 @@ function AttendanceTab() {
   async function fetchRecords() {
     setLoading(true)
 
+    const isSingleDay = dateRange.from === dateRange.to
+    const fromDate = dateRange.from
+    const toDate = dateRange.to
+
     let q = supabase
       .from('v_sessions_full')
       .select('*', { count: 'exact' })
-      .gte('date_ist', dateRange.from)
-      .lte('date_ist', dateRange.to)
-      .order('date_ist', { ascending: false })
-      .order('in_time', { ascending: false })
+    
+    if (isSingleDay) {
+      q = q.eq('date_ist', fromDate)
+    } else {
+      q = q.gte('date_ist', fromDate).lte('date_ist', toDate)
+    }
+    
+    q = q.order('date_ist', { ascending: false }).order('in_time', { ascending: false })
 
     // Centre scope
     if (centreFilter) {
@@ -284,13 +293,21 @@ function AttendanceTab() {
     showSuccess('Preparing export...')
     
     try {
+      const isSingleDay = dateRange.from === dateRange.to
+      const fromDate = dateRange.from
+      const toDate = dateRange.to
+      
       let q = supabase
         .from('v_sessions')
         .select('badge_number, sewadar_name, sewadar_centre, sewadar_department, date_ist, in_time, in_scanner_name, out_time, out_scanner_name, duty_type, is_open')
-        .gte('date_ist', dateRange.from)
-        .lte('date_ist', dateRange.to)
-        .order('date_ist', { ascending: false })
-        .order('in_time', { ascending: false })
+      
+      if (isSingleDay) {
+        q = q.eq('date_ist', fromDate)
+      } else {
+        q = q.gte('date_ist', fromDate).lte('date_ist', toDate)
+      }
+      
+      q = q.order('date_ist', { ascending: false }).order('in_time', { ascending: false })
 
       // Centre scope
       if (isCentreUser && profile?.centre) {
@@ -453,6 +470,9 @@ function AttendanceTab() {
     if (!editingSession) return
 
     try {
+      // If session is open, only allow editing IN time
+      const isOpenSession = editingSession.is_open
+
       const updates = {}
       let newInTimeISO = null
       let newOutTimeISO = null
@@ -470,7 +490,8 @@ function AttendanceTab() {
         newInTimeISO = editingSession.in_time
       }
 
-      if (editOutDate && editOutTime) {
+      // Only allow OUT time editing if session is not open
+      if (!isOpenSession && editOutDate && editOutTime) {
         const outDateTime = new Date(`${editOutDate}T${editOutTime}:00+05:30`)
         if (isNaN(outDateTime.getTime())) {
           showError('Invalid OUT date/time')
@@ -484,6 +505,9 @@ function AttendanceTab() {
         showError('IN time is required')
         return
       }
+
+      // If open session, don't check OUT time conflicts
+      const checkOutTime = !isOpenSession && newOutTimeISO
 
       // Check time conflict before saving
       const badgeNumber = editingSession.badge_number
@@ -499,10 +523,10 @@ function AttendanceTab() {
       // Fetch jatha records for this person (any jatha that overlaps with proposed time)
       const { data: jathaRecords } = await supabase
         .from('jatha_attendance')
-        .select('id, date_from, date_to, jatha_name')
+        .select('id, date_from, date_to')
         .eq('badge_number', badgeNumber)
-        .lte('date_from', newOutTimeISO || newInTimeISO + 'T23:59:59')
-        .gte('date_to', newInTimeISO)
+        .lte('date_from', isOpenSession ? newInTimeISO.substring(0, 10) : newOutTimeISO.substring(0, 10))
+        .gte('date_to', newInTimeISO.substring(0, 10))
 
       // Detect conflicts
       const conflictResult = detectTimeConflict({
@@ -573,7 +597,7 @@ function AttendanceTab() {
           <CentreComboBox value={centreFilter} onChange={val => { setCentreFilter(val); setPage(1) }} centres={centres.filter(c => c.centre_name === profile?.centre || c.parent_centre === profile?.centre)} includeAll={true} grouped={false} />
         )}
 
-        <DateRangePicker value={dateRange} onChange={val => { setDateRange(val); setPage(1) }} />
+        <DateRangePicker value={dateRange} onChange={val => { setDateRange(val); setPage(1) }} showAdvanced={dateRangeAdvanced} onAdvancedChange={setDateRangeAdvanced} />
 
         <div style={{ display: 'flex', gap: '0.35rem' }}>
           {['', 'satsang', 'gate_entry', 'watch_ward'].map(d => (
@@ -842,13 +866,18 @@ function AttendanceTab() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <PenLine size={18} color="var(--blue)" />
-                <h3 style={{ fontWeight: 700, color: 'var(--blue)' }}>Edit Session Times</h3>
+                <h3 style={{ fontWeight: 700, color: 'var(--blue)' }}>
+                  {editingSession.is_open ? 'Edit IN Time' : 'Edit Session Times'}
+                </h3>
               </div>
               <button onClick={() => setEditingSession(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '1.2rem' }}>×</button>
             </div>
 
             <div style={{ background: 'var(--blue-bg)', border: '1px solid rgba(37,99,235,0.2)', borderRadius: 8, padding: '0.6rem 0.85rem', marginBottom: '1rem', fontSize: '0.8rem', color: 'var(--blue)' }}>
-              ⏱️ You can edit this session within 40 minutes of IN time
+              {editingSession.is_open 
+                ? "⚠️ Session is still open. You can only edit the IN time. OUT will be set when the person scans OUT."
+                : "⏱️ You can edit this session within 40 minutes of IN time"
+              }
             </div>
 
             <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '0.85rem 1rem', marginBottom: '1rem' }}>
@@ -866,13 +895,24 @@ function AttendanceTab() {
                   <input type="time" value={editInTime} onChange={e => setEditInTime(e.target.value)} style={{ width: '150px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
                 </div>
               </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>OUT Time</label>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <input type="date" value={editOutDate} onChange={e => setEditOutDate(e.target.value)} style={{ width: '180px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
-                  <input type="time" value={editOutTime} onChange={e => setEditOutTime(e.target.value)} style={{ width: '150px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
+
+              {editingSession.is_open ? (
+                <div style={{ opacity: 0.5, pointerEvents: 'none' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-muted)' }}>OUT Time</label>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <input type="text" value="Session still open" disabled style={{ width: '180px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-muted)', fontSize: '1rem' }} />
+                    <input type="text" value="--" disabled style={{ width: '150px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-muted)', fontSize: '1rem' }} />
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>OUT Time</label>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <input type="date" value={editOutDate} onChange={e => setEditOutDate(e.target.value)} style={{ width: '180px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
+                    <input type="time" value={editOutTime} onChange={e => setEditOutTime(e.target.value)} style={{ width: '150px', padding: '0.6rem 0.75rem', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '1rem' }} />
+                  </div>
+                </div>
+              )}
             </div>
 
             <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>

@@ -60,9 +60,19 @@ export default function ReportsPage() {
   const [childCentres, setChildCentres] = useState([])
   
   const [dateFrom, setDateFrom] = useState(getLastSatsangDay())
-  const [dateTo, setDateTo] = useState(todayDateStr())
-  const [lateThreshold, setLateThreshold] = useState('10:00')
+  const [dateTo, setDateTo] = useState(getLastSatsangDay())
+  const [lateThreshold, setLateThreshold] = useState('20:00')
   const [selectedCentre, setSelectedCentre] = useState(isCentreUser ? profile.centre : '')
+  const [selectedCentreGroup, setSelectedCentreGroup] = useState('')
+  const centreGroups = useMemo(() => {
+    const groups = {}
+    for (const c of centres) {
+      const parent = c.parent_centre || c.centre_name
+      if (!groups[parent]) groups[parent] = []
+      groups[parent].push(c.centre_name)
+    }
+    return groups
+  }, [centres])
 
   useEffect(() => {
     fetchCentres()
@@ -82,11 +92,21 @@ export default function ReportsPage() {
   }
 
   const scopeCentres = useMemo(() => {
+    const allCentres = centres.map(c => c.centre_name)
     if (isAso) {
-      return selectedCentre ? [selectedCentre] : centres.map(c => c.centre_name)
+      if (selectedCentreGroup) return centreGroups[selectedCentreGroup] || []
+      if (selectedCentre) return [selectedCentre]
+      return allCentres
     }
     return childCentres.length > 0 ? childCentres : [profile?.centre].filter(Boolean)
-  }, [isAso, selectedCentre, centres, childCentres, profile])
+  }, [isAso, selectedCentre, selectedCentreGroup, centres, centreGroups, childCentres, profile])
+
+  const currentFilterLabel = useMemo(() => {
+    if (selectedCentreGroup && selectedCentre) return `${selectedCentre} (${selectedCentreGroup})`
+    if (selectedCentreGroup) return selectedCentreGroup
+    if (selectedCentre) return selectedCentre
+    return 'All Centres'
+  }, [selectedCentre, selectedCentreGroup])
 
   async function runReport() {
     setLoading(true)
@@ -130,9 +150,14 @@ export default function ReportsPage() {
     if (activeTab && activeReport) {
       runReport()
     }
-  }, [activeReport, dateFrom, dateTo, scopeCentres])
+  }, [activeReport, dateFrom, dateTo, scopeCentres, lateThreshold, selectedCentreGroup])
 
   async function fetchDailySummary() {
+    if (scopeCentres.length === 0) {
+      setData({ type: 'summary', totalEligible: 0, totalPresent: 0, departments: {}, sessions: [] })
+      return
+    }
+
     const { data: sewadars, error: sewadarError } = await supabase
       .from('sewadars')
       .select('badge_number, sewadar_name, centre, department, badge_status')
@@ -146,12 +171,16 @@ export default function ReportsPage() {
     const eligible = (sewadars || []).filter(s => 
       ALLOWED_STATUSES.includes((s.badge_status || '').toLowerCase().trim())
     )
-    const eligibleBadges = eligible.map(s => s.badge_number)
+
+    if (eligible.length === 0) {
+      setData({ type: 'summary', totalEligible: 0, totalPresent: 0, departments: {}, sessions: [] })
+      return
+    }
 
     const { data: sessions, error: sessionError } = await supabase
-      .from('v_sessions')
+      .from('attendance_sessions')
       .select('badge_number')
-      .in('badge_number', eligibleBadges.length > 0 ? eligibleBadges : [''])
+      .in('scanner_centre', scopeCentres)
       .gte('date_ist', dateFrom)
       .lte('date_ist', dateTo)
 
@@ -186,25 +215,34 @@ export default function ReportsPage() {
   }
 
   async function fetchAbsentees() {
+    if (scopeCentres.length === 0) {
+      setData({ type: 'absentees', list: [] })
+      return
+    }
+
     const { data: sewadars, error: sewadarError } = await supabase
       .from('sewadars')
       .select('badge_number, sewadar_name, centre, department, badge_status')
       .in('centre', scopeCentres)
-    
+
     if (sewadarError) {
       console.error('fetchAbsentees: sewadar error', sewadarError)
       throw new Error('Failed to fetch sewadars')
     }
 
-    const eligible = (sewadars || []).filter(s => 
+    const eligible = (sewadars || []).filter(s =>
       ALLOWED_STATUSES.includes((s.badge_status || '').toLowerCase().trim())
     )
-    const eligibleBadges = eligible.map(s => s.badge_number)
+
+    if (eligible.length === 0) {
+      setData({ type: 'absentees', totalEligible: 0, totalAbsent: 0, absentees: [], dateRange: { from: dateFrom, to: dateTo } })
+      return
+    }
 
     const { data: sessions, error: sessionError } = await supabase
-      .from('v_sessions')
+      .from('attendance_sessions')
       .select('badge_number')
-      .in('badge_number', eligibleBadges.length > 0 ? eligibleBadges : [''])
+      .in('scanner_centre', scopeCentres)
       .gte('date_ist', dateFrom)
       .lte('date_ist', dateTo)
 
@@ -213,8 +251,8 @@ export default function ReportsPage() {
       throw new Error('Failed to fetch sessions')
     }
 
-    const presentSet = new Set(sessions?.map(s => s.badge_number) || [])
-    const absentees = eligible.filter(s => !presentSet.has(s.badge_number))
+    const sessionBadgeSet = new Set(sessions?.map(s => s.badge_number) || [])
+    const absentees = eligible.filter(s => !sessionBadgeSet.has(s.badge_number))
 
     setData({
       type: 'absentees',
@@ -226,11 +264,16 @@ export default function ReportsPage() {
   }
 
   async function fetchRawSessions() {
+    if (scopeCentres.length === 0) {
+      setData({ type: 'sessions', sessions: [], totalCount: 0 })
+      return
+    }
+
     const [sessionsRes, sewadarsRes] = await Promise.all([
       supabase
-        .from('v_sessions')
+        .from('attendance_sessions')
         .select('*')
-        .in('sewadar_centre', scopeCentres)
+        .in('scanner_centre', scopeCentres)
         .gte('date_ist', dateFrom)
         .lte('date_ist', dateTo)
         .order('date_ist', { ascending: false })
@@ -267,10 +310,15 @@ export default function ReportsPage() {
   }
 
   async function fetchDurationAnalysis() {
+    if (scopeCentres.length === 0) {
+      setData({ type: 'duration', groups: { '< 2h': 0, '2-4h': 0, '4-8h': 0, '8-12h': 0, '> 12h': 0, details: [] }, dateRange: { from: dateFrom, to: dateTo } })
+      return
+    }
+
     const { data: sessions, error } = await supabase
-      .from('v_sessions')
+      .from('attendance_sessions')
       .select('badge_number, in_time, out_time, duty_type, is_open')
-      .in('sewadar_centre', scopeCentres)
+      .in('scanner_centre', scopeCentres)
       .gte('date_ist', dateFrom)
       .lte('date_ist', dateTo)
       .eq('is_open', false)
@@ -318,9 +366,9 @@ export default function ReportsPage() {
         .select('badge_number, centre, badge_status')
         .in('centre', centreNames),
       supabase
-        .from('v_sessions')
-        .select('badge_number, sewadar_centre')
-        .in('sewadar_centre', centreNames)
+        .from('attendance_sessions')
+        .select('badge_number, scanner_centre')
+        .in('scanner_centre', centreNames)
         .gte('date_ist', dateFrom)
         .lte('date_ist', dateTo)
     ])
@@ -392,13 +440,18 @@ export default function ReportsPage() {
   }
 
   async function fetchLateArrivals() {
+    if (scopeCentres.length === 0) {
+      setData({ type: 'late', sessions: [], stats: {}, dateRange: { from: dateFrom, to: dateTo }, threshold: lateThreshold })
+      return
+    }
+
     const threshold = lateThreshold + ':00'
     
     const [sessionsRes, sewadarsRes] = await Promise.all([
       supabase
-        .from('v_sessions')
-        .select('badge_number, in_time, sewadar_centre, duty_type, date_ist')
-        .in('sewadar_centre', scopeCentres)
+        .from('attendance_sessions')
+        .select('badge_number, in_time, scanner_centre, duty_type, date_ist')
+        .in('scanner_centre', scopeCentres)
         .gte('date_ist', dateFrom)
         .lte('date_ist', dateTo),
       supabase
@@ -416,12 +469,14 @@ export default function ReportsPage() {
 
     const lateSessions = (sessionsRes.data || []).filter(s => {
       if (!s.in_time) return false
-      const inTime = s.in_time.split('T')[1]?.substring(0, 8)
-      return inTime > threshold
+      const inTimeIST = new Date(s.in_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' })
+      if (import.meta.env.DEV && s.badge_number === 'FB5971GA0001') console.log('[LateArrivals] badge:', s.badge_number, 'inTimeUTC:', s.in_time, 'inTimeIST:', inTimeIST, 'threshold:', threshold, 'isLate:', inTimeIST > threshold)
+      return inTimeIST > threshold
     }).map(s => ({
       ...s,
       sewadar_name: sewadarMap[s.badge_number]?.sewadar_name || '—',
-      department: sewadarMap[s.badge_number]?.department || '—'
+      department: sewadarMap[s.badge_number]?.department || '—',
+      centre: s.scanner_centre || sewadarMap[s.badge_number]?.centre || '—'
     }))
 
     setData({
@@ -441,9 +496,9 @@ export default function ReportsPage() {
     
     const [sessionsRes, eligibleRes] = await Promise.all([
       supabase
-        .from('v_sessions')
+        .from('attendance_sessions')
         .select('date_ist, badge_number')
-        .in('sewadar_centre', scopeCentres)
+        .in('scanner_centre', scopeCentres)
         .gte('date_ist', weekDates[0])
         .lte('date_ist', weekDates[6]),
       supabase
@@ -549,9 +604,9 @@ export default function ReportsPage() {
         break
         
       case 'late':
-        headers.push('Date', 'Badge', 'Name', 'Department', 'IN Time', 'Centre')
+        headers.push('Date', 'Badge', 'Name', 'Centre', 'Department', 'IN Time')
         for (const s of data.lateSessions) {
-          rows.push([s.date_ist, s.badge_number, s.sewadar_name, s.department, formatTime(s.in_time), s.centre])
+          rows.push([s.date_ist, s.badge_number, s.sewadar_name, s.centre, s.department, formatTime(s.in_time)])
         }
         break
         
@@ -638,15 +693,7 @@ export default function ReportsPage() {
               type="date"
               className="input"
               value={dateFrom}
-              onChange={e => setDateFrom(e.target.value)}
-              style={{ padding: '0.5rem', fontSize: '0.85rem' }}
-            />
-            <span style={{ color: 'var(--text-muted)' }}>to</span>
-            <input
-              type="date"
-              className="input"
-              value={dateTo}
-              onChange={e => setDateTo(e.target.value)}
+              onChange={e => { setDateFrom(e.target.value); setDateTo(e.target.value) }}
               style={{ padding: '0.5rem', fontSize: '0.85rem' }}
             />
           </div>
@@ -661,10 +708,39 @@ export default function ReportsPage() {
                 onChange={e => setLateThreshold(e.target.value)}
                 style={{ padding: '0.5rem', fontSize: '0.85rem' }}
               />
+              <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>IST</span>
             </div>
           )}
 
           {isAso && (activeTab === 'centre' || activeReport === 'centrewise') && (
+            <select
+              className="input"
+              value={selectedCentreGroup}
+              onChange={e => { setSelectedCentreGroup(e.target.value); setSelectedCentre('') }}
+              style={{ padding: '0.5rem', fontSize: '0.85rem' }}
+            >
+              <option value="">CENTRES</option>
+              {Object.keys(centreGroups).sort().map(g => (
+                <option key={g} value={g}>{g}</option>
+              ))}
+            </select>
+          )}
+          
+          {isAso && (activeTab === 'centre' || activeReport === 'centrewise') && selectedCentreGroup && (
+            <select
+              className="input"
+              value={selectedCentre}
+              onChange={e => setSelectedCentre(e.target.value)}
+              style={{ padding: '0.5rem', fontSize: '0.85rem' }}
+            >
+              <option value="">SATSANG POINT</option>
+              {(centreGroups[selectedCentreGroup] || []).map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          )}
+          
+          {isAso && (activeTab === 'centre' || activeReport === 'centrewise') && !selectedCentreGroup && (
             <select
               className="input"
               value={selectedCentre}
@@ -978,7 +1054,7 @@ function LateReport({ data }) {
   return (
     <div>
       <div style={{ background: 'var(--bg-elevated)', padding: '0.75rem 1rem', borderRadius: 12, marginBottom: '1rem', fontSize: '0.9rem' }}>
-        Showing arrivals after <strong>{data.threshold}</strong> · {data.lateSessions.length} late entries
+        Showing arrivals after <strong>{data.threshold} IST</strong> · {data.lateSessions.length} late entries
       </div>
       
       <div style={{ background: 'var(--bg-elevated)', borderRadius: 12, overflow: 'hidden' }}>
@@ -990,6 +1066,7 @@ function LateReport({ data }) {
               <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 100 }}>{s.date_ist}</span>
               <span style={{ fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 600, fontSize: '0.85rem' }}>{s.badge_number}</span>
               <span style={{ fontWeight: 500, flex: 1 }}>{s.sewadar_name}</span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 90, textAlign: 'right' }}>{s.centre}</span>
               <span style={{ fontWeight: 700, color: 'var(--red)' }}>{formatTime(s.in_time)}</span>
             </div>
           ))

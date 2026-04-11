@@ -124,10 +124,10 @@ function AppLayout() {
 
     fetchFlagCount().catch(() => {})
 
-    // Poll every 60s when tab is visible
+    // Poll every 10s when tab is visible (reduced from 60s for faster flag updates)
     const flagInterval = setInterval(() => {
       if (document.visibilityState === 'visible') fetchFlagCount().catch(() => {})
-    }, 60_000)
+    }, 10_000)
 
     const onVisible = () => {
       if (document.visibilityState === 'visible') fetchFlagCount().catch(() => {})

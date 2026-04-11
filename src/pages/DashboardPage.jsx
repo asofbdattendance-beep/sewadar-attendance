@@ -59,12 +59,27 @@ export default function DashboardPage() {
       schema: 'public', 
       table: 'attendance_sessions' 
     }, (payload) => {
-      console.log('[RT-DASH] sessions event:', payload.eventType, payload.new)
+      if (import.meta.env.DEV) console.log('[RT-DASH] sessions event:', payload.eventType, payload.new)
       clearTimeout(timer)
       timer = setTimeout(() => {
-        console.log('[RT-DASH] Refreshing dashboard...')
+        if (import.meta.env.DEV) console.log('[RT-DASH] Refreshing dashboard...')
         fetchDashboard()
-      }, 300)
+      }, 100) // Reduced from 300ms to 100ms
+    })
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'attendance' 
+    }, (payload) => {
+      if (import.meta.env.DEV) console.log('[RT-DASH] attendance event:', payload.eventType, payload.new)
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        if (import.meta.env.DEV) console.log('[RT-DASH] Refreshing dashboard...')
+        fetchDashboard()
+      }, 100) // Reduced from 300ms to 100ms
+    })
+    .subscribe((status, err) => {
+      if (import.meta.env.DEV) console.log('[RT-DASH] Channel status:', status, err || '')
     })
     .on('postgres_changes', { 
       event: '*', 

@@ -91,29 +91,29 @@ export default function ScannerPage() {
       schema: 'public', 
       table: 'attendance',
     }, (payload) => {
-      console.log('[RT-SCANNER] attendance event:', payload.eventType, payload.new?.badge_number || '')
+      if (import.meta.env.DEV) console.log('[RT-SCANNER] attendance event:', payload.eventType, payload.new?.badge_number || '')
       clearTimeout(debounceTimer)
       debounceTimer = setTimeout(() => {
-        console.log('[RT-SCANNER] Refreshing...')
+        if (import.meta.env.DEV) console.log('[RT-SCANNER] Refreshing...')
         fetchTodayCount().catch(() => {})
         fetchRecentScans().catch(() => {})
-      }, 500)
+      }, 100) // Reduced from 500ms to 100ms for near-instant updates
     })
     .on('postgres_changes', { 
       event: '*', 
       schema: 'public', 
       table: 'attendance_sessions',
     }, (payload) => {
-      console.log('[RT-SCANNER] sessions event:', payload.eventType, payload.new?.badge_number || '')
+      if (import.meta.env.DEV) console.log('[RT-SCANNER] sessions event:', payload.eventType, payload.new?.badge_number || '')
       clearTimeout(debounceTimer)
       debounceTimer = setTimeout(() => {
-        console.log('[RT-SCANNER] Refreshing...')
+        if (import.meta.env.DEV) console.log('[RT-SCANNER] Refreshing...')
         fetchTodayCount().catch(() => {})
         fetchRecentScans().catch(() => {})
-      }, 500)
+      }, 100) // Reduced from 500ms to 100ms for near-instant updates
     })
     .subscribe((status, err) => {
-      console.log('[RT-SCANNER] Channel status:', status, err || '')
+      if (import.meta.env.DEV) console.log('[RT-SCANNER] Channel status:', status, err || '')
     })
     
     return () => {
@@ -139,11 +139,6 @@ export default function ScannerPage() {
       .gte('in_time', start)
       .eq('is_open', true)
 
-    if ((profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER) && profile?.centre) {
-      const scope = [profile.centre, ...childCentresRef.current]
-      q = q.in('centre', scope)
-    }
-
     const { count, error } = await q
     if (!error) setTodayCount(count || 0)
   }
@@ -151,16 +146,11 @@ export default function ScannerPage() {
   async function fetchRecentScans() {
     const today = todayDateStr()
     const start = `${today}T00:00:00+05:30`
-    let q = supabase.from('attendance')
-      .select('id,badge_number,sewadar_name,type,scan_time,manual_entry')
+    let q = supabase.from('v_attendance')
+      .select('id,badge_number,sewadar_name,sewadar_department,type,scan_time,manual_entry')
       .gte('scan_time', start)
       .order('scan_time', { ascending: false })
       .limit(5)
-
-    if ((profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER) && profile?.centre) {
-      const scope = [profile.centre, ...childCentresRef.current]
-      q = q.in('centre', scope)
-    }
 
     const { data } = await q
     if (data) setRecentScans(data)
@@ -639,6 +629,7 @@ export default function ScannerPage() {
               <div key={r.id || i} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.4rem 0.7rem' }}>
                 <span style={{ width: 32, height: 20, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.68rem', fontWeight: 800, background: r.type === 'IN' ? 'rgba(76,175,125,0.15)' : 'rgba(224,92,92,0.15)', color: r.type === 'IN' ? 'var(--green)' : 'var(--red)', flexShrink: 0 }}>{r.type}</span>
                 <span style={{ fontWeight: 600, fontSize: '0.82rem', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sewadar_name}</span>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0 }}>{r.sewadar_department || ''}</span>
                 <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>
                   {new Date(r.scan_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
                 </span>
@@ -1503,6 +1494,7 @@ function ManualEntryModal({ profile, childCentres, userLocation, centreConfig: _
             .from('jatha_attendance')
             .select('id, date_from, date_to')
             .eq('badge_number', selected.badge_number)
+            .neq('status', 'cancelled')
             .lte('date_from', inTimeISO)
             .gte('date_to', inTimeISO)
           

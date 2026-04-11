@@ -29,8 +29,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth:     { persistSession: true, autoRefreshToken: true },
   realtime: { 
-    params: { eventsPerSecond: 10 },
-    // Try to enable all tables
+    params: { eventsPerSecond: 100 }, // Increased from 10 for near-instant updates
   },
 })
 

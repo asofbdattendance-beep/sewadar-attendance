@@ -15,7 +15,7 @@ import {
   UserPlus, Trash2, Shield, MapPin, ToggleLeft, ToggleRight,
   RefreshCw, Download, FileSpreadsheet, Calendar,
   ChevronDown, ChevronRight, Users, Building2, Plane,
-  Pencil, X, Check, Search, PlusCircle, Eye, EyeOff, Lock
+  Pencil, X, Check, Search, PlusCircle, Eye, EyeOff, Lock, History
 } from 'lucide-react'
 import CentreComboBox from '../components/CentreComboBox'
 import SkeletonRows from '../components/SkeletonRows'
@@ -60,6 +60,14 @@ export default function SuperAdminPage() {
     can_edit_jatha: false,
   })
   const [savingPermissions, setSavingPermissions] = useState(false)
+
+  // Audit Log tab state
+  const [logPage, setLogPage] = useState(1)
+  const [logSearch, setLogSearch] = useState('')
+  const [logActionFilter, setLogActionFilter] = useState('')
+  const [logLoading, setLogLoading] = useState(false)
+  const [logData, setLogData] = useState([])
+  const [logTotal, setLogTotal] = useState(0)
 
   // ── Add User: sewadar-search flow ──
   // Step 1: search sewadars; Step 2: locked sewadar + email/password/role
@@ -178,7 +186,7 @@ export default function SuperAdminPage() {
     }, (payload) => {
       if (import.meta.env.DEV) console.log('[RT] sewadars changed', payload)
       clearTimeout(timer)
-      timer = setTimeout(() => { if (tab === 'sewadars') fetchSewadars().catch(() => {}) }, 300)
+      timer = setTimeout(() => { if (tab === 'sewadars') fetchSewadars().catch(() => {}) }, 100) // Reduced from 300ms
     })
     .on('postgres_changes', { 
       event: '*', 
@@ -187,7 +195,7 @@ export default function SuperAdminPage() {
     }, (payload) => {
       if (import.meta.env.DEV) console.log('[RT] sessions changed', payload)
       clearTimeout(timer)
-      timer = setTimeout(() => { if (tab === 'attendance') fetchAttendance().catch(() => {}) }, 300)
+      timer = setTimeout(() => { if (tab === 'attendance') fetchAttendance().catch(() => {}) }, 100) // Reduced from 300ms
     })
     .on('postgres_changes', { 
       event: '*', 
@@ -196,7 +204,7 @@ export default function SuperAdminPage() {
     }, (payload) => {
       if (import.meta.env.DEV) console.log('[RT] jatha_centres changed', payload)
       clearTimeout(timer)
-      timer = setTimeout(() => { if (tab === 'jatha_centres') fetchJathaCentres().catch(() => {}) }, 300)
+      timer = setTimeout(() => { if (tab === 'jatha_centres') fetchJathaCentres().catch(() => {}) }, 100) // Reduced from 300ms
     })
     .subscribe((status) => {
       if (import.meta.env.DEV) console.log('[RT] SuperAdmin channel status:', status)
@@ -520,6 +528,59 @@ export default function SuperAdminPage() {
     setReportData({ users: ur.data||[], centres: cr.data||[], logs: lr.data||[], credentials: kredsRes.data||[] })
     setReportLoading(false)
   }
+
+  // ── Audit Log ──
+  async function fetchAuditLogs() {
+    setLogLoading(true)
+    const offset = (logPage - 1) * PAGE_SIZE
+    let q = supabase.from('logs').select('*', { count: 'exact' })
+      .order('timestamp', { ascending: false })
+      .range(offset, offset + PAGE_SIZE - 1)
+
+    if (logActionFilter) q = q.eq('action', logActionFilter)
+    if (logSearch.trim()) {
+      q = q.or(`user_badge.ilike.%${logSearch.trim()}%,action.ilike.%${logSearch.trim()}%,details.ilike.%${logSearch.trim()}%`)
+    }
+
+    const { data, count, error } = await q
+    if (!error) {
+      // Get unique badges to fetch user details
+      const badges = [...new Set((data || []).map(l => l.user_badge).filter(Boolean))]
+      let userMap = {}
+      if (badges.length > 0) {
+        const { data: users } = await supabase.from('users').select('badge_number, name, centre').in('badge_number', badges)
+        userMap = Object.fromEntries((users || []).map(u => [u.badge_number, { name: u.name, centre: u.centre }]))
+      }
+      // Attach user info to log entries
+      const enrichedData = (data || []).map(l => ({
+        ...l,
+        user_name: userMap[l.user_badge]?.name || null,
+        user_centre: userMap[l.user_badge]?.centre || null
+      }))
+      setLogData(enrichedData)
+      setLogTotal(count || 0)
+    }
+    setLogLoading(false)
+  }
+
+  useEffect(() => { if (tab === 'logs') fetchAuditLogs().catch(() => {}) }, [tab, logPage, logActionFilter, logSearch])
+
+  function exportAuditLogsCSV() {
+    const header = ['Timestamp', 'User Badge', 'Name', 'Centre', 'Action', 'Details']
+    const rows = logData.map(l => [
+      new Date(l.timestamp).toISOString(),
+      l.user_badge || '',
+      l.user_name || '',
+      l.user_centre || '',
+      l.action || '',
+      (l.details || '').replace(/"/g, '""')
+    ].map(v => `"${v}"`).join(','))
+    const csv = [header.join(','), ...rows].join('\n')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.download = `audit_log_${new Date().toISOString().split('T')[0]}.csv`
+    a.click()
+  }
   function dlCSV(csv, fn) {
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
@@ -801,6 +862,7 @@ export default function SuperAdminPage() {
           {TAB_BTN('jatha_centres', 'Jatha Centres',  Plane)}
           {TAB_BTN('attendance',    'Correct Att',    Pencil)}
           {TAB_BTN('reports',       'Reports',        FileSpreadsheet)}
+          {TAB_BTN('logs',          'Audit Log',     History)}
         </div>
       </div>
 
@@ -966,9 +1028,9 @@ export default function SuperAdminPage() {
                   </div>
                   {expandedParent===parent && config && (
                     <div className="centre-geo-config"><div className="centre-geo-fields">
-                      <div className="geo-field"><label>Latitude</label><input defaultValue={config.latitude||''} placeholder="28.4595" onBlur={e => updateCentreGeo(config.id,'latitude',parseFloat(e.target.value)||null,null)}/></div>
-                      <div className="geo-field"><label>Longitude</label><input defaultValue={config.longitude||''} placeholder="77.0266" onBlur={e => updateCentreGeo(config.id,'longitude',parseFloat(e.target.value)||null,null)}/></div>
-                      <div className="geo-field"><label>Radius (m)</label><input defaultValue={config.geo_radius||200} onBlur={e => updateCentreGeo(config.id,'geo_radius',parseInt(e.target.value)||200,null)}/></div>
+                      <div className="geo-field"><label>Latitude</label><input defaultValue={config.latitude||''} placeholder="28.4595" onBlur={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateCentreGeo(config.id,'latitude',v,null) }}/></div>
+                      <div className="geo-field"><label>Longitude</label><input defaultValue={config.longitude||''} placeholder="77.0266" onBlur={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateCentreGeo(config.id,'longitude',v,null) }}/></div>
+                      <div className="geo-field"><label>Radius (m)</label><input defaultValue={config.geo_radius||200} onBlur={e => { const v = parseInt(e.target.value); if (!isNaN(v)) updateCentreGeo(config.id,'geo_radius',v,null) }}/></div>
                     </div></div>
                   )}
                   {expandedParent===parent && children.map(child => (
@@ -989,9 +1051,9 @@ export default function SuperAdminPage() {
                       </div>
                       {expandedChild===child.id && (
                         <div className="centre-geo-config centre-child-geo-config"><div className="centre-geo-fields">
-                          <div className="geo-field"><label>Latitude</label><input key={`lat-${child.id}`} defaultValue={child.latitude||''} onBlur={e => updateCentreGeo(child.id,'latitude',parseFloat(e.target.value)||null,null)}/></div>
-                          <div className="geo-field"><label>Longitude</label><input key={`lng-${child.id}`} defaultValue={child.longitude||''} onBlur={e => updateCentreGeo(child.id,'longitude',parseFloat(e.target.value)||null,null)}/></div>
-                          <div className="geo-field"><label>Radius (m)</label><input key={`rad-${child.id}`} defaultValue={child.geo_radius||200} onBlur={e => updateCentreGeo(child.id,'geo_radius',parseInt(e.target.value)||200,null)}/></div>
+                          <div className="geo-field"><label>Latitude</label><input key={`lat-${child.id}`} defaultValue={child.latitude||''} onBlur={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateCentreGeo(child.id,'latitude',v,null) }}/></div>
+                          <div className="geo-field"><label>Longitude</label><input key={`lng-${child.id}`} defaultValue={child.longitude||''} onBlur={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateCentreGeo(child.id,'longitude',v,null) }}/></div>
+                          <div className="geo-field"><label>Radius (m)</label><input key={`rad-${child.id}`} defaultValue={child.geo_radius||200} onBlur={e => { const v = parseInt(e.target.value); if (!isNaN(v)) updateCentreGeo(child.id,'geo_radius',v,null) }}/></div>
                         </div></div>
                       )}
                     </div>
@@ -1214,6 +1276,103 @@ export default function SuperAdminPage() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── AUDIT LOG ── */}
+      {tab === 'logs' && (
+        <div>
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div className="search-box" style={{ flex: '1 1 200px', minWidth: 180 }}>
+              <Search size={14} />
+              <input type="text" placeholder="Search badge, action, details..." value={logSearch}
+                onChange={e => { setLogSearch(e.target.value); setLogPage(1) }} style={{ minWidth: 0 }} />
+              {logSearch && <button onClick={() => { setLogSearch(''); setLogPage(1) }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}><X size={13} /></button>}
+            </div>
+            <select value={logActionFilter} onChange={e => { setLogActionFilter(e.target.value); setLogPage(1) }}
+              style={{ padding: '0.4rem 0.6rem', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text-primary)', fontSize: '0.82rem' }}>
+              <option value="">All Actions</option>
+              <option value="LOGIN">LOGIN</option>
+              <option value="LOGOUT">LOGOUT</option>
+              <option value="MARK_IN">MARK_IN</option>
+              <option value="MARK_OUT">MARK_OUT</option>
+              <option value="MANUAL_IN">MANUAL_IN</option>
+              <option value="MANUAL_OUT">MANUAL_OUT</option>
+              <option value="FORCE_CLOSE_SESSION">FORCE_CLOSE</option>
+              <option value="CREATE_FLAG">CREATE_FLAG</option>
+              <option value="RESOLVE_FLAG">RESOLVE_FLAG</option>
+              <option value="JATHA_CREATE">JATHA_CREATE</option>
+              <option value="JATHA_UPDATE">JATHA_UPDATE</option>
+              <option value="JATHA_DELETE">JATHA_DELETE</option>
+              <option value="CREATE_USER">CREATE_USER</option>
+              <option value="EDIT_ATTENDANCE">EDIT_ATTENDANCE</option>
+              <option value="DELETE_SESSION">DELETE_SESSION</option>
+            </select>
+            <button className="btn btn-ghost" onClick={exportAuditLogsCSV} style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}>
+              <Download size={14} /> Export
+            </button>
+          </div>
+
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.6rem' }}>
+            {logTotal} log entries · page {logPage} of {Math.ceil(logTotal / PAGE_SIZE) || 1}
+          </div>
+
+          <div className="table-wrap" style={{ borderRadius: 12, border: '1px solid var(--border)', background: 'var(--bg-elevated)', overflow: 'hidden' }}>
+            {logLoading ? (
+              <div style={{ padding: '2rem', textAlign: 'center' }}><div className="spinner" /></div>
+            ) : logData.length === 0 ? (
+              <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>No audit logs found</div>
+            ) : (
+              <div style={{ maxHeight: '60vh', overflowY: 'auto', overflowX: 'auto', borderRadius: 8, border: '1px solid var(--border)' }}>
+                <table style={{ width: '100%', minWidth: '900px', borderCollapse: 'collapse', tableLayout: 'auto' }}>
+                  <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
+                    <tr style={{ background: 'linear-gradient(135deg, var(--gold) 0%, #c9a227 100%)' }}>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Timestamp</th>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Badge</th>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Name</th>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Centre</th>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Action</th>
+                      <th style={{ padding: '0.65rem 0.75rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                  {logData.map((l, i) => (
+                    <tr key={l.id || i} style={{ background: i % 2 === 0 ? 'var(--bg)' : 'rgba(255,255,255,0.3)', borderBottom: '1px solid var(--border)' }}>
+                      <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.78rem', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                        {new Date(l.timestamp).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      </td>
+                      <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.78rem', fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        {l.user_badge || '—'}
+                      </td>
+                      <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.78rem', fontWeight: 500, whiteSpace: 'nowrap' }}>
+                        {l.user_name || '—'}
+                      </td>
+                      <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.78rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                        {l.user_centre || '—'}
+                      </td>
+                      <td style={{ padding: '0.5rem 0.75rem', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: '0.72rem', fontWeight: 600, background: 'var(--gold-bg)', color: 'var(--gold)', borderRadius: 4, padding: '2px 6px' }}>
+                          {l.action || '—'}
+                        </span>
+                      </td>
+                      <td style={{ padding: '0.5rem 0.75rem', fontSize: '0.78rem', wordBreak: 'break-word', whiteSpace: 'normal' }}>
+                        {l.details || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              </div>
+            )}
+          </div>
+
+          {Math.ceil(logTotal / PAGE_SIZE) > 1 && (
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', marginTop: '1rem' }}>
+              <button className="btn btn-ghost" onClick={() => setLogPage(p => Math.max(1, p - 1))} disabled={logPage === 1}>Previous</button>
+              <span style={{ padding: '0.4rem 0.8rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>Page {logPage}</span>
+              <button className="btn btn-ghost" onClick={() => setLogPage(p => p + 1)} disabled={logPage >= Math.ceil(logTotal / PAGE_SIZE)}>Next</button>
             </div>
           )}
         </div>

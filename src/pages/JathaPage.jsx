@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import ConfirmModal from '../components/ConfirmModal'
 import { showSuccess, showError } from '../components/Toast'
+import { detectTimeConflict, getSessionsForDate } from '../lib/sessionLogic'
 
 const ALL_JATHA_TYPES = [
   { value: JATHA_TYPE.MAJOR_CENTRE, label: JATHA_TYPE_LABEL[JATHA_TYPE.MAJOR_CENTRE] },
@@ -52,18 +53,40 @@ function fmtDate(d) {
 //  CONFLICT CHECKER
 // ─────────────────────────────────────────────
 async function checkConflicts(badgeNumber, dateFrom, dateTo) {
-  if (!dateFrom || !dateTo) return { jathaConflicts: [], dailyConflicts: [] }
+  if (!dateFrom || !dateTo) return { jathaConflicts: [], dailyConflicts: [], sessionConflicts: [] }
+  
+  // Generate all dates in the range
+  const dates = []
+  const from = new Date(dateFrom + 'T00:00:00')
+  const to = new Date(dateTo + 'T00:00:00')
+  for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+    dates.push(d.toISOString().substring(0, 10))
+  }
+  
+  // Check for session conflicts on each date
+  const sessionConflicts = []
+  for (const dateIST of dates) {
+    const { data: sessions } = await supabase
+      .from('attendance_sessions')
+      .select('id, in_time, out_time, duty_type, date_ist')
+      .eq('badge_number', badgeNumber)
+      .eq('date_ist', dateIST)
+    
+    if (sessions?.length) {
+      sessionConflicts.push(...sessions)
+    }
+  }
   
   const [jathaRes, dailyRes] = await Promise.all([
     // Check if person already has jatha in overlapping date range
     supabase.from('jatha_attendance')
-      .select('id, jatha_type, jatha_centre, jatha_dept, date_from, date_to, satsang_days, submitted_name')
+      .select('id, jatha_type, jatha_centre, jatha_dept, date_from, date_to, satsang_days')
       .eq('badge_number', badgeNumber)
       .lte('date_from', dateTo)     // Existing starts before new ends
       .gte('date_to', dateFrom),   // Existing ends after new starts
     // Check if person has attendance on any day in the jatha period
     supabase.from('attendance')
-      .select('id, type, scan_time, scanner_name, centre')
+      .select('id, type, scan_time, scanner_name')
       .eq('badge_number', badgeNumber)
       .gte('scan_time', dateFrom + 'T00:00:00+05:30')
       .lte('scan_time', dateTo   + 'T23:59:59+05:30')
@@ -72,6 +95,7 @@ async function checkConflicts(badgeNumber, dateFrom, dateTo) {
   return {
     jathaConflicts: jathaRes.data || [],
     dailyConflicts: dailyRes.data || [],
+    sessionConflicts,
   }
 }
 
@@ -113,6 +137,7 @@ function MarkJathaTab() {
   const [checkingConflicts, setCheckingConflicts] = useState(false)
   const [jathaConflicts, setJathaConflicts]       = useState([])
   const [dailyConflicts, setDailyConflicts]       = useState([])
+  const [sessionConflicts, setSessionConflicts]   = useState([])
   const [conflictChecked, setConflictChecked]     = useState(false)
   const conflictTimer = useRef(null)
 
@@ -120,7 +145,7 @@ function MarkJathaTab() {
   const deptOptions = jathaCentreOptions
     .filter(r => r.centre_name === jathaCentre)
     .map(r => r.department)
-  const hasConflict = jathaConflicts.length > 0 || dailyConflicts.length > 0
+  const hasConflict = jathaConflicts.length > 0 || dailyConflicts.length > 0 || sessionConflicts.length > 0
 
   // Load centres when type changes
   useEffect(() => {
@@ -146,15 +171,15 @@ function MarkJathaTab() {
     setSatsangDays(!err && dateFrom && dateTo ? countJathaDays(dateFrom, dateTo) : 0)
 
     if (!dateFrom || !dateTo || err) {
-      setJathaConflicts([]); setDailyConflicts([]); setConflictChecked(false); return
+      setJathaConflicts([]); setDailyConflicts([]); setSessionConflicts([]); setConflictChecked(false); return
     }
 
     clearTimeout(conflictTimer.current)
     conflictTimer.current = setTimeout(async () => {
       if (!selected) return
       setCheckingConflicts(true)
-      const { jathaConflicts: jc, dailyConflicts: dc } = await checkConflicts(selected.badge_number, dateFrom, dateTo)
-      setJathaConflicts(jc); setDailyConflicts(dc); setConflictChecked(true)
+      const { jathaConflicts: jc, dailyConflicts: dc, sessionConflicts: sc } = await checkConflicts(selected.badge_number, dateFrom, dateTo)
+      setJathaConflicts(jc); setDailyConflicts(dc); setSessionConflicts(sc); setConflictChecked(true)
       setCheckingConflicts(false)
     }, 400)
     return () => clearTimeout(conflictTimer.current)
@@ -218,20 +243,22 @@ function MarkJathaTab() {
     setSubmitting(true); setError('')
 
     // Final conflict re-check
-    const { jathaConflicts: jc, dailyConflicts: dc } = await checkConflicts(selected.badge_number, dateFrom, dateTo)
-    if (jc.length > 0 || dc.length > 0) {
-      setJathaConflicts(jc); setDailyConflicts(dc); setConflictChecked(true)
+    const { jathaConflicts: jc, dailyConflicts: dc, sessionConflicts: sc } = await checkConflicts(selected.badge_number, dateFrom, dateTo)
+    if (jc.length > 0 || dc.length > 0 || sc.length > 0) {
+      setJathaConflicts(jc); setDailyConflicts(dc); setSessionConflicts(sc); setConflictChecked(true)
       setError('Cannot submit — conflicts detected above.')
       setSubmitting(false); return
     }
 
     const { error: dbErr } = await supabase.from('jatha_attendance').insert({
-      badge_number: selected.badge_number, sewadar_name: selected.sewadar_name,
-      centre: selected.centre, department: selected.department || null,
-      jatha_type: jathaType, jatha_centre: jathaCentre, jatha_dept: jathaDept,
-      date_from: dateFrom, date_to: dateTo, satsang_days: satsangDays,
-      remarks: remarks.trim() || null, flag: false, flag_reason: null,
-      submitted_by: profile.badge_number, submitted_name: profile.name, submitted_centre: profile.centre,
+      badge_number: selected.badge_number,
+      jatha_type: jathaType,
+      jatha_centre: jathaCentre,
+      jatha_dept: jathaDept,
+      date_from: dateFrom,
+      date_to: dateTo,
+      satsang_days: satsangDays,
+      submitted_by: profile.badge_number,
     })
     await logAction(profile, LOG_ACTIONS.JATHA_CREATE, `Jatha for ${selected.badge_number} → ${jathaCentre} (${jathaType}) ${dateFrom}–${dateTo}`)
     setSubmitting(false)
@@ -239,7 +266,7 @@ function MarkJathaTab() {
     setSuccess(true)
     setDateFrom(''); setDateTo(''); setJathaType(''); setJathaCentre('')
     setJathaDept(''); setRemarks(''); setSatsangDays(0)
-    setJathaConflicts([]); setDailyConflicts([]); setConflictChecked(false)
+    setJathaConflicts([]); setDailyConflicts([]); setSessionConflicts([]); setConflictChecked(false)
   }
 
   const canSubmit = selected && dateFrom && dateTo && !dateError && jathaType && jathaCentre && jathaDept && !hasConflict && !checkingConflicts
@@ -379,6 +406,24 @@ function MarkJathaTab() {
                     ))}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {sessionConflicts.length > 0 && (
+              <div>
+                <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--red)', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Existing Sessions in This Range
+                </div>
+                {sessionConflicts.map(s => (
+                  <div key={s.id} style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.6rem 0.75rem', marginBottom: '0.35rem' }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{s.duty_type || 'gate_entry'} — {s.date_ist}</div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
+                      {s.in_time ? new Date(s.in_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—'}
+                      {' → '}
+                      {s.out_time ? new Date(s.out_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : 'Open'}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -527,7 +572,7 @@ function ViewJathaTab() {
     }, (payload) => {
       if (import.meta.env.DEV) console.log('[RT] jatha_attendance changed', payload)
       clearTimeout(timer)
-      timer = setTimeout(() => fetchRecords().catch(() => {}), 300)
+      timer = setTimeout(() => fetchRecords().catch(() => {}), 100) // Reduced from 300ms to 100ms
     })
     .subscribe((status) => {
       if (import.meta.env.DEV) console.log('[RT] Jatha channel status:', status)
@@ -542,7 +587,7 @@ function ViewJathaTab() {
   async function fetchRecords() {
     setLoading(true)
     const offset = (page - 1) * PAGE_SIZE
-    let q = supabase.from('jatha_attendance')
+    let q = supabase.from('v_jatha_attendance')
       .select('*', { count: 'exact', head: false })
       .order('created_at', { ascending: false })
       .range(offset, offset + PAGE_SIZE - 1)
@@ -552,11 +597,6 @@ function ViewJathaTab() {
       const start = `${year}-${month}-01`
       const end   = new Date(year, month, 0).toISOString().split('T')[0]
       q = q.gte('date_from', start).lte('date_from', end)
-    }
-    if (profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER) {
-      const { data: cd } = await supabase.from('centres').select('centre_name')
-        .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
-      q = q.in('centre', cd?.map(c => c.centre_name) || [profile.centre])
     }
     const { data, count, error } = await q
     if (!error) { setRecords(data || []); setTotalCount(count || 0) }
@@ -585,7 +625,7 @@ function ViewJathaTab() {
     showSuccess('Preparing export...')
     
     try {
-      let q = supabase.from('jatha_attendance')
+      let q = supabase.from('v_jatha_attendance')
         .select('*')
         .order('created_at', { ascending: false })
 
@@ -596,11 +636,6 @@ function ViewJathaTab() {
         const end   = new Date(year, month, 0).toISOString().split('T')[0]
         q = q.gte('date_from', start).lte('date_from', end)
       }
-      if (profile?.role === ROLES.CENTRE || profile?.role === ROLES.SC_SP_USER) {
-        const { data: cd } = await supabase.from('centres').select('centre_name')
-          .or(`centre_name.eq.${profile.centre},parent_centre.eq.${profile.centre}`)
-        q = q.in('centre', cd?.map(c => c.centre_name) || [profile.centre])
-      }
 
       const { data: allRecords } = await q
 
@@ -609,13 +644,13 @@ function ViewJathaTab() {
         return
       }
 
-      const header = ['Badge','Name','Centre','Department','Jatha Type','Destination','Dept at Jatha','From','To','Days','Remarks','Flagged','Flag Reason','Submitted By','Submitted Centre','Submitted On']
+      const header = ['Badge','Name','Centre','Department','Jatha Type','Destination','Dept at Jatha','From','To','Days','Remarks','Flagged','Flag Reason','Submitted By','Submitted On']
       const rows = allRecords.map(r => [
-        r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
+        r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.sewadar_centre), csvEscape(r.sewadar_department || ''),
         getJathaLabel(r.jatha_type), csvEscape(r.jatha_centre), csvEscape(r.jatha_dept),
         r.date_from, r.date_to, r.satsang_days, csvEscape(r.remarks || ''),
         r.flag ? 'Yes' : 'No', csvEscape(r.flag_reason || ''),
-        csvEscape(r.submitted_name || r.submitted_by), csvEscape(r.submitted_centre),
+        csvEscape(r.submitted_name || r.submitted_by),
         r.created_at ? new Date(r.created_at).toLocaleDateString('en-IN') : ''
       ])
       const csv = [header, ...rows].map(r => r.join(',')).join('\n')
@@ -724,7 +759,7 @@ function ViewJathaTab() {
                       </span>
                     )}
                   </div>
-                  <div className="jatha-meta">{r.centre} · {r.department || '—'}</div>
+                  <div className="jatha-meta">{r.sewadar_centre} · {r.sewadar_department || '—'}</div>
                   <div className="jatha-card-meta-row">
                     <span style={{ fontSize: '0.7rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 7px', fontWeight: 700 }}>
                       {getJathaLabel(r.jatha_type)}
@@ -907,20 +942,13 @@ function JathaTableTab() {
 
   async function fetchRecords() {
     setLoading(true)
-    let q = supabase.from('jatha_attendance')
+    let q = supabase.from('v_jatha_attendance')
       .select('*', { count: 'exact' })
       .order(sortCol, { ascending: sortDir === 'asc' })
 
     if (dateRange.from) q = q.gte('date_from', dateRange.from)
     if (dateRange.to)   q = q.lte('date_to', dateRange.to)
     if (typeFilter)     q = q.eq('jatha_type', typeFilter)
-
-    if (isCentreUser) {
-      const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre && c.centre_name !== profile.centre).map(c => c.centre_name)]
-      q = q.in('centre', [...new Set(scope)])
-    } else if (centreFilter) {
-      q = q.eq('centre', centreFilter)
-    }
 
     if (searchTerm.trim()) {
       q = q.or(`badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`)
@@ -964,20 +992,13 @@ function JathaTableTab() {
     showSuccess('Preparing export...')
     
     try {
-      let q = supabase.from('jatha_attendance')
+      let q = supabase.from('v_jatha_attendance')
         .select('*')
         .order(sortCol, { ascending: sortDir === 'asc' })
 
       if (dateRange.from) q = q.gte('date_from', dateRange.from)
       if (dateRange.to)   q = q.lte('date_to', dateRange.to)
       if (typeFilter)     q = q.eq('jatha_type', typeFilter)
-
-      if (isCentreUser) {
-        const scope = [profile.centre, ...centres.filter(c => c.parent_centre === profile.centre).map(c => c.centre_name)]
-        q = q.in('centre', scope)
-      } else if (centreFilter) {
-        q = q.eq('centre', centreFilter)
-      }
 
       if (searchTerm.trim()) {
         q = q.or(`badge_number.ilike.%${searchTerm.trim()}%,sewadar_name.ilike.%${searchTerm.trim()}%`)
@@ -992,7 +1013,7 @@ function JathaTableTab() {
 
       const header = ['Badge','Name','Centre','Dept','Jatha Type','Destination','Dept at Jatha','From','To','Days','Remarks','Flagged']
       const rows = allRecords.map(r => [
-        r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.centre), csvEscape(r.department || ''),
+        r.badge_number, csvEscape(r.sewadar_name), csvEscape(r.sewadar_centre), csvEscape(r.sewadar_department || ''),
         getJathaLabel(r.jatha_type), csvEscape(r.jatha_centre), csvEscape(r.jatha_dept),
         r.date_from, r.date_to, r.satsang_days, csvEscape(r.remarks || ''), r.flag ? 'Yes' : 'No'
       ])
@@ -1070,7 +1091,7 @@ function JathaTableTab() {
       </div>
 
       {/* Table — auto layout on desktop, no forced overflow */}
-      <div style={{ width: '100%', overflowX: 'auto' }}>
+      <div style={{ width: '100%', overflowX: 'auto', borderRadius: 12, border: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
         {loading ? (
           <div style={{ textAlign: 'center', padding: '3rem 0' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
         ) : records.length === 0 ? (
@@ -1103,68 +1124,85 @@ function JathaTableTab() {
             <thead style={{
               position: 'sticky',
               top: 0,
-              background: 'var(--bg-elevated)',
+              background: 'linear-gradient(135deg, var(--gold) 0%, #c9a227 100%)',
               zIndex: 2,
-              boxShadow: '0 1px 0 var(--border)',
             }}>
               <tr>
                 <SortTh col="badge_number" label="Badge"       />
                 <SortTh col="sewadar_name" label="Name"        />
                 {isAdmin && <SortTh col="centre" label="Centre" />}
                 <SortTh col="jatha_type"   label="Type"        />
-                <th>Destination</th>
-                <th>Department</th>
+                <th style={{ padding: '0.7rem 0.5rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Destination</th>
+                <th style={{ padding: '0.7rem 0.5rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Dept</th>
                 <SortTh col="date_from"    label="From"        />
                 <SortTh col="date_to"      label="To"          />
                 <SortTh col="satsang_days" label="Days"        />
-                {isDesktop && <th>Remarks</th>}
-                {isDesktop && <th>Flag Reason</th>}
-                <th>Status</th>
+                {isDesktop && <th style={{ padding: '0.7rem 0.5rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Remarks</th>}
+                {isDesktop && <th style={{ padding: '0.7rem 0.5rem', textAlign: 'left', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Flag</th>}
+                <th style={{ padding: '0.7rem 0.5rem', textAlign: 'center', fontWeight: 700, color: '#1a1a1a', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Status</th>
               </tr>
             </thead>
             <tbody>
-              {records.map(r => (
+              {records.map((r, idx) => (
                 <tr key={r.id} style={{
-                  background: r.flag ? 'rgba(220,38,38,0.04)' : 'transparent',
-                  padding: isDesktop ? '0.6rem' : '0.4rem',
-                }}>
-                  <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                  background: r.flag ? 'rgba(220,38,38,0.08)' : idx % 2 === 0 ? 'var(--bg)' : 'rgba(255,255,255,0.3)',
+                  transition: 'background 0.15s ease',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = r.flag ? 'rgba(220,38,38,0.12)' : 'rgba(201,168,76,0.08)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = r.flag ? (idx % 2 === 0 ? 'rgba(220,38,38,0.08)' : 'rgba(220,38,38,0.04)') : (idx % 2 === 0 ? 'var(--bg)' : 'rgba(255,255,255,0.3)')}
+                >
+                  <td style={{ fontFamily: 'monospace', color: 'var(--gold)', fontWeight: 700, whiteSpace: 'nowrap', padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>
                     {r.badge_number}
                   </td>
-                  <td>
-                    <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <td style={{ padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {r.sewadar_name}
                     </div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {r.department || '—'}
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.sewadar_department || '—'}
                     </div>
                   </td>
                   {isAdmin && (
-                    <td style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {r.centre}
+                    <td style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>
+                      {r.sewadar_centre}
                     </td>
                   )}
-                  <td>
-                    <span style={{ fontSize: '0.72rem', background: 'var(--gold-bg)', color: 'var(--gold)', border: '1px solid rgba(201,168,76,0.3)', borderRadius: 999, padding: '1px 7px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                  <td style={{ padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>
+                    <span style={{ 
+                      fontSize: '0.7rem', 
+                      background: r.jatha_type === 'beas' ? 'rgba(76,175,80,0.15)' : r.jatha_type === 'jatha_home' ? 'rgba(33,150,243,0.15)' : 'rgba(201,168,76,0.15)', 
+                      color: r.jatha_type === 'beas' ? '#2e7d32' : r.jatha_type === 'jatha_home' ? '#1565c0' : '#9e7d18', 
+                      border: `1px solid ${r.jatha_type === 'beas' ? 'rgba(76,175,80,0.3)' : r.jatha_type === 'jatha_home' ? 'rgba(33,150,243,0.3)' : 'rgba(201,168,76,0.3)'}`, 
+                      borderRadius: 999, 
+                      padding: '2px 8px', 
+                      fontWeight: 700, 
+                      whiteSpace: 'nowrap',
+                      display: 'inline-block'
+                    }}>
                       {getJathaLabel(r.jatha_type)}
                     </span>
                   </td>
-                  <td style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {r.jatha_centre}
+                  <td style={{ fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <MapPin size={11} color="var(--gold)" />
+                      {r.jatha_centre}
+                    </div>
                   </td>
-                  <td style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <td style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)', fontSize: '0.82rem' }}>
                     {r.jatha_dept}
                   </td>
-                  <td style={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtDate(r.date_from)}</td>
-                  <td style={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtDate(r.date_to)}</td>
-                  <td style={{ fontWeight: 700, color: 'var(--green)', textAlign: 'center' }}>{r.satsang_days}</td>
+                  <td style={{ fontFamily: 'monospace', whiteSpace: 'nowrap', color: 'var(--text-secondary)', padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>{fmtDate(r.date_from)}</td>
+                  <td style={{ fontFamily: 'monospace', whiteSpace: 'nowrap', color: 'var(--text-secondary)', padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>{fmtDate(r.date_to)}</td>
+                  <td style={{ fontWeight: 800, color: 'var(--green)', textAlign: 'center', padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>
+                    <span style={{ background: 'rgba(76,175,80,0.12)', padding: '3px 8px', borderRadius: 6, fontSize: '0.82rem' }}>{r.satsang_days}</span>
+                  </td>
                   {isDesktop && (
-                    <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>
                       {r.remarks || '—'}
                     </td>
                   )}
                   {isDesktop && (
-                    <td style={{ fontSize: '0.8rem', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <td style={{ fontSize: '0.8rem', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>
                       {r.flag && r.flag_reason ? (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--red)', fontWeight: 600 }}>
                           <Flag size={9} /> {r.flag_reason}
@@ -1172,14 +1210,14 @@ function JathaTableTab() {
                       ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                     </td>
                   )}
-                  <td>
+                  <td style={{ textAlign: 'center', padding: '0.65rem 0.5rem', borderBottom: '1px solid var(--border)' }}>
                     {r.flag ? (
                       <span title={r.flag_reason || 'Flagged'}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: '0.7rem', fontWeight: 600, color: 'var(--red)', background: 'var(--red-bg)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 4, padding: '2px 5px', whiteSpace: 'nowrap' }}>
-                        <Flag size={9} /> Flagged
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.72rem', fontWeight: 700, color: '#fff', background: 'linear-gradient(135deg, #e53935 0%, #c62828 100%)', borderRadius: 6, padding: '4px 10px', whiteSpace: 'nowrap', boxShadow: '0 2px 4px rgba(220,38,38,0.3)' }}>
+                        <Flag size={10} /> Flagged
                       </span>
                     ) : (
-                      <span style={{ fontSize: '0.72rem', color: 'var(--green)', fontWeight: 600 }}>✓ OK</span>
+                      <span style={{ fontSize: '0.72rem', color: '#fff', fontWeight: 600, background: 'linear-gradient(135deg, #43a047 0%, #2e7d32 100%)', borderRadius: 6, padding: '4px 10px', boxShadow: '0 2px 4px rgba(76,175,80,0.3)' }}>✓ Active</span>
                     )}
                   </td>
                 </tr>

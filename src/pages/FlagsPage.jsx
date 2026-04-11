@@ -74,7 +74,9 @@ export default function FlagsPage() {
   async function fetchStats() {
     const scope = getScope()
     let q = supabase.from('queries').select('status', { count: 'exact' })
-    if (scope.length > 0) q = q.in('raised_by_centre', scope)
+    if (scope.length > 0) {
+      q = q.or(`raised_by_centre.in.(${scope.join(',')}),target_centre.in.(${scope.join(',')})`)
+    }
     
     // Get all statuses (up to 10000)
     const { data, count } = await q.range(0, 9999)
@@ -91,9 +93,23 @@ export default function FlagsPage() {
   }
 
   function getScope() {
+    // ASO sees all flags
     if (isAso) return []
-    if (isCentreUser) return childCentres.length > 0 ? childCentres : profile?.centre ? [profile.centre] : []
+    // Centre users see flags raised by OR targeted to their centres
+    if (isCentreUser) {
+      const centres = childCentres.length > 0 ? childCentres : profile?.centre ? [profile.centre] : []
+      return centres
+    }
     return []
+  }
+
+  function isInScope(flag) {
+    const scope = getScope()
+    if (scope.length === 0) return true // ASO sees all
+    // Check if flag was raised by or targeted to any of user's centres
+    const raisedCentre = flag.raised_by_centre
+    const targetCentre = flag.target_centre
+    return scope.includes(raisedCentre) || scope.includes(targetCentre)
   }
 
   async function fetchFlags() {
@@ -109,7 +125,10 @@ export default function FlagsPage() {
       .order(sortCol === 'created_at' ? 'created_at' : sortCol, { ascending: sortDir === 'asc' })
 
     if (statusFilter !== 'all') query = query.eq('status', statusFilter)
-    if (scope.length > 0) query = query.in('raised_by_centre', scope)
+    if (scope.length > 0) {
+      // Include flags raised by OR targeted to user's centres
+      query = query.or(`raised_by_centre.in.(${scope.join(',')}),target_centre.in.(${scope.join(',')})`)
+    }
     if (flagTypeFilter) query = query.eq('flag_type', flagTypeFilter)
     
     // Apply search filters on server for better performance
@@ -229,7 +248,7 @@ export default function FlagsPage() {
     }, (payload) => {
       if (import.meta.env.DEV) console.log('[RT] queries changed', payload)
       clearTimeout(timer)
-      timer = setTimeout(() => fetchFlags(), 300)
+      timer = setTimeout(() => fetchFlags(), 100) // Reduced from 300ms to 100ms
     })
     .on('postgres_changes', { 
       event: '*', 
@@ -238,7 +257,7 @@ export default function FlagsPage() {
     }, (payload) => {
       if (import.meta.env.DEV) console.log('[RT] query_replies changed', payload)
       clearTimeout(timer)
-      timer = setTimeout(() => fetchFlags(), 300)
+      timer = setTimeout(() => fetchFlags(), 100) // Reduced from 300ms to 100ms
     })
     .subscribe((status) => {
       if (import.meta.env.DEV) console.log('[RT] Flags channel status:', status)
@@ -276,6 +295,16 @@ export default function FlagsPage() {
   }
 
   async function updateStatus(flagId, newStatus) {
+    // Find the flag to check permissions
+    const flag = allFlags.find(f => f.id === flagId)
+    if (!flag) return
+    
+    // Centre users cannot mark their own flags as in_progress or resolved
+    if (isCentreUser && flag.raised_by_badge === profile?.badge_number) {
+      showError("You cannot update your own flag. Contact ASO or another centre.")
+      return
+    }
+    
     await supabase.from('queries').update({ 
       status: newStatus, 
       updated_at: new Date().toISOString() 
@@ -295,6 +324,16 @@ export default function FlagsPage() {
   }
 
   async function resolveFlag(flagId) {
+    // Find the flag to check permissions
+    const flag = allFlags.find(f => f.id === flagId)
+    if (!flag) return
+    
+    // Centre users cannot resolve their own flags
+    if (isCentreUser && flag.raised_by_badge === profile?.badge_number) {
+      showError("You cannot resolve your own flag. Contact ASO or another centre.")
+      return
+    }
+    
     await supabase.from('queries').update({
       status: FLAG_STATUS.RESOLVED,
       resolved_at: new Date().toISOString(),
@@ -315,6 +354,16 @@ export default function FlagsPage() {
   }
 
   async function reopenFlag(flagId) {
+    // Find the flag to check permissions
+    const flag = allFlags.find(f => f.id === flagId)
+    if (!flag) return
+    
+    // Centre users cannot reopen their own flags
+    if (isCentreUser && flag.raised_by_badge === profile?.badge_number) {
+      showError("You cannot reopen your own flag.")
+      return
+    }
+    
     await supabase.from('queries').update({
       status: FLAG_STATUS.OPEN,
       resolved_at: null,
@@ -382,7 +431,9 @@ export default function FlagsPage() {
         .order(sortCol === 'created_at' ? 'created_at' : sortCol, { ascending: sortDir === 'asc' })
 
       if (statusFilter !== 'all') q = q.eq('status', statusFilter)
-      if (scope.length > 0) q = q.in('raised_by_centre', scope)
+      if (scope.length > 0) {
+        q = q.or(`raised_by_centre.in.(${scope.join(',')}),target_centre.in.(${scope.join(',')})`)
+      }
       if (flagTypeFilter) q = q.eq('flag_type', flagTypeFilter)
 
       const { data: allFlags } = await q
@@ -596,8 +647,12 @@ export default function FlagsPage() {
                 const isHighlighted = flag.id === highlightedId
                 const isExpanded = expandedId === flag.id || isHighlighted
                 const replies = flag.query_replies || []
-                const canReply = isAso || isCentreUser || flag.raised_by_badge === profile?.badge_number
-                const canResolve = (isAso || isCentreUser) && flag.status !== FLAG_STATUS.RESOLVED
+                const isOwnFlag = flag.raised_by_badge === profile?.badge_number
+                const isTargetedToMe = isCentreUser && flag.target_centre === profile?.centre
+                // Centre users can only reply if it's their own flag OR targeted to their centre
+                const canReply = isAso || isCentreUser || isOwnFlag
+                // Centre users can resolve only if it's NOT their own flag (already handled in canResolve)
+                const canResolve = (isAso || (isCentreUser && !isOwnFlag)) && flag.status !== FLAG_STATUS.RESOLVED
                 const badgeNum = flag.badge_number || flag.attendance?.badge_number
                 const sewadar = sewadarMap[badgeNum] || {}
 
@@ -730,7 +785,7 @@ export default function FlagsPage() {
 
                             {/* Action buttons */}
                             <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-                              {flag.status !== FLAG_STATUS.RESOLVED && (
+                              {canResolve && flag.status !== FLAG_STATUS.RESOLVED && (
                                 <button
                                   onClick={(e) => { e.stopPropagation(); updateStatus(flag.id, flag.status === FLAG_STATUS.OPEN ? FLAG_STATUS.IN_PROGRESS : FLAG_STATUS.RESOLVED) }}
                                   style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem', borderRadius: 6, border: '1px solid', cursor: 'pointer', fontWeight: 600, background: 'transparent' }}
@@ -739,10 +794,15 @@ export default function FlagsPage() {
                                   {flag.status === FLAG_STATUS.OPEN ? 'Mark In Progress' : flag.status === FLAG_STATUS.IN_PROGRESS ? 'Resolve' : ''}
                                 </button>
                               )}
-                              {flag.status === FLAG_STATUS.RESOLVED && (
+                              {canResolve && flag.status === FLAG_STATUS.RESOLVED && (
                                 <button onClick={(e) => { e.stopPropagation(); reopenFlag(flag.id) }} className="btn btn-ghost" style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}>
                                   Reopen
                                 </button>
+                              )}
+                              {!canResolve && flag.status !== FLAG_STATUS.RESOLVED && isCentreUser && isOwnFlag && (
+                                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                                  Contact ASO or another centre to resolve
+                                </span>
                               )}
                             </div>
 

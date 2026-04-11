@@ -251,3 +251,37 @@ COMMENT ON VIEW v_attendance IS 'Attendance with sewadar info - use this instead
 COMMENT ON VIEW v_sessions IS 'Sessions with sewadar info - use this instead of attendance_sessions table';
 COMMENT ON VIEW v_sessions_full IS 'Full session data with IN/OUT attendance details';
 COMMENT ON VIEW v_jatha IS 'Jatha attendance with sewadar info';
+
+-- =====================================================
+-- v_jatha_attendance VIEW
+-- =====================================================
+
+CREATE OR REPLACE VIEW v_jatha_attendance AS
+SELECT 
+  j.id,
+  j.badge_number,
+  j.jatha_type,
+  j.jatha_centre,
+  j.jatha_dept,
+  j.date_from,
+  j.date_to,
+  j.satsang_days,
+  j.remarks,
+  j.flag,
+  j.flag_reason,
+  j.submitted_by,
+  j.created_at,
+  j.status,
+  -- Sewadar info (joined from sewadars table)
+  s.sewadar_name,
+  s.centre AS sewadar_centre,
+  s.department AS sewadar_department,
+  s.gender,
+  s.badge_status,
+  -- Submitted by name (joined from users table)
+  u.name AS submitted_name
+FROM jatha_attendance j
+LEFT JOIN sewadars s ON j.badge_number = s.badge_number
+LEFT JOIN users u ON j.submitted_by = u.badge_number;
+
+COMMENT ON VIEW v_jatha_attendance IS 'Jatha attendance with sewadar info - use this instead of jatha_attendance table';

@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { Calendar } from 'lucide-react'
+import { Calendar, ChevronDown, ChevronUp } from 'lucide-react'
 import { todayDateStr } from '../lib/dateUtils'
 
-export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
+export default function DateRangePicker({ value, onChange, maxDays = 365, showAdvanced = false, onAdvancedChange }) {
   const [_focusedInput, setFocusedInput] = useState(null)
+  const [isAdvanced, setIsAdvanced] = useState(showAdvanced)
 
   const today = () => {
     return todayDateStr()
@@ -30,6 +31,11 @@ export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
 
   const isToday = (val) => val === today()
 
+  const toggleAdvanced = () => {
+    setIsAdvanced(!isAdvanced)
+    if (onAdvancedChange) onAdvancedChange(!isAdvanced)
+  }
+
   return (
     <div style={{
       display: 'flex',
@@ -48,11 +54,11 @@ export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
       <input
         type="date"
         value={value.from || ''}
-        max={value.to || undefined}
+        max={isAdvanced ? (value.to || undefined) : undefined}
         onChange={e => handleFromChange(e.target.value)}
         onFocus={() => setFocusedInput('from')}
         onBlur={() => setFocusedInput(null)}
-        title="From date"
+        title="Date"
         style={{
           border: 'none',
           background: 'transparent',
@@ -62,34 +68,57 @@ export default function DateRangePicker({ value, onChange, maxDays = 365 }) {
           color: isToday(value.from) ? 'var(--text-muted)' : 'var(--text-primary)',
           fontWeight: isToday(value.from) ? 400 : 600,
           minWidth: '116px',
-          width: '100px',
+          width: isAdvanced ? '100px' : '130px',
           cursor: 'pointer',
         }}
       />
 
-      <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', flexShrink: 0 }}>to</span>
+      {isAdvanced && (
+        <>
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', flexShrink: 0 }}>to</span>
 
-      <input
-        type="date"
-        value={value.to || ''}
-        min={value.from || undefined}
-        onChange={e => handleToChange(e.target.value)}
-        onFocus={() => setFocusedInput('to')}
-        onBlur={() => setFocusedInput(null)}
-        title="To date"
+          <input
+            type="date"
+            value={value.to || ''}
+            min={value.from || undefined}
+            onChange={e => handleToChange(e.target.value)}
+            onFocus={() => setFocusedInput('to')}
+            onBlur={() => setFocusedInput(null)}
+            title="To date"
+            style={{
+              border: 'none',
+              background: 'transparent',
+              outline: 'none',
+              fontSize: '0.82rem',
+              fontFamily: 'inherit',
+              color: isToday(value.to) ? 'var(--text-muted)' : 'var(--text-primary)',
+              fontWeight: isToday(value.to) ? 400 : 600,
+              minWidth: '116px',
+              width: '100px',
+              cursor: 'pointer',
+            }}
+          />
+        </>
+      )}
+
+      <button
+        onClick={toggleAdvanced}
+        title={isAdvanced ? "Show single date" : "Show date range"}
         style={{
+          background: 'none',
           border: 'none',
-          background: 'transparent',
-          outline: 'none',
-          fontSize: '0.82rem',
-          fontFamily: 'inherit',
-          color: isToday(value.to) ? 'var(--text-muted)' : 'var(--text-primary)',
-          fontWeight: isToday(value.to) ? 400 : 600,
-          minWidth: '116px',
-          width: '100px',
           cursor: 'pointer',
+          color: 'var(--text-muted)',
+          padding: '2px',
+          display: 'flex',
+          alignItems: 'center',
+          fontSize: '0.7rem',
+          fontWeight: 600,
+          flexShrink: 0,
         }}
-      />
+      >
+        {isAdvanced ? 'Single' : 'Range'}
+      </button>
 
       {value.from && value.to && (value.from !== today() || value.to !== today()) && (
         <button
