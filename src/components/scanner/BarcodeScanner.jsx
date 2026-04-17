@@ -150,7 +150,9 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             onScan(text)
             break
           }
-        } catch {}
+        } catch (err) {
+          console.warn('Barcode detection error:', err)
+        }
         isDetectingRef.current = false
       }
 

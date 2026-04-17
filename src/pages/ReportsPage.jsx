@@ -255,38 +255,41 @@ export default function ReportsPage() {
   }
 
   const fetchReport = useCallback(async () => {
+    const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
+    const userCentre = profile?.centre
+    
     setLoading(true)
     try {
       switch (activeReport) {
         case 'absenteeism':
-          await fetchAbsenteeism()
+          await fetchAbsenteeism(isSuperAdmin, userCentre)
           break
         case 'currently_inside':
-          await fetchCurrentlyInside()
+          await fetchCurrentlyInside(isSuperAdmin, userCentre)
           break
         case 'gate_summary':
-          await fetchGateSummary()
+          await fetchGateSummary(isSuperAdmin, userCentre)
           break
         case 'late_coming':
-          await fetchLateComing()
+          await fetchLateComing(isSuperAdmin, userCentre)
           break
         case 'missing_out':
-          await fetchMissingOut()
+          await fetchMissingOut(isSuperAdmin, userCentre)
           break
         case 'jatha_attendance':
-          await fetchJathaAttendance()
+          await fetchJathaAttendance(isSuperAdmin, userCentre)
           break
         case 'jatha_summary':
-          await fetchJathaSummary()
+          await fetchJathaSummary(isSuperAdmin, userCentre)
           break
         case 'weekly_summary':
-          await fetchWeeklySummary()
+          await fetchWeeklySummary(isSuperAdmin, userCentre)
           break
         case 'department_wise':
-          await fetchDepartmentWise()
+          await fetchDepartmentWise(isSuperAdmin, userCentre)
           break
         case 'centre_wise':
-          await fetchCentreWise()
+          await fetchCentreWise(isSuperAdmin, userCentre)
           break
         default:
           setReportData([])
@@ -295,7 +298,7 @@ export default function ReportsPage() {
       console.error('Report fetch error:', err)
     }
     setLoading(false)
-  }, [activeReport, dateFrom, dateTo, lateThreshold, isSuperAdmin, userCentre])
+  }, [activeReport, dateFrom, dateTo, lateThreshold, profile])
 
   useEffect(() => { fetchReport() }, [fetchReport])
 
@@ -315,7 +318,7 @@ export default function ReportsPage() {
   }
 
   // Absenteeism: All sewadars - present today
-  const fetchAbsenteeism = async () => {
+  const fetchAbsenteeism = async (isSuperAdmin, userCentre) => {
     const { data: sewadars } = await supabase
       .from('sewadars')
       .select('badge_number, sewadar_name, centre, department, badge_status, gender')
@@ -351,7 +354,7 @@ export default function ReportsPage() {
   }
 
   // Currently Inside: Open sessions
-  const fetchCurrentlyInside = async () => {
+  const fetchCurrentlyInside = async (isSuperAdmin, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('*')
@@ -386,7 +389,7 @@ export default function ReportsPage() {
   }
 
   // Gate Summary: Full log
-  const fetchGateSummary = async () => {
+  const fetchGateSummary = async (isSuperAdmin, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('*')
@@ -421,7 +424,7 @@ export default function ReportsPage() {
   }
 
   // Late Coming: After threshold
-  const fetchLateComing = async () => {
+  const fetchLateComing = async (isSuperAdmin, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('*')
@@ -465,7 +468,7 @@ export default function ReportsPage() {
   }
 
   // Missing OUT: Open sessions from before today
-  const fetchMissingOut = async () => {
+  const fetchMissingOut = async (isSuperAdmin, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('*')
@@ -497,7 +500,7 @@ export default function ReportsPage() {
   }
 
   // Jatha Attendance: Active jatha entries
-  const fetchJathaAttendance = async () => {
+  const fetchJathaAttendance = async (isSuperAdmin, userCentre) => {
     let query = supabase
       .from('jatha_attendance')
       .select('*, jatha_master(jatha_type, centre_name, department)')
@@ -534,7 +537,7 @@ export default function ReportsPage() {
   }
 
   // Jatha Summary: Grouped by jatha type
-  const fetchJathaSummary = async () => {
+  const fetchJathaSummary = async (isSuperAdmin, userCentre) => {
     let query = supabase
       .from('jatha_attendance')
       .select('jatha_id, badge_number, jatha_master(jatha_type, centre_name, department)')
@@ -582,7 +585,7 @@ export default function ReportsPage() {
   }
 
   // Weekly Summary: Day-wise
-  const fetchWeeklySummary = async () => {
+  const fetchWeeklySummary = async (isSuperAdmin, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('in_date')
@@ -634,7 +637,7 @@ export default function ReportsPage() {
   }
 
   // Department Wise
-  const fetchDepartmentWise = async () => {
+  const fetchDepartmentWise = async (isSuperAdmin, userCentre) => {
     const { data: sewadars } = await supabase
       .from('sewadars')
       .select('*')
@@ -679,7 +682,7 @@ export default function ReportsPage() {
   }
 
   // Centre Wise
-  const fetchCentreWise = async () => {
+  const fetchCentreWise = async (isSuperAdmin, userCentre) => {
     const { data: sewadars } = await supabase
       .from('sewadars')
       .select('*')
@@ -770,31 +773,58 @@ export default function ReportsPage() {
     return reportHeaders[activeReport] || []
   }
 
+  const escapeCSV = (val) => {
+    if (val === null || val === undefined) return ''
+    const str = String(val)
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`
+    }
+    return str
+  }
+
   const exportCSV = (headers, rows) => {
-    const csv = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n')
+    const csv = [headers.map(escapeCSV).join(','), ...rows.map(r => r.map(escapeCSV).join(','))].join('\n')
     downloadFile(csv, `${activeReport}_${dateFrom}_${dateTo}.csv`, 'text/csv')
   }
 
   const exportExcel = (headers, rows) => {
-    const csv = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n')
-    downloadFile(csv, `${activeReport}_${dateFrom}_${dateTo}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    const csv = [headers.map(escapeCSV).join(','), ...rows.map(r => r.map(escapeCSV).join(','))].join('\n')
+    downloadFile(csv, `${activeReport}_${dateFrom}_${dateTo}.csv`, 'text/csv')
   }
 
   const exportPDF = (headers, rows) => {
-    const content = [headers, ...rows].map(r => r.join(' | ')).join('\n')
-    const html = `<html><head><title>Report</title><style>
-      body { font-family: Arial, sans-serif; padding: 20px; }
-      table { width: 100%; border-collapse: collapse; }
-      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-      th { background: #217346; color: white; }
-    </style></head><body>
-      <h2>${currentSubReports.find(r => r.id === activeReport)?.label || 'Report'}</h2>
-      <p>Date Range: ${formatDateIndian(dateFrom)} - ${formatDateIndian(dateTo)}</p>
-      <pre>${content}</pre>
-    </body></html>`
+    const tableRows = rows.map(r => `<tr>${r.map(c => `<td>${escapeCSV(c)}</td>`).join('')}</tr>`).join('')
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <title>${currentSubReports.find(r => r.id === activeReport)?.label || 'Report'}</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    h2 { color: #217346; margin-bottom: 5px; }
+    p { color: #666; margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 12px; }
+    th { background: #217346; color: white; }
+    @media print {
+      body { padding: 0; }
+      button { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <h2>${currentSubReports.find(r => r.id === activeReport)?.label || 'Report'}</h2>
+  <p>Date Range: ${formatDateIndian(dateFrom)} - ${formatDateIndian(dateTo)}</p>
+  <button onclick="window.print()" style="padding: 8px 16px; background: #217346; color: white; border: none; border-radius: 4px; cursor: pointer; margin-bottom: 15px;">Print / Save as PDF</button>
+  <table>
+    <thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</body>
+</html>`
     const blob = new Blob([html], { type: 'text/html' })
     const url = URL.createObjectURL(blob)
-    window.open(url, '_blank')
+    const win = window.open(url, '_blank')
+    if (win) win.onload = () => win.print()
   }
 
   const downloadFile = (content, filename, type) => {

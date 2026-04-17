@@ -177,7 +177,7 @@ function SessionTable({ records }) {
                 <td><span className="entry-type-pill">{isGateEntry ? 'GATE' : isManual ? 'MANUAL' : 'SCAN'}</span></td>
                 <td className="cell-date">{r.in_date ? formatDateIndian(r.in_date) : '-'}</td>
                 <td className="cell-time">{r.in_time ? formatTime12Hour(r.in_time) : '-'}</td>
-                <td className="cell-date">{r.out_date ? (sameDate ? r.in_date : formatDateIndian(r.out_date)) : (isOpen ? '-' : '-')}</td>
+                <td className="cell-date">{r.out_date ? (sameDate ? '—' : formatDateIndian(r.out_date)) : (isOpen ? '-' : '-')}</td>
                 <td className="cell-time">{isOpen ? '-' : (r.out_time ? formatTime12Hour(r.out_time) : '-')}</td>
                 <td className="cell-duration">{duration || (isOpen ? 'In progress' : '-')}</td>
                 <td className="cell-scanner">{r.in_scanner_name || '-'}</td>

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useRef } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
 const AuthContext = createContext(null)
@@ -7,7 +7,6 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
-  const abortControllerRef = useRef(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -26,21 +25,14 @@ export function AuthProvider({ children }) {
   }, [])
 
   async function fetchProfile(userId) {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
-    abortControllerRef.current = new AbortController()
-    
     const { data } = await supabase
       .from('users')
       .select('*')
       .eq('auth_id', userId)
       .single()
     
-    if (!abortControllerRef.current.signal.aborted) {
-      setProfile(data)
-      setLoading(false)
-    }
+    setProfile(data)
+    setLoading(false)
   }
 
   async function signIn(email, password) {

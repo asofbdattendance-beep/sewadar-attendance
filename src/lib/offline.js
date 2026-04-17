@@ -1,51 +1,7 @@
-// Offline support - simplified
-const QUEUE_KEY = 'attendance_offline_queue'
-
-export function getOfflineQueue() {
-  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]') }
-  catch { return [] }
-}
-
-export function addToOfflineQueue(record) {
-  const queue = getOfflineQueue()
-  queue.push({ ...record, offline: true, queued_at: new Date().toISOString() })
-  localStorage.setItem(QUEUE_KEY, JSON.stringify(queue))
-}
-
-export function clearOfflineQueue() { localStorage.removeItem(QUEUE_KEY) }
-export function getOfflineQueueCount() { return getOfflineQueue().length }
-
-export async function syncOfflineQueue(supabase) {
-  const queue = getOfflineQueue()
-  if (queue.length === 0) return { synced: 0, failed: 0 }
-
-  const records = queue.map(({ offline, queued_at, ...data }) => data)
-  try {
-    const { error } = await supabase.from('attendance').insert(records)
-    if (!error) {
-      localStorage.setItem(QUEUE_KEY, JSON.stringify([]))
-      return { synced: records.length, failed: 0 }
-    }
-  } catch {}
-
-  let synced = 0, failed = 0
-  const remaining = []
-  for (const record of queue) {
-    try {
-      const { offline, queued_at, ...data } = record
-      const { error } = await supabase.from('attendance').insert(data)
-      if (error) { remaining.push(record); failed++ }
-      else synced++
-    } catch { remaining.push(record); failed++ }
-  }
-  localStorage.setItem(QUEUE_KEY, JSON.stringify(remaining))
-  return { synced, failed }
-}
-
-// Sewadar cache
+// Sewadar cache for offline lookups (performance optimization)
 const CACHE_KEY = 'sewadars_cache'
 const CACHE_TIME_KEY = 'sewadars_cache_time'
-const CACHE_TTL = 1000 * 60 * 60
+const CACHE_TTL = 1000 * 60 * 60 * 24 // 24 hours
 
 export function getCachedSewadars() {
   try {
@@ -74,7 +30,8 @@ export function setCachedSewadars(sewadars) {
 export function lookupBadgeOffline(badge) {
   const cache = getCachedSewadars()
   if (!cache) return null
-  return cache.find(s => s.badge_number.toUpperCase() === badge.toUpperCase()) || null
+  const searchBadge = badge.toUpperCase()
+  return cache.find(s => s.badge_number.toUpperCase() === searchBadge) || null
 }
 
 export async function populateOfflineCache(supabase) {
@@ -84,4 +41,9 @@ export async function populateOfflineCache(supabase) {
       .select('badge_number,sewadar_name,centre,department,badge_status,gender')
     if (data && data.length > 0) setCachedSewadars(data)
   } catch (e) { console.warn('Failed to populate cache:', e) }
+}
+
+export function clearSewadarCache() {
+  localStorage.removeItem(CACHE_KEY)
+  localStorage.removeItem(CACHE_TIME_KEY)
 }

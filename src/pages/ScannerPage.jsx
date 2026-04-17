@@ -102,39 +102,39 @@ export default function ScannerPage({ isOnline }) {
     const inDate = customTime?.date || now.toISOString().split('T')[0]
     const inTime = customTime?.time || now.toTimeString().slice(0, 5)
     
-    if (isOnline) {
-      const { data: existingSession } = await supabase.rpc('get_open_session', { p_badge: sewadar.badge_number })
-      if (existingSession && existingSession.badge_number) {
-        setPopupState({ type: 'out', sewadar, openSession: existingSession })
-        return
-      }
-    }
-    
-    const record = {
-      badge_number: sewadar.badge_number,
-      sewadar_name: sewadar.sewadar_name,
-      centre: profile?.centre || sewadar.centre || 'UNKNOWN',
-      duty_type: getDutyType(),
-      status: SESSION_STATUS.OPEN,
-      in_date: inDate,
-      in_time: inTime,
-      in_scanner_badge: profile?.badge_number,
-      in_scanner_name: profile?.name,
-      in_scanner_centre: profile?.centre || sewadar.centre || 'UNKNOWN',
-    }
-
     if (navigator.vibrate) navigator.vibrate([40])
-
     setPopupState({ type: 'success', action: 'IN', sewadar, time: formatTime12Hour(inTime) })
 
     if (isOnline) {
+      const record = {
+        badge_number: sewadar.badge_number,
+        sewadar_name: sewadar.sewadar_name,
+        centre: profile?.centre || sewadar.centre || 'UNKNOWN',
+        duty_type: getDutyType(),
+        status: SESSION_STATUS.OPEN,
+        in_date: inDate,
+        in_time: inTime,
+        in_scanner_badge: profile?.badge_number,
+        in_scanner_name: profile?.name,
+        in_scanner_centre: profile?.centre || sewadar.centre || 'UNKNOWN',
+      }
+
       try {
-        const { error } = await supabase.from('attendance_sessions').insert(record)
-        if (error) throw error
+        const { data, error } = await supabase.from('attendance_sessions').insert(record).select().single()
+        if (error) {
+          if (error.code === '23505') {
+            const { data: existingSession } = await supabase.rpc('get_open_session', { p_badge: sewadar.badge_number })
+            if (existingSession && existingSession.badge_number) {
+              setTimeout(() => setPopupState({ type: 'out', sewadar, openSession: existingSession }), 1600)
+              return
+            }
+          }
+          console.error('Failed to insert session:', error)
+        }
+        fetchRecentScans()
       } catch (err) {
         console.error('Failed to insert session:', err)
       }
-      fetchRecentScans()
     }
 
     setTimeout(closePopup, 1500)
@@ -254,12 +254,6 @@ export default function ScannerPage({ isOnline }) {
     const now = new Date()
     
     if (manualEntryType === 'in') {
-      // Prevent multiple INs - check if session exists
-      if (manualOpenSession) {
-        setManualHasSession(true)
-        return
-      }
-      
       const record = {
         badge_number: manualSelectedSewadar.badge_number,
         sewadar_name: manualSelectedSewadar.sewadar_name,
@@ -279,7 +273,14 @@ export default function ScannerPage({ isOnline }) {
       if (navigator.vibrate) navigator.vibrate([40])
 
       if (isOnline) {
-        await supabase.from('attendance_sessions').insert(record)
+        const { error } = await supabase.from('attendance_sessions').insert(record)
+        if (error) {
+          if (error.code === '23505') {
+            setManualHasSession(true)
+            return
+          }
+          console.error('Failed to insert session:', error)
+        }
         fetchRecentScans()
       }
     } else {
@@ -386,7 +387,7 @@ export default function ScannerPage({ isOnline }) {
                     <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>{popupState.sewadar.badge_number}</div>
                   </div>
                   <span className={`gender-badge ${popupState.sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>
-                    {popupState.sewadar.gender}
+                    {popupState.sewadar.gender || 'Unknown'}
                   </span>
                 </div>
                 <div className="popup-details">
@@ -413,7 +414,7 @@ export default function ScannerPage({ isOnline }) {
                     <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>{popupState.sewadar.badge_number}</div>
                   </div>
                   <span className={`gender-badge ${popupState.sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>
-                    {popupState.sewadar.gender}
+                    {popupState.sewadar.gender || 'Unknown'}
                   </span>
                 </div>
                 <div className="popup-details">
@@ -447,7 +448,7 @@ export default function ScannerPage({ isOnline }) {
                     <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>{popupState.sewadar.badge_number}</div>
                   </div>
                   <span className={`gender-badge ${popupState.sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>
-                    {popupState.sewadar.gender}
+                    {popupState.sewadar.gender || 'Unknown'}
                   </span>
                 </div>
                 <div className="popup-details">

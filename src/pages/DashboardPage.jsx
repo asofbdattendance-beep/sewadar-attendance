@@ -279,14 +279,18 @@ export default function DashboardPage() {
       // Gender stats
       let malePresentCount = 0, femalePresentCount = 0
       let maleInsideCount = 0, femaleInsideCount = 0
+      let malePermanentCount = 0, femalePermanentCount = 0
 
       for (const s of (sewadars || [])) {
-        if (s.gender === 'Male') {
+        const gender = s.gender?.toUpperCase() || ''
+        if (gender === 'MALE') {
           if (localPresentSet.has(s.badge_number)) malePresentCount++
           if (localInsideSet.has(s.badge_number)) maleInsideCount++
+          if (s.badge_status === 'PERMANENT') malePermanentCount++
         } else {
           if (localPresentSet.has(s.badge_number)) femalePresentCount++
           if (localInsideSet.has(s.badge_number)) femaleInsideCount++
+          if (s.badge_status === 'PERMANENT') femalePermanentCount++
         }
       }
 
@@ -304,8 +308,8 @@ export default function DashboardPage() {
       setDeptStats(Object.entries(deptMap).sort((a, b) => b[1].total - a[1].total))
 
       setGenderStats({
-        male: { total: maleTotal || 0, present: malePresentCount, inside: maleInsideCount, permanent: 0 },
-        female: { total: femaleTotal || 0, present: femalePresentCount, inside: femaleInsideCount, permanent: 0 }
+        male: { total: maleTotal || 0, present: malePresentCount, inside: maleInsideCount, permanent: malePermanentCount },
+        female: { total: femaleTotal || 0, present: femalePresentCount, inside: femaleInsideCount, permanent: femalePermanentCount }
       })
 
       // Jatha stats
@@ -383,10 +387,10 @@ export default function DashboardPage() {
       {/* Gender Split */}
       <SectionCard title="Gender Split" icon={Users}>
         <SplitTable
-          headers={['Gender', 'Total', 'Present', 'Inside']}
+          headers={['Gender', 'Total', 'Present', 'Inside', 'Permanent']}
           rows={[
-            ['Male', genderStats.male.total, genderStats.male.present, genderStats.male.inside],
-            ['Female', genderStats.female.total, genderStats.female.present, genderStats.female.inside],
+            ['Male', genderStats.male.total, genderStats.male.present, genderStats.male.inside, genderStats.male.permanent],
+            ['Female', genderStats.female.total, genderStats.female.present, genderStats.female.inside, genderStats.female.permanent],
           ]}
         />
         <div className="dash-summary">
@@ -395,6 +399,8 @@ export default function DashboardPage() {
           <span>Present: {genderStats.male.present + genderStats.female.present}</span>
           <span>|</span>
           <span>Inside: {genderStats.male.inside + genderStats.female.inside}</span>
+          <span>|</span>
+          <span>Permanent: {genderStats.male.permanent + genderStats.female.permanent}</span>
         </div>
       </SectionCard>
 

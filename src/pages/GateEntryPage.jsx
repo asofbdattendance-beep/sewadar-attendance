@@ -195,17 +195,15 @@ export default function GateEntryPage() {
     if (!sewadar) return 'Please select a sewadar'
     
     const errors = {}
-    let hasError = false
 
     for (const entry of entries) {
       const entryErrors = validateSingleEntry(entry)
       if (Object.keys(entryErrors).length > 0) {
         errors[entry.id] = entryErrors
-        hasError = true
       }
     }
 
-    if (hasError) {
+    if (Object.keys(errors).length > 0) {
       setValidationErrors(errors)
       return 'Please fill all required fields correctly'
     }
@@ -219,11 +217,6 @@ export default function GateEntryPage() {
     if (hasFormOverlap || hasDbOverlap) {
       setValidationErrors({ ...errors, _blocked: true })
       return 'Please resolve all overlap errors before submitting'
-    }
-
-    if (hasError) {
-      setValidationErrors(errors)
-      return 'Validation failed'
     }
 
     return null
