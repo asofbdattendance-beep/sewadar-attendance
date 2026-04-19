@@ -133,8 +133,11 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [today] = useState(new Date().toISOString().split('T')[0])
   
-  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
+  const isASO = profile?.role === ROLES.SUPER_ADMIN
+  const isCentreAdmin = profile?.role === ROLES.CENTRE_ADMIN
   const userCentre = profile?.centre
+
+  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.CENTRE_ADMIN
 
   const [stats, setStats] = useState({
     totalBadges: 0,
@@ -145,7 +148,10 @@ export default function DashboardPage() {
   })
 
   const [deptStats, setDeptStats] = useState([])
-  const [genderStats, setGenderStats] = useState({ male: { total: 0, present: 0, inside: 0, permanent: 0 }, female: { total: 0, present: 0, inside: 0, permanent: 0 } })
+  const [genderStats, setGenderStats] = useState({ 
+    male: { total: 0, present: 0, inside: 0, permanent: 0, open: 0 }, 
+    female: { total: 0, present: 0, inside: 0, permanent: 0, open: 0 } 
+  })
   const [jathaStats, setJathaStats] = useState({ total: 0, present: 0 })
   const [centreTree, setCentreTree] = useState([])
   const [centresList, setCentresList] = useState([])
@@ -163,26 +169,26 @@ export default function DashboardPage() {
 
       // 2. Get counts directly using count queries
       let countQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true })
-      if (!isSuperAdmin && userCentre) {
+      if (!canViewAllCentres && userCentre) {
         countQuery = countQuery.eq('centre', userCentre)
       }
       const { count: totalBadges } = await countQuery
 
       let permQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true })
         .eq('badge_status', 'PERMANENT')
-      if (!isSuperAdmin && userCentre) {
+      if (!canViewAllCentres && userCentre) {
         permQuery = permQuery.eq('centre', userCentre)
       }
       const { count: permanentBadges } = await permQuery
 
       let maleQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true }).eq('gender', 'Male')
-      if (!isSuperAdmin && userCentre) {
+      if (!canViewAllCentres && userCentre) {
         maleQuery = maleQuery.eq('centre', userCentre)
       }
       const { count: maleTotal } = await maleQuery
 
       let femaleQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true }).eq('gender', 'Female')
-      if (!isSuperAdmin && userCentre) {
+      if (!canViewAllCentres && userCentre) {
         femaleQuery = femaleQuery.eq('centre', userCentre)
       }
       const { count: femaleTotal } = await femaleQuery
@@ -201,7 +207,7 @@ export default function DashboardPage() {
 
       // 5. Get all sewadars
       let sewadarQuery = supabase.from('sewadars').select('*')
-      if (!isSuperAdmin && userCentre) {
+      if (!canViewAllCentres && userCentre) {
         sewadarQuery = sewadarQuery.eq('centre', userCentre)
       }
       const { data: sewadars } = await sewadarQuery
@@ -280,6 +286,7 @@ export default function DashboardPage() {
       let malePresentCount = 0, femalePresentCount = 0
       let maleInsideCount = 0, femaleInsideCount = 0
       let malePermanentCount = 0, femalePermanentCount = 0
+      let maleOpenCount = 0, femaleOpenCount = 0
 
       for (const s of (sewadars || [])) {
         const gender = s.gender?.toUpperCase() || ''
@@ -287,10 +294,12 @@ export default function DashboardPage() {
           if (localPresentSet.has(s.badge_number)) malePresentCount++
           if (localInsideSet.has(s.badge_number)) maleInsideCount++
           if (s.badge_status === 'PERMANENT') malePermanentCount++
+          else maleOpenCount++
         } else {
           if (localPresentSet.has(s.badge_number)) femalePresentCount++
           if (localInsideSet.has(s.badge_number)) femaleInsideCount++
           if (s.badge_status === 'PERMANENT') femalePermanentCount++
+          else femaleOpenCount++
         }
       }
 
@@ -308,8 +317,8 @@ export default function DashboardPage() {
       setDeptStats(Object.entries(deptMap).sort((a, b) => b[1].total - a[1].total))
 
       setGenderStats({
-        male: { total: maleTotal || 0, present: malePresentCount, inside: maleInsideCount, permanent: malePermanentCount },
-        female: { total: femaleTotal || 0, present: femalePresentCount, inside: femaleInsideCount, permanent: femalePermanentCount }
+        male: { total: maleTotal || 0, present: malePresentCount, inside: maleInsideCount, permanent: malePermanentCount, open: maleOpenCount },
+        female: { total: femaleTotal || 0, present: femalePresentCount, inside: femaleInsideCount, permanent: femalePermanentCount, open: femaleOpenCount }
       })
 
       // Jatha stats
@@ -330,7 +339,7 @@ export default function DashboardPage() {
 
     setLoading(false)
     setRefreshing(false)
-  }, [today, isSuperAdmin, userCentre])
+  }, [today, canViewAllCentres, userCentre])
 
   useEffect(() => { fetchDashboard() }, [fetchDashboard])
 
@@ -346,7 +355,7 @@ export default function DashboardPage() {
             <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
           </button>
         </div>
-        <div className="header-date"><Calendar size={14} />{formatDateIndian(today)} {userCentre && !isSuperAdmin && `- ${userCentre}`}</div>
+        <div className="header-date"><Calendar size={14} />{formatDateIndian(today)} {userCentre && !canViewAllCentres && `- ${userCentre}`}</div>
       </div>
 
       {/* Main Stats */}
@@ -359,8 +368,9 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* Centre Wise Breakdown */}
-      <SectionCard title="Centre & Department Wise Breakdown" icon={MapPin} defaultOpen={isSuperAdmin}>
+      {/* Centre Wise Breakdown - Only for ASO and Centre Admin */}
+      {canViewAllCentres && (
+      <SectionCard title="Centre & Department Wise Breakdown" icon={MapPin} defaultOpen={canViewAllCentres}>
         <div className="centre-tree-legend">
           <span>Centre</span>
           <span className="legend-total">Total</span>
@@ -383,49 +393,36 @@ export default function DashboardPage() {
           )}
         </div>
       </SectionCard>
+      )}
 
       {/* Gender Split */}
       <SectionCard title="Gender Split" icon={Users}>
         <SplitTable
-          headers={['Gender', 'Total', 'Present', 'Inside', 'Permanent']}
+          headers={['Gender', 'Total', 'OPEN', 'PERMANENT', 'Present', 'Inside']}
           rows={[
-            ['Male', genderStats.male.total, genderStats.male.present, genderStats.male.inside, genderStats.male.permanent],
-            ['Female', genderStats.female.total, genderStats.female.present, genderStats.female.inside, genderStats.female.permanent],
+            ['Male', genderStats.male.total, genderStats.male.open, genderStats.male.permanent, genderStats.male.present, genderStats.male.inside],
+            ['Female', genderStats.female.total, genderStats.female.open, genderStats.female.permanent, genderStats.female.present, genderStats.female.inside],
           ]}
         />
-        <div className="dash-summary">
-          <span>Total: {genderStats.male.total + genderStats.female.total}</span>
-          <span>|</span>
-          <span>Present: {genderStats.male.present + genderStats.female.present}</span>
-          <span>|</span>
-          <span>Inside: {genderStats.male.inside + genderStats.female.inside}</span>
-          <span>|</span>
-          <span>Permanent: {genderStats.male.permanent + genderStats.female.permanent}</span>
-        </div>
       </SectionCard>
 
       {/* PERMANENT Badge Split */}
       <SectionCard title="Badge Status Split" icon={Shield}>
         <SplitTable
-          headers={['Status', 'Total', 'Present', 'Inside']}
+          headers={['Status', 'Total', 'OPEN', 'PERMANENT']}
           rows={[
-            ['PERMANENT', stats.permanentBadges, '—', '—'],
-            ['OPEN', stats.openBadges, '—', '—'],
+            ['OPEN', stats.openBadges],
+            ['PERMANENT', stats.permanentBadges],
           ]}
         />
-        <div className="dash-summary">
-          <span>Permanent: {stats.permanentBadges}</span>
-          <span>|</span>
-          <span>Open: {stats.openBadges}</span>
-        </div>
       </SectionCard>
 
       {/* Department Split */}
       <SectionCard title="Department Wise Split" icon={Building}>
         <SplitTable
-          headers={['Department', 'Total', 'Present', 'Inside', 'PERMANENT', 'OPEN']}
+          headers={['Department', 'Total', 'OPEN', 'PERMANENT', 'Present', 'Inside']}
           rows={deptStats.map(([dept, data]) => [
-            dept, data.total, data.present, data.inside, data.permanent, data.open
+            dept, data.total, data.open, data.permanent, data.present, data.inside
           ])}
         />
       </SectionCard>

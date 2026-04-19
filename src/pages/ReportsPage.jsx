@@ -209,7 +209,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   
-  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
+  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN
   const userCentre = profile?.centre
   
   const today = new Date().toISOString().split('T')[0]
@@ -255,41 +255,41 @@ export default function ReportsPage() {
   }
 
   const fetchReport = useCallback(async () => {
-    const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
+const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.CENTRE_ADMIN
     const userCentre = profile?.centre
     
     setLoading(true)
     try {
       switch (activeReport) {
         case 'absenteeism':
-          await fetchAbsenteeism(isSuperAdmin, userCentre)
+          await fetchAbsenteeism(canViewAllCentres, userCentre)
           break
         case 'currently_inside':
-          await fetchCurrentlyInside(isSuperAdmin, userCentre)
+          await fetchCurrentlyInside(canViewAllCentres, userCentre)
           break
         case 'gate_summary':
-          await fetchGateSummary(isSuperAdmin, userCentre)
+          await fetchGateSummary(canViewAllCentres, userCentre)
           break
         case 'late_coming':
-          await fetchLateComing(isSuperAdmin, userCentre)
+          await fetchLateComing(canViewAllCentres, userCentre)
           break
         case 'missing_out':
-          await fetchMissingOut(isSuperAdmin, userCentre)
+          await fetchMissingOut(canViewAllCentres, userCentre)
           break
         case 'jatha_attendance':
-          await fetchJathaAttendance(isSuperAdmin, userCentre)
+          await fetchJathaAttendance(canViewAllCentres, userCentre)
           break
         case 'jatha_summary':
-          await fetchJathaSummary(isSuperAdmin, userCentre)
+          await fetchJathaSummary(canViewAllCentres, userCentre)
           break
         case 'weekly_summary':
-          await fetchWeeklySummary(isSuperAdmin, userCentre)
+          await fetchWeeklySummary(canViewAllCentres, userCentre)
           break
         case 'department_wise':
-          await fetchDepartmentWise(isSuperAdmin, userCentre)
+          await fetchDepartmentWise(canViewAllCentres, userCentre)
           break
         case 'centre_wise':
-          await fetchCentreWise(isSuperAdmin, userCentre)
+          await fetchCentreWise(canViewAllCentres, userCentre)
           break
         default:
           setReportData([])
@@ -304,26 +304,32 @@ export default function ReportsPage() {
 
   // Query builders
   const buildSewadarQuery = (query) => {
-    if (!isSuperAdmin && userCentre) {
+    if (!canViewAllCentres && userCentre) {
       query = query.eq('centre', userCentre)
     }
     return query
   }
 
   const buildCentreQuery = (query) => {
-    if (!isSuperAdmin && userCentre) {
+    if (!canViewAllCentres && userCentre) {
       query = query.eq('centre', userCentre)
     }
     return query
   }
 
   // Absenteeism: All sewadars - present today
-  const fetchAbsenteeism = async (isSuperAdmin, userCentre) => {
-    const { data: sewadars } = await supabase
+  const fetchAbsenteeism = async (canViewAllCentres, userCentre) => {
+    let query = supabase
       .from('sewadars')
       .select('badge_number, sewadar_name, centre, department, badge_status, gender')
       .order('centre')
       .order('sewadar_name')
+
+    if (!canViewAllCentres && userCentre) {
+      query = query.eq('centre', userCentre)
+    }
+
+    const { data: sewadars } = await query
 
     const { data: todaySessions } = await supabase
       .from('attendance_sessions')
@@ -332,11 +338,7 @@ export default function ReportsPage() {
 
     const presentBadges = new Set(todaySessions?.map(s => s.badge_number) || [])
     
-    let filtered = (sewadars || []).filter(s => !presentBadges.has(s.badge_number))
-    
-    if (!isSuperAdmin && userCentre) {
-      filtered = filtered.filter(s => s.centre === userCentre)
-    }
+    const filtered = (sewadars || []).filter(s => !presentBadges.has(s.badge_number))
 
     setReportData(filtered.map(s => ({
       badge_number: { value: s.badge_number, className: 'cell-badge' },
@@ -354,14 +356,14 @@ export default function ReportsPage() {
   }
 
   // Currently Inside: Open sessions
-  const fetchCurrentlyInside = async (isSuperAdmin, userCentre) => {
+  const fetchCurrentlyInside = async (canViewAllCentres, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('*')
       .eq('status', 'OPEN')
       .order('in_time', { ascending: false })
 
-    if (!isSuperAdmin && userCentre) {
+    if (!canViewAllCentres && userCentre) {
       query = query.eq('centre', userCentre)
     }
 
@@ -389,7 +391,7 @@ export default function ReportsPage() {
   }
 
   // Gate Summary: Full log
-  const fetchGateSummary = async (isSuperAdmin, userCentre) => {
+  const fetchGateSummary = async (canViewAllCentres, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('*')
@@ -398,7 +400,7 @@ export default function ReportsPage() {
       .order('in_time', { ascending: false })
       .limit(1000)
 
-    if (!isSuperAdmin && userCentre) {
+    if (!canViewAllCentres && userCentre) {
       query = query.eq('centre', userCentre)
     }
 
@@ -424,7 +426,7 @@ export default function ReportsPage() {
   }
 
   // Late Coming: After threshold
-  const fetchLateComing = async (isSuperAdmin, userCentre) => {
+  const fetchLateComing = async (canViewAllCentres, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('*')
@@ -434,7 +436,7 @@ export default function ReportsPage() {
       .order('in_time', { ascending: false })
       .limit(1000)
 
-    if (!isSuperAdmin && userCentre) {
+    if (!canViewAllCentres && userCentre) {
       query = query.eq('centre', userCentre)
     }
 
@@ -468,7 +470,7 @@ export default function ReportsPage() {
   }
 
   // Missing OUT: Open sessions from before today
-  const fetchMissingOut = async (isSuperAdmin, userCentre) => {
+  const fetchMissingOut = async (canViewAllCentres, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('*')
@@ -476,7 +478,7 @@ export default function ReportsPage() {
       .lt('in_date', today)
       .order('in_time', { ascending: false })
 
-    if (!isSuperAdmin && userCentre) {
+    if (!canViewAllCentres && userCentre) {
       query = query.eq('centre', userCentre)
     }
 
@@ -500,7 +502,7 @@ export default function ReportsPage() {
   }
 
   // Jatha Attendance: Active jatha entries
-  const fetchJathaAttendance = async (isSuperAdmin, userCentre) => {
+  const fetchJathaAttendance = async (canViewAllCentres, userCentre) => {
     let query = supabase
       .from('jatha_attendance')
       .select('*, jatha_master(jatha_type, centre_name, department)')
@@ -518,7 +520,7 @@ export default function ReportsPage() {
     ;(sewadars || []).forEach(s => { sewadarMap[s.badge_number] = s.centre })
 
     let filtered = (records || []).filter(r => {
-      if (isSuperAdmin) return true
+      if (canViewAllCentres) return true
       const centre = sewadarMap[r.badge_number] || ''
       return centre === userCentre
     })
@@ -537,7 +539,7 @@ export default function ReportsPage() {
   }
 
   // Jatha Summary: Grouped by jatha type
-  const fetchJathaSummary = async (isSuperAdmin, userCentre) => {
+  const fetchJathaSummary = async (canViewAllCentres, userCentre) => {
     let query = supabase
       .from('jatha_attendance')
       .select('jatha_id, badge_number, jatha_master(jatha_type, centre_name, department)')
@@ -585,14 +587,14 @@ export default function ReportsPage() {
   }
 
   // Weekly Summary: Day-wise
-  const fetchWeeklySummary = async (isSuperAdmin, userCentre) => {
+  const fetchWeeklySummary = async (canViewAllCentres, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('in_date')
       .gte('in_date', dateFrom)
       .lte('in_date', dateTo)
 
-    if (!isSuperAdmin && userCentre) {
+    if (!canViewAllCentres && userCentre) {
       query = query.eq('centre', userCentre)
     }
 
@@ -637,7 +639,7 @@ export default function ReportsPage() {
   }
 
   // Department Wise
-  const fetchDepartmentWise = async (isSuperAdmin, userCentre) => {
+  const fetchDepartmentWise = async (canViewAllCentres, userCentre) => {
     const { data: sewadars } = await supabase
       .from('sewadars')
       .select('*')
@@ -650,7 +652,7 @@ export default function ReportsPage() {
     const presentBadges = new Set(sessions?.map(s => s.badge_number) || [])
 
     let filteredSewadars = sewadars || []
-    if (!isSuperAdmin && userCentre) {
+    if (!canViewAllCentres && userCentre) {
       filteredSewadars = filteredSewadars.filter(s => s.centre === userCentre)
     }
 
@@ -682,7 +684,7 @@ export default function ReportsPage() {
   }
 
   // Centre Wise
-  const fetchCentreWise = async (isSuperAdmin, userCentre) => {
+  const fetchCentreWise = async (canViewAllCentres, userCentre) => {
     const { data: sewadars } = await supabase
       .from('sewadars')
       .select('*')
@@ -699,7 +701,7 @@ export default function ReportsPage() {
     const presentBadges = new Set(sessions?.map(s => s.badge_number) || [])
 
     let filteredSewadars = sewadars || []
-    if (!isSuperAdmin && userCentre) {
+    if (!canViewAllCentres && userCentre) {
       filteredSewadars = filteredSewadars.filter(s => s.centre === userCentre)
     }
 

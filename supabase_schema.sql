@@ -22,6 +22,15 @@ BEGIN
   ALTER TABLE attendance_sessions DROP CONSTRAINT IF EXISTS attendance_sessions_duty_type_check;
   ALTER TABLE attendance_sessions ADD CONSTRAINT attendance_sessions_duty_type_check 
     CHECK (duty_type IN ('SATSCAN', 'DAILY', 'NIGHT', 'WATCH_AND_WARD', 'JATHA'));
+  
+  -- Add permissions column to users table if it doesn't exist
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'permissions') THEN
+    ALTER TABLE users ADD COLUMN permissions JSONB DEFAULT '{}';
+  END IF;
+  
+  -- Drop old role foreign key constraint if exists and recreate to allow new roles
+  ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_fkey;
+  ALTER TABLE users ALTER COLUMN role TYPE TEXT;
 EXCEPTION WHEN OTHERS THEN
   RAISE NOTICE 'Migration note: %', SQLERRM;
 END $$;
@@ -124,12 +133,42 @@ CREATE TABLE IF NOT EXISTS role_masters (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Seed role_masters
+-- Seed default permissions for roles
+-- Super Admin - All permissions
+UPDATE role_masters SET permissions = '{
+  "allow_dashboard": true,
+  "allow_records": true,
+  "allow_scan": true,
+  "allow_gate_entry": true,
+  "allow_jatha": true,
+  "allow_reports": true,
+  "allow_settings": true
+}'::jsonb WHERE role_key = 'super_admin';
+
+-- Centre Admin - All permissions except settings
+UPDATE role_masters SET permissions = '{
+  "allow_dashboard": true,
+  "allow_records": true,
+  "allow_scan": true,
+  "allow_gate_entry": true,
+  "allow_jatha": true,
+  "allow_reports": true
+}'::jsonb WHERE role_key = 'centre_admin';
+
+-- Scanner (sc_sp_user) - Default permissions
+UPDATE role_masters SET permissions = '{
+  "allow_dashboard": true,
+  "allow_records": true,
+  "allow_scan": true,
+  "allow_gate_entry": true,
+  "allow_jatha": true,
+  "allow_reports": true
+}'::jsonb WHERE role_key = 'sc_sp_user';
 INSERT INTO role_masters (role_key, role_label, role_description, permissions) VALUES
-('super_admin', 'Super Admin', 'Full system access with all permissions', '{"all": true}'),
-('admin', 'Admin', 'Administrative access', '{"users": true, "reports": true, "settings": true}'),
-('centre_user', 'Centre Admin', 'Centre-level administrative access', '{"centre_data": true, "reports": true}'),
-('sc_sp_user', 'Scanner', 'Basic scanning and attendance entry access', '{"scan": true, "entry": true}')
+('super_admin', 'Super Admin', 'Full system access with all permissions', '{"allow_dashboard": true, "allow_records": true, "allow_scan": true, "allow_gate_entry": true, "allow_jatha": true, "allow_reports": true, "allow_settings": true}'),
+('admin', 'Admin', 'Administrative access', '{"allow_dashboard": true, "allow_records": true, "allow_scan": true, "allow_gate_entry": true, "allow_jatha": true, "allow_reports": true, "allow_settings": true}'),
+('centre_user', 'Centre Admin', 'Centre-level administrative access', '{"allow_dashboard": true, "allow_records": true, "allow_scan": true, "allow_gate_entry": true, "allow_jatha": true, "allow_reports": true}'),
+('sc_sp_user', 'Scanner', 'Basic scanning and attendance entry access', '{"allow_dashboard": true, "allow_records": true, "allow_scan": true, "allow_gate_entry": true, "allow_jatha": true, "allow_reports": true}')
 ON CONFLICT (role_key) DO NOTHING;
 
 -- 5b. USERS (updated roles)
@@ -162,6 +201,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_date ON attendance_sessions(in_date);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON attendance_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_open ON attendance_sessions(badge_number, status) WHERE status = 'OPEN';
 CREATE INDEX IF NOT EXISTS idx_sessions_jatha ON attendance_sessions(jatha_id) WHERE jatha_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_centre ON attendance_sessions(centre);
+CREATE INDEX IF NOT EXISTS idx_sessions_in_scanner_centre ON attendance_sessions(in_scanner_centre);
 CREATE INDEX IF NOT EXISTS idx_sewadars_badge ON sewadars(badge_number);
 CREATE INDEX IF NOT EXISTS idx_sewadars_centre ON sewadars(centre);
 CREATE INDEX IF NOT EXISTS idx_centres_parent ON centres(parent_centre);
@@ -521,3 +562,5 @@ ON CONFLICT (jatha_type, centre_name, department) DO NOTHING;
 -- MIGRATION: Update existing users to new role names
 -- ============================================================
 UPDATE users SET role = 'super_admin' WHERE role = 'aso';
+
+

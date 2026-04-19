@@ -13,24 +13,21 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 })
 
 export const ROLES = {
-  SUPER_ADMIN: 'super_admin',
-  ADMIN: 'admin',
-  CENTRE_USER: 'centre_user',
-  SC_SP_USER: 'sc_sp_user'
+  SUPER_ADMIN: 'super_admin', // ASO - Full access
+  CENTRE_ADMIN: 'centre_admin',  // Parent Centre Admin
+  SC_SP_USER: 'sc_sp_user'      // Child Centre / Scanner
 }
 
 export const ROLE_LABELS = {
-  super_admin: 'Super Admin',
-  admin: 'Admin',
-  centre_user: 'Centre Admin',
+ aso: 'ASO (Super Admin)',
+  centre_admin: 'Centre Admin',
   sc_sp_user: 'Scanner'
 }
 
 export const ROLE_COLORS = {
-  super_admin: '#dc2626',
-  admin: '#7c3aed',
-  centre_user: '#2563eb',
-  sc_sp_user: '#217346'
+ aso: '#dc2626',
+  centre_admin: '#7c3aed',
+  sc_sp_user: '#16a34a'
 }
 
 export const DUTY_TYPES = {
@@ -99,4 +96,9 @@ export function formatTime12Hour(timeStr) {
 export function formatDateIndian(dateStr) {
   if (!dateStr) return '—'
   return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+export const GENDER = {
+  MALE: 'M',
+  FEMALE: 'F'
 }

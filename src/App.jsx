@@ -9,12 +9,12 @@ import ScannerPage from './pages/ScannerPage'
 import RecordsPage from './pages/RecordsPage'
 import ProfilePage from './pages/ProfilePage'
 import AttendanceEntryPage from './pages/AttendanceEntryPage'
-import JathaReportsPage from './pages/JathaReportsPage'
 import ReportsPage from './pages/ReportsPage'
-import { LayoutDashboard, Scan, FileText, WifiOff, User, ClipboardList, BarChart3, FileBarChart } from 'lucide-react'
+import SuperAdminPage from './pages/SuperAdminPage'
+import { LayoutDashboard, Scan, FileText, WifiOff, User, ClipboardList, FileBarChart, Settings } from 'lucide-react'
 
 function AppLayout() {
-  const { profile, loading } = useAuth()
+  const { profile, loading, hasPermission } = useAuth()
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const navigate = useNavigate()
   const location = useLocation()
@@ -41,14 +41,23 @@ function AppLayout() {
 
   if (!profile) return <LoginPage />
 
+  // Build nav items based on permissions
   const navItems = [
-    { path: '/', label: 'Home', icon: LayoutDashboard },
-    { path: '/scan', label: 'Scan', icon: Scan },
-    { path: '/records', label: 'Records', icon: FileText },
-    { path: '/entry', label: 'Entry', icon: ClipboardList },
-    { path: '/reports', label: 'Reports', icon: FileBarChart },
+    { path: '/', label: 'Home', icon: LayoutDashboard, permission: 'allow_dashboard' },
+    { path: '/scan', label: 'Scan', icon: Scan, permission: 'allow_scan' },
+    { path: '/records', label: 'Records', icon: FileText, permission: 'allow_records' },
+    { path: '/entry', label: 'Entry', icon: ClipboardList, permission: 'allow_gate_entry' },
+    { path: '/reports', label: 'Reports', icon: FileBarChart, permission: 'allow_reports' },
     { path: '/profile', label: 'Profile', icon: User },
   ]
+
+  // Filter nav items based on permissions (ASO sees all)
+  const visibleNavItems = navItems.filter(item => {
+    if (!item.permission) return true // Profile always visible
+    return hasPermission(item.permission)
+  })
+
+  const adminNav = (profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'admin') ? [{ path: '/superadmin', label: 'ASO', icon: Settings }] : []
 
   return (
     <div>
@@ -66,19 +75,19 @@ function AppLayout() {
 
       {/* Routes */}
       <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/reports" element={<ReportsPage />} />
-        <Route path="/scan" element={<ScannerPage isOnline={isOnline} />} />
-        <Route path="/records" element={<RecordsPage />} />
-        <Route path="/entry" element={<AttendanceEntryPage />} />
-        <Route path="/jatha-reports" element={<JathaReportsPage />} />
+        <Route path="/" element={hasPermission('allow_dashboard') ? <DashboardPage /> : <Navigate to="/profile" replace />} />
+        <Route path="/reports" element={hasPermission('allow_reports') ? <ReportsPage /> : <Navigate to="/" replace />} />
+        <Route path="/scan" element={hasPermission('allow_scan') ? <ScannerPage isOnline={isOnline} /> : <Navigate to="/" replace />} />
+        <Route path="/records" element={hasPermission('allow_records') ? <RecordsPage /> : <Navigate to="/" replace />} />
+        <Route path="/entry" element={hasPermission('allow_gate_entry') ? <AttendanceEntryPage /> : <Navigate to="/" replace />} />
         <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/superadmin" element={hasPermission('allow_settings') ? <SuperAdminPage /> : <Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
 
       {/* Bottom Nav */}
       <nav className="bottom-nav">
-        {navItems.map(({ path, label, icon: Icon }) => (
+        {[...visibleNavItems, ...adminNav].map(({ path, label, icon: Icon }) => (
           <button
             key={path}
             className={`bottom-nav-item ${location.pathname === path ? 'active' : ''}`}
