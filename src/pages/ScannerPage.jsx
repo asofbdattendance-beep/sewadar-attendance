@@ -10,6 +10,8 @@ export default function ScannerPage({ isOnline }) {
   const [processing, setProcessing] = useState(false)
   const [recentScans, setRecentScans] = useState([])
   const [forgotOutData, setForgotOutData] = useState(null)
+  const [childCentres, setChildCentres] = useState([])
+  const [specialDepts, setSpecialDepts] = useState([])
   const [manualEntryOpen, setManualEntryOpen] = useState(false)
   const [manualSearch, setManualSearch] = useState('')
   const [manualResults, setManualResults] = useState([])
@@ -51,10 +53,40 @@ export default function ScannerPage({ isOnline }) {
     return () => supabase.removeChannel(channel)
   }, [profile?.centre, fetchRecentScans])
 
+  useEffect(() => {
+    if (profile?.centre) {
+      supabase.from('centres').select('name').eq('parent_centre', profile.centre).then(({ data }) => {
+        setChildCentres(data?.map(c => c.name) || [])
+      })
+      supabase.from('special_departments').select('department_name').then(({ data }) => {
+        const depts = data?.map(d => d.department_name?.trim().toUpperCase()) || []
+        console.log('Special depts from DB:', JSON.stringify(depts))
+        setSpecialDepts(depts)
+      })
+    }
+  }, [profile?.centre])
+
+  const isInScope = (sewadarCentre, department) => {
+    if (!profile?.centre) return true
+    const scope = [profile?.centre, ...childCentres]
+    if (sewadarCentre && scope.includes(sewadarCentre)) return true
+    if (!specialDepts.length) return true
+    if (department) {
+      const deptUpper = department.trim().toUpperCase()
+      if (specialDepts.includes(deptUpper)) return true
+    }
+    return false
+  }
+
   const handleScan = useCallback(async (badge) => {
     const now = Date.now()
     if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) return
+    if (!profile?.centre) return
     lastScanRef.current = { badge, time: now }
+    if (childCentres.length === 0 && specialDepts.length === 0) {
+      setPopupState({ type: 'loading', message: 'Loading scope data...' })
+      return
+    }
     setProcessing(true)
 
     let found = null
@@ -65,6 +97,12 @@ export default function ScannerPage({ isOnline }) {
 
     if (!found) {
       setPopupState({ type: 'not_found', badge }); setProcessing(false); return
+    }
+
+    console.log('Found:', found.badge_number, 'dept:', found.department, 'specialDepts:', specialDepts)
+    
+    if (!isInScope(found.centre, found.department)) {
+      setPopupState({ type: 'not_in_scope', sewadar: found }); setProcessing(false); return
     }
 
     let openSession = null
@@ -199,14 +237,19 @@ export default function ScannerPage({ isOnline }) {
     let q = supabase.from('sewadars')
       .select('*')
       .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
-      .limit(10)
+      .limit(20)
 
     if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
-      q = q.eq('centre', profile.centre)
+      const scope = [profile.centre, ...childCentres]
+      q = q.in('centre', scope)
     }
 
     const { data } = await q
-    setManualResults(data || [])
+    let filtered = data || []
+    if (profile?.centre) {
+      filtered = filtered.filter(s => isInScope(s.centre, s.department))
+    }
+    setManualResults(filtered)
     setManualLoading(false)
   }
 
@@ -479,6 +522,18 @@ export default function ScannerPage({ isOnline }) {
                 <div className="error-title">Badge Not Found</div>
                 <div className="error-badge">{popupState.badge}</div>
                 <div className="error-msg">This badge is not registered</div>
+                <button className="btn-cancel" onClick={closePopup}>Try Again</button>
+              </div>
+            )}
+
+            {/* Not In Scope */}
+            {popupState.type === 'not_in_scope' && (
+              <div className="popup-error">
+                <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Not In Scope</div>
+                <div className="error-badge">{popupState.sewadar.sewadar_name}</div>
+                <div className="error-msg">Sewadar is from {popupState.sewadar.centre}</div>
+                <div className="error-msg" style={{ fontSize: 11, marginTop: 4 }}>Only {profile?.centre} + child centres allowed</div>
                 <button className="btn-cancel" onClick={closePopup}>Try Again</button>
               </div>
             )}

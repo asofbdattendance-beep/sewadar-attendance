@@ -181,6 +181,13 @@ export default function DashboardPage() {
       }
       const { count: permanentBadges } = await permQuery
 
+      let openQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true })
+        .eq('badge_status', 'OPEN')
+      if (!canViewAllCentres && userCentre) {
+        openQuery = openQuery.eq('centre', userCentre)
+      }
+      const { count: openBadgesCount } = await openQuery
+
       let maleQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true }).eq('gender', 'Male')
       if (!canViewAllCentres && userCentre) {
         maleQuery = maleQuery.eq('centre', userCentre)
@@ -308,7 +315,7 @@ export default function DashboardPage() {
         presentToday: presentInScope.length,
         currentlyInside: insideInScope.length,
         permanentBadges: permanentBadges || 0,
-        openBadges: (totalBadges || 0) - (permanentBadges || 0)
+        openBadges: openBadgesCount || 0
       })
 
       setPresentSet(localPresentSet)
@@ -409,7 +416,7 @@ export default function DashboardPage() {
       {/* PERMANENT Badge Split */}
       <SectionCard title="Badge Status Split" icon={Shield}>
         <SplitTable
-          headers={['Status', 'Total', 'OPEN', 'PERMANENT']}
+          headers={['Status', 'Total']}
           rows={[
             ['OPEN', stats.openBadges],
             ['PERMANENT', stats.permanentBadges],

@@ -177,7 +177,7 @@ function SessionTable({ records }) {
                 <td><span className="entry-type-pill">{isGateEntry ? 'GATE' : isManual ? 'MANUAL' : 'SCAN'}</span></td>
                 <td className="cell-date">{r.in_date ? formatDateIndian(r.in_date) : '-'}</td>
                 <td className="cell-time">{r.in_time ? formatTime12Hour(r.in_time) : '-'}</td>
-                <td className="cell-date">{r.out_date ? (sameDate ? '—' : formatDateIndian(r.out_date)) : (isOpen ? '-' : '-')}</td>
+                <td className="cell-date">{r.out_date ? formatDateIndian(r.out_date) : (isOpen ? '-' : '-')}</td>
                 <td className="cell-time">{isOpen ? '-' : (r.out_time ? formatTime12Hour(r.out_time) : '-')}</td>
                 <td className="cell-duration">{duration || (isOpen ? 'In progress' : '-')}</td>
                 <td className="cell-scanner">{r.in_scanner_name || '-'}</td>
@@ -237,6 +237,16 @@ export default function RecordsPage() {
   const [viewMode, setViewMode] = useState('auto')
   const searchTimeout = useRef(null)
   const pullStartY = useRef(0)
+  useEffect(() => {
+    const channel = supabase
+      .channel('attendance_changes')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance_sessions' }, () => fetchRecords())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'jatha_attendance' }, () => fetchRecords())
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [])
+
   const isMobile = () => window.innerWidth < 768
 
   const fetchRecords = useCallback(async (isRefresh = false) => {
@@ -260,6 +270,7 @@ export default function RecordsPage() {
     }
 
     const { data: gateData } = await gateQuery
+    console.log('Gate records sample:', gateData?.[0])
     let gateFiltered = (gateData || []).filter(r => r.is_jatha_entry !== true)
     
     if (searchTerm) {

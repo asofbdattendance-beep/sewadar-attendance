@@ -10,10 +10,11 @@ const JATHA_TYPES = [
   { value: 'jatha_home', label: 'Jatha Home' },
 ]
 
-const MAX_JATHA_DAYS = 30
-const MAX_PAST_DAYS = 7
+const MAX_JATHA_DAYS = 10
+const MAX_PAST_DAYS = 30
 
-function GateEntryForm({ profile, onSuccess }) {
+function GateEntryForm({ onSuccess }) {
+  const { profile } = useAuth()
   const toast = useToast()
   const [entries, setEntries] = useState([])
   const [selectedSewadar, setSelectedSewadar] = useState(null)
@@ -24,7 +25,18 @@ function GateEntryForm({ profile, onSuccess }) {
   const [submitResult, setSubmitResult] = useState(null)
   const [validationErrors, setValidationErrors] = useState({})
   const [dbOverlaps, setDbOverlaps] = useState({})
+  const [validationMsg, setValidationMsg] = useState('')
+  const [allowOtherCentres, setAllowOtherCentres] = useState(false)
+  const [childCentres, setChildCentres] = useState([])
   const searchTimeout = useRef(null)
+
+  useEffect(() => {
+    if (profile?.centre) {
+      supabase.from('centres').select('name').eq('parent_centre', profile.centre).then(({ data }) => {
+        setChildCentres(data?.map(c => c.name) || [])
+      })
+    }
+  }, [profile?.centre])
 
   const resetForm = () => {
     setEntries([])
@@ -34,6 +46,7 @@ function GateEntryForm({ profile, onSuccess }) {
     setSubmitResult(null)
     setValidationErrors({})
     setDbOverlaps({})
+    setValidationMsg('')
   }
 
   const addEntry = () => {
@@ -76,12 +89,27 @@ function GateEntryForm({ profile, onSuccess }) {
     }
   }
 
+  const MAX_HOURS_PER_DAY = 16
+  const MAX_DAYS = 7
+
   const validateSingleEntry = (entry) => {
     const errors = []
     if (!entry.inDate || !entry.inTime) errors.push('IN date/time required')
     if (!entry.outDate || !entry.outTime) errors.push('OUT date/time required')
     if (entry.inDate && entry.outDate && entry.outDate < entry.inDate) {
       errors.push('OUT must be after IN')
+    }
+    if (entry.inDate && entry.outDate && entry.inTime && entry.outTime) {
+      const inDt = new Date(`${entry.inDate}T${entry.inTime}`)
+      const outDt = new Date(`${entry.outDate}T${entry.outTime}`)
+      const hours = (outDt - inDt) / (1000 * 60 * 60)
+      if (hours > MAX_HOURS_PER_DAY) {
+        errors.push(`Duration exceeds ${MAX_HOURS_PER_DAY}h - verify IN/OUT times`)
+      }
+      const days = Math.ceil((outDt - inDt) / (1000 * 60 * 60 * 24))
+      if (days > MAX_DAYS) {
+        errors.push(`Entry spans ${days} days - exceeds ${MAX_DAYS} day limit`)
+      }
     }
     return errors
   }
@@ -110,11 +138,19 @@ function GateEntryForm({ profile, onSuccess }) {
   const checkDbOverlaps = async (badgeNumber, entryId, entry) => {
     if (!entry.inDate || !entry.outDate) return
 
+    console.log('Checking DB overlaps for:', badgeNumber)
+    console.log('New entry:', entry.inDate, entry.inTime, 'to', entry.outDate, entry.outTime)
+
     const { data } = await supabase
       .from('attendance_sessions')
       .select('id, in_date, in_time, out_date, out_time, status')
       .eq('badge_number', badgeNumber)
       .or('status.eq.OPEN,status.eq.CLOSED')
+
+    console.log('Existing sessions:', data?.length)
+    if (data && data.length > 0) {
+      console.log('Session 1:', data[0])
+    }
 
     if (!data) return
 
@@ -162,16 +198,31 @@ function GateEntryForm({ profile, onSuccess }) {
     setSearchLoading(true)
     const term = query.replace(/[%_]/g, '').toUpperCase().slice(0, 50)
 
-    let q = supabase.from('sewadars')
-      .select('*')
-      .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
-      .limit(10)
-
-    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
-      q = q.eq('centre', profile.centre)
+    if (profile?.centre && !allowOtherCentres) {
+      const { data: childData } = await supabase.from('centres').select('name').eq('parent_centre', profile.centre)
+      const childNames = (childData || []).map(c => c.name)
+      
+      if (childNames.length > 0) {
+        const parentCentre = profile.centre
+        const parentSewadars = await supabase.from('sewadars').select('*').eq('centre', parentCentre).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(10)
+        
+        const childSewadars = await supabase.from('sewadars').select('*').in('centre', childNames).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(10)
+        
+        const all = [...(parentSewadars.data || []), ...(childSewadars.data || [])]
+        setSearchResults(all)
+        setSearchLoading(false)
+        return
+      } else {
+        const { data } = await supabase.from('sewadars').select('*').eq('centre', profile.centre).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
+        setSearchResults(data || [])
+        setSearchLoading(false)
+        return
+      }
     }
 
-    const { data } = await q
+    console.log('Searching ALL centres (no restriction)')
+    const { data } = await supabase.from('sewadars').select('*').or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
+    console.log('all results:', data?.length)
     setSearchResults(data || [])
     setSearchLoading(false)
   }
@@ -203,20 +254,29 @@ function GateEntryForm({ profile, onSuccess }) {
   }
 
   const validateEntries = async () => {
-    if (!selectedSewadar) return 'Select a sewadar first'
-    if (entries.length === 0) return 'Add at least one entry'
+    if (!selectedSewadar) {
+      setValidationMsg('Please select a sewadar first')
+      return 'Select a sewadar first'
+    }
+    if (entries.length === 0) {
+      setValidationMsg('Please add at least one entry')
+      return 'Add at least one entry'
+    }
 
     const errors = {}
+    let firstError = ''
     const hasErrors = entries.some(entry => {
       const entryErrors = validateSingleEntry(entry)
       if (entryErrors.length > 0) {
         errors[entry.id] = entryErrors
+        if (!firstError) firstError = entryErrors[0]
         return true
       }
       
       const formOverlap = checkFormOverlaps(entry.id)
       if (formOverlap) {
         errors[entry.id] = [formOverlap]
+        if (!firstError) firstError = formOverlap
         return true
       }
       return false
@@ -224,15 +284,25 @@ function GateEntryForm({ profile, onSuccess }) {
 
     if (hasErrors) {
       setValidationErrors(errors)
+      setValidationMsg(firstError)
       return 'Validation failed'
     }
-
+    
+    setValidationMsg('')
     return null
   }
 
   const submitEntries = async () => {
     const error = await validateEntries()
-    if (error) return
+    if (error) {
+      return
+    }
+
+    const hasValidationErrors = validationErrors && typeof validationErrors === 'object' && Object.keys(validationErrors).some(key => Array.isArray(validationErrors[key]) && validationErrors[key].length > 0)
+    if (hasValidationErrors) {
+      toast.error('Please fix validation errors before submitting')
+      return
+    }
 
     const hasDbOverlaps = Object.keys(dbOverlaps).length > 0
     if (hasDbOverlaps) {
@@ -307,6 +377,8 @@ function GateEntryForm({ profile, onSuccess }) {
 
       toast.success(`${records.length} entries added!`)
       setSubmitResult({ success: true, count: records.length })
+      setValidationErrors({})
+      setValidationMsg('')
       setTimeout(() => {
         resetForm()
         setSubmitResult(null)
@@ -327,6 +399,13 @@ function GateEntryForm({ profile, onSuccess }) {
         <span>Gate Entry - Select Sewadar</span>
       </div>
 
+      {validationMsg && (
+        <div className="overlap-warning">
+          <AlertTriangle size={16} />
+          <span>{validationMsg}</span>
+        </div>
+      )}
+
       {!selectedSewadar ? (
         <>
           <div className="search-box-gate">
@@ -338,6 +417,13 @@ function GateEntryForm({ profile, onSuccess }) {
               onChange={handleSearchChange}
             />
           </div>
+
+          {profile && (
+            <label className="checkbox-label" style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text)' }}>
+              <input type="checkbox" checked={allowOtherCentres} onChange={e => { setAllowOtherCentres(e.target.checked); setSearchTerm('') }} />
+              <span>Allow other centres (not default)</span>
+            </label>
+          )}
 
           {searchResults.length > 0 && (
             <div className="search-results-gate">
@@ -445,7 +531,8 @@ function GateEntryForm({ profile, onSuccess }) {
   )
 }
 
-function JathaEntryForm({ profile, onSuccess }) {
+function JathaEntryForm({ onSuccess }) {
+  const { profile } = useAuth()
   const toast = useToast()
   const [jathaType, setJathaType] = useState('')
   const [jathas, setJathas] = useState([])
@@ -505,8 +592,11 @@ function JathaEntryForm({ profile, onSuccess }) {
       .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
       .limit(10)
 
-    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
-      q = q.eq('centre', profile.centre)
+    if (profile?.centre) {
+      const { data: childData } = await supabase.from('centres').select('name').eq('parent_centre', profile.centre)
+      const childNames = childData?.map(c => c.name) || []
+      const allowed = [profile.centre, ...childNames].filter(Boolean)
+      q = q.in('centre', allowed)
     }
 
     const { data } = await q
@@ -535,8 +625,7 @@ function JathaEntryForm({ profile, onSuccess }) {
 
   const checkDateValidations = () => {
     const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    const todayStr = today.toISOString().split('T')[0]
+    const todayStr = today.toLocaleDateString('en-CA')
     const from = new Date(fromDate)
     const to = new Date(toDate)
 
@@ -562,7 +651,8 @@ function JathaEntryForm({ profile, onSuccess }) {
         .select('*')
         .eq('jatha_id', selectedJatha.id)
         .eq('badge_number', sewadar.badge_number)
-        .or(`and(from_date.lte.${toDate},to_date.gte.${fromDate})`)
+        .lte('from_date', toDate)
+        .gte('to_date', fromDate)
 
       if (data && data.length > 0) {
         duplicates.push({
@@ -651,6 +741,8 @@ function JathaEntryForm({ profile, onSuccess }) {
         return
       }
       setWarnings(result.warnings)
+      toast.error('Cannot submit: Please resolve warnings first')
+      return
     }
 
     setSubmitting(true)
@@ -847,6 +939,7 @@ function JathaEntryForm({ profile, onSuccess }) {
 }
 
 export default function AttendanceEntryPage() {
+  const { profile } = useAuth()
   const [activeTab, setActiveTab] = useState('gate')
 
   return (
@@ -869,8 +962,8 @@ export default function AttendanceEntryPage() {
         </button>
       </div>
 
-      {activeTab === 'gate' && <GateEntryForm />}
-      {activeTab === 'jatha' && <JathaEntryForm />}
+{activeTab === 'gate' && <GateEntryForm />}
+{activeTab === 'jatha' && <JathaEntryForm />}
     </div>
   )
 }

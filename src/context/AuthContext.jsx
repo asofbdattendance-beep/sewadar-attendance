@@ -49,25 +49,17 @@ export function AuthProvider({ children }) {
       } else {
         perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true, allow_settings: true }
       }
-    } else if (data?.permissions) {
-      // Parse custom permissions from DB
-      if (typeof data.permissions === 'string') {
-        try { perms = JSON.parse(data.permissions) } catch { perms = {} }
-      } else {
-        perms = data.permissions || {}
+    } else if (data?.role) {
+      if (data.permissions) {
+        if (typeof data.permissions === 'string') {
+          try { perms = JSON.parse(data.permissions) } catch { perms = {} }
+        } else {
+          perms = data.permissions || {}
+        }
       }
       
-      // If no custom permissions set, fetch from role defaults
       if (Object.keys(perms).length === 0 && data?.role) {
-        const { data: roleData } = await supabase
-          .from('role_masters')
-          .select('permissions')
-          .eq('role_key', data.role)
-          .single()
-        
-        if (roleData?.permissions) {
-          perms = typeof roleData.permissions === 'string' ? JSON.parse(roleData.permissions) : roleData.permissions
-        }
+        perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true }
       }
     }
     
