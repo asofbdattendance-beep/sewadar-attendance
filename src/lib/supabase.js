@@ -19,13 +19,13 @@ export const ROLES = {
 }
 
 export const ROLE_LABELS = {
- aso: 'ASO (Super Admin)',
+  super_admin: 'ASO (Super Admin)',
   centre_admin: 'Centre Admin',
   sc_sp_user: 'Scanner'
 }
 
 export const ROLE_COLORS = {
- aso: '#dc2626',
+  super_admin: '#dc2626',
   centre_admin: '#7c3aed',
   sc_sp_user: '#16a34a'
 }

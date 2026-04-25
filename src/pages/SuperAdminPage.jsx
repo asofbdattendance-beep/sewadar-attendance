@@ -95,7 +95,7 @@ function FormFields({ table, formData, setFormData, centres, isUsersTable }) {
               required
             >
               <option value="">Select Role</option>
-              <option value="aso">ASO (Super Admin)</option>
+              <option value="super_admin">ASO (Super Admin)</option>
               <option value="centre_admin">Centre Admin</option>
               <option value="sc_sp_user">Scanner</option>
             </select>
@@ -442,9 +442,9 @@ export default function SuperAdminPage() {
                       ) : col === 'permissions' ? (
                         <span className="cell-mono">{JSON.stringify(row[col] || {}).slice(0, 30)}</span>
                       ) : col === 'role_key' ? (
-                        <span className={`role-pill ${row[col]}`}>{row[col] === 'aso' ? 'ASO' : row[col].replace('_', ' ')}</span>
+                        <span className={`role-pill ${row[col]}`}>{row[col] === 'super_admin' ? 'ASO' : row[col] === 'centre_admin' ? 'Centre Admin' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
                       ) : col === 'role' ? (
-                        <span className={`role-pill ${row[col]}`}>{row[col] === 'aso' ? 'ASO' : row[col] === 'centre_admin' ? 'Centre Admin' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
+                        <span className={`role-pill ${row[col]}`}>{row[col] === 'super_admin' ? 'ASO' : row[col] === 'centre_admin' ? 'Centre Admin' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
                       ) : col === 'jatha_type' ? (
                         <span className={`type-pill ${row[col]}`}>{row[col].replace('_', ' ')}</span>
                       ) : (

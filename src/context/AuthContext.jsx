@@ -32,8 +32,8 @@ export function AuthProvider({ children }) {
       .eq('auth_id', userId)
       .single()
     
-    // Determine if user is ASO/Super Admin
-    const isASO = data?.role === ROLES.SUPER_ADMIN || data?.role === 'admin'
+    // Determine if user is Super Admin (aso or super_admin)
+    const isASO = data?.role === ROLES.SUPER_ADMIN || data?.role === 'aso' || data?.role === 'admin'
     
     let perms = {}
     if (isASO) {
@@ -70,7 +70,7 @@ export function AuthProvider({ children }) {
 
   // Helper function to check permission
   const hasPermission = (permKey) => {
-    if (profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'admin') {
+    if (profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'aso' || profile?.role === 'admin') {
       return true
     }
     return !!permissions[permKey]

@@ -39,7 +39,7 @@ function SplitTable({ headers, rows }) {
     <div className="dash-table-wrapper">
       <table className="dash-table">
         <thead>
-          <tr>{headers.map((h, i) => <th key={i}>{h}</th>)}</tr>
+          <tr>{headers.map((h, i) => <th key={i} className={i >= 1 ? 'num' : ''}>{h}</th>)}</tr>
         </thead>
         <tbody>
           {rows.map((row, i) => (
