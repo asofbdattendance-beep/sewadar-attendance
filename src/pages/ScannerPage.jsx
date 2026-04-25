@@ -22,10 +22,12 @@ export default function ScannerPage({ isOnline }) {
   const [manualEntryType, setManualEntryType] = useState('in')
   const [manualNoSession, setManualNoSession] = useState(false)
   const [manualHasSession, setManualHasSession] = useState(false)
+  const [manualForgotOutData, setManualForgotOutData] = useState(null)
 
   const scannerRef = useRef(null)
   const lastScanRef = useRef({ badge: null, time: 0 })
   const manualSearchTimeout = useRef(null)
+  const popupOpenRef = useRef(false)
 
   const fetchRecentScans = useCallback(async () => {
     if (!profile?.centre) return
@@ -78,16 +80,34 @@ export default function ScannerPage({ isOnline }) {
     return false
   }
 
-  const handleScan = useCallback(async (badge) => {
+const handleScan = useCallback(async (badge) => {
     const now = Date.now()
-    if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) return
-    if (!profile?.centre) return
+    console.log('=== handleScan START ===', badge)
+    console.log('popupOpenRef:', popupOpenRef.current)
+    console.log('lastScanRef:', lastScanRef.current)
+    
+    if (popupOpenRef.current) {
+      console.log('Blocked: popup already showing')
+      return
+    }
+    if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) {
+      console.log('Rejected: too soon')
+      return
+    }
+    if (!profile?.centre) {
+      console.log('Rejected: no centre')
+      return
+    }
     lastScanRef.current = { badge, time: now }
+    console.log('Updated lastScanRef:', lastScanRef.current)
+    
     if (childCentres.length === 0 && specialDepts.length === 0) {
       setPopupState({ type: 'loading', message: 'Loading scope data...' })
       return
     }
     setProcessing(true)
+
+    console.log('Fetching sewadar:', badge)
 
     let found = null
     if (isOnline) {
@@ -96,13 +116,17 @@ export default function ScannerPage({ isOnline }) {
     }
 
     if (!found) {
-      setPopupState({ type: 'not_found', badge }); setProcessing(false); return
+      setPopupState({ type: 'not_found', badge })
+      popupOpenRef.current = true
+      setProcessing(false)
+      return
     }
-
-    console.log('Found:', found.badge_number, 'dept:', found.department, 'specialDepts:', specialDepts)
     
     if (!isInScope(found.centre, found.department)) {
-      setPopupState({ type: 'not_in_scope', sewadar: found }); setProcessing(false); return
+      setPopupState({ type: 'not_in_scope', sewadar: found })
+      popupOpenRef.current = true
+      setProcessing(false)
+      return
     }
 
     let openSession = null
@@ -116,7 +140,13 @@ export default function ScannerPage({ isOnline }) {
     const todayStr = today.toISOString().split('T')[0]
     const currentTime = today.toTimeString().slice(0, 5)
 
+    console.log('openSession:', openSession)
+
     if (openSession) {
+      // Stop the scanner when showing popup
+      if (scannerRef.current) scannerRef.current.stop()
+      popupOpenRef.current = true
+      
       const inDate = new Date(openSession.in_date + 'T12:00:00')
       const hoursSinceIn = (today - inDate) / (1000 * 60 * 60)
 
@@ -126,11 +156,15 @@ export default function ScannerPage({ isOnline }) {
         setPopupState({ type: 'out', sewadar: found, openSession })
       }
     } else {
+      // Stop the scanner when showing popup
+      if (scannerRef.current) scannerRef.current.stop()
+      popupOpenRef.current = true
+      
       setPopupState({ type: 'in', sewadar: found, dutyType, inDate: todayStr, inTime: currentTime })
     }
 
     setProcessing(false)
-  }, [isOnline, profile])
+  }, [isOnline, profile, childCentres, specialDepts])
 
   const markIN = async (customTime = null) => {
     if (!popupState?.sewadar || !profile) return
@@ -184,22 +218,21 @@ export default function ScannerPage({ isOnline }) {
     const outDate = forgotDate || now.toISOString().split('T')[0]
     const outTime = forgotTime || now.toTimeString().slice(0, 5)
 
-    const updateData = {
-      status: SESSION_STATUS.CLOSED,
-      out_date: outDate,
-      out_time: outTime,
-      out_scanner_badge: profile?.badge_number,
-      out_scanner_name: profile?.name,
-      out_scanner_centre: profile?.centre || popupState?.sewadar?.centre || 'UNKNOWN',
-      updated_at: now.toISOString()
-    }
+    const sessionId = typeof popupState.openSession === 'object' ? popupState.openSession.id : popupState.openSession
 
     if (navigator.vibrate) navigator.vibrate([40, 30, 40])
 
     setPopupState({ type: 'success', action: 'OUT', sewadar: popupState.sewadar, time: formatTime12Hour(outTime) })
     
     if (isOnline) {
-      await supabase.from('attendance_sessions').update(updateData).eq('id', popupState.openSession.id)
+      await supabase.rpc('close_session', {
+        p_session_id: sessionId,
+        p_out_date: outDate,
+        p_out_time: outTime,
+        p_out_scanner_badge: profile?.badge_number,
+        p_out_scanner_name: profile?.name,
+        p_out_scanner_centre: profile?.centre || popupState?.sewadar?.centre || 'UNKNOWN'
+      })
       fetchRecentScans()
     }
     
@@ -207,10 +240,14 @@ export default function ScannerPage({ isOnline }) {
   }
 
   const closePopup = () => {
+    console.log('closePopup called, triggering auto-refresh')
     setPopupState(null)
     setForgotOutData(null)
     lastScanRef.current = { badge: null, time: 0 }
-    if (scannerRef.current) scannerRef.current.resume()
+    popupOpenRef.current = false
+    
+    // Full page refresh to reset scanner completely
+    window.location.reload()
   }
 
   const closeManualEntry = () => {
@@ -223,6 +260,7 @@ export default function ScannerPage({ isOnline }) {
     setManualEntryType('in')
     setManualNoSession(false)
     setManualHasSession(false)
+    setManualForgotOutData(null)
   }
 
   const searchSewadars = async (query) => {
@@ -266,6 +304,7 @@ export default function ScannerPage({ isOnline }) {
     setManualLoading(true)
     setManualNoSession(false)
     setManualHasSession(false)
+    setManualForgotOutData(null)
     
     const now = new Date()
     setManualEntryTime({
@@ -278,13 +317,34 @@ export default function ScannerPage({ isOnline }) {
       const { data } = await supabase.rpc('get_open_session', { p_badge: sewadar.badge_number })
       if (data && data.badge_number) {
         setManualOpenSession(data)
-        setManualEntryType('out')
+        
+        // Check if session is older than 12 hours
+        const inDate = new Date(data.in_date + 'T12:00:00')
+        const hoursSinceIn = (now - inDate) / (1000 * 60 * 60)
+        
+        if (hoursSinceIn > 12) {
+          // Session is very old - show forgot_out mode
+          const nowStr = now.toISOString().split('T')[0]
+          const nowTime = now.toTimeString().slice(0, 5)
+          setManualForgotOutData({ 
+            date: nowStr, 
+            time: nowTime,
+            inDate: data.in_date,
+            inTime: data.in_time
+          })
+          setManualEntryType('out')
+        } else {
+          setManualForgotOutData(null)
+          setManualEntryType('out')
+        }
       } else {
         setManualOpenSession(null)
+        setManualForgotOutData(null)
         setManualEntryType('in')
       }
     } else {
       setManualOpenSession(null)
+      setManualForgotOutData(null)
       setManualEntryType('in')
     }
     
@@ -292,11 +352,34 @@ export default function ScannerPage({ isOnline }) {
   }
 
   const submitManualEntry = async () => {
-    if (!manualSelectedSewadar || !manualEntryTime.date || !manualEntryTime.time) return
+    console.log('submitManualEntry called', {
+      manualSelectedSewadar: manualSelectedSewadar?.badge_number,
+      manualEntryType,
+      manualEntryTime,
+      manualForgotOutData,
+      manualOpenSession: manualOpenSession?.id
+    })
+    
+    if (!manualSelectedSewadar) {
+      console.log('No sewadar selected')
+      return
+    }
+    
+    if (manualEntryType === 'in') {
+      if (!manualEntryTime.date || !manualEntryTime.time) {
+        console.log('IN: missing date/time')
+        return
+      }
+    } else {
+      const hasTime = (manualEntryTime.date && manualEntryTime.time) || (manualForgotOutData?.date && manualForgotOutData?.time)
+      console.log('OUT check:', { manualOpenSession: !!manualOpenSession, hasTime })
+      if (!manualOpenSession || !hasTime) return
+    }
 
     const now = new Date()
     
     if (manualEntryType === 'in') {
+      console.log('Inserting IN session...')
       const record = {
         badge_number: manualSelectedSewadar.badge_number,
         sewadar_name: manualSelectedSewadar.sewadar_name,
@@ -327,29 +410,68 @@ export default function ScannerPage({ isOnline }) {
         fetchRecentScans()
       }
     } else {
+      console.log('Processing OUT session...', { manualOpenSession })
       if (!manualOpenSession) {
+        console.log('No open session found')
         setManualNoSession(true)
+        return
+      }
+      
+      const outDate = manualForgotOutData?.date || manualEntryTime.date
+      const outTime = manualForgotOutData?.time || manualEntryTime.time
+      
+      console.log('OUT date/time:', { outDate, outTime, from: manualForgotOutData ? 'forgotOutData' : 'manualEntryTime' })
+      
+      if (!outDate || !outTime) {
+        console.log('Missing out date/time')
         return
       }
       
       const updateData = {
         status: SESSION_STATUS.CLOSED,
-        out_date: manualEntryTime.date,
-        out_time: manualEntryTime.time,
+        out_date: outDate,
+        out_time: outTime,
         out_scanner_badge: profile?.badge_number,
         out_scanner_name: profile?.name,
         out_scanner_centre: profile?.centre || manualSelectedSewadar?.centre || 'UNKNOWN',
         updated_at: now.toISOString()
       }
+      
+      console.log('Updating session:', manualOpenSession.id, updateData)
 
-      if (navigator.vibrate) navigator.vibrate([40, 30, 40])
+      const sessionId = typeof manualOpenSession === 'object' ? manualOpenSession.id : manualOpenSession
+      console.log('Using session ID:', sessionId, 'type:', typeof sessionId, 'manualOpenSession:', manualOpenSession)
 
       if (isOnline) {
-        await supabase.from('attendance_sessions').update(updateData).eq('id', manualOpenSession.id)
+        const { data: existing } = await supabase
+          .from('attendance_sessions')
+          .select('*')
+          .eq('id', sessionId)
+          .single()
+        console.log('Existing session before update:', existing)
+        
+        // Try using RPC to bypass RLS
+        const rpcResult = await supabase.rpc('close_session', {
+          p_session_id: sessionId,
+          p_out_date: outDate,
+          p_out_time: outTime,
+          p_out_scanner_badge: profile?.badge_number,
+          p_out_scanner_name: profile?.name,
+          p_out_scanner_centre: profile?.centre || manualSelectedSewadar?.centre || 'UNKNOWN'
+        })
+        console.log('RPC result:', rpcResult)
+        
+        const { data: updated } = await supabase
+          .from('attendance_sessions')
+          .select('*')
+          .eq('id', sessionId)
+          .single()
+        console.log('Session after update:', updated)
+        
         fetchRecentScans()
       }
     }
-
+    
     closeManualEntry()
   }
 
@@ -615,6 +737,7 @@ export default function ScannerPage({ isOnline }) {
                     setManualOpenSession(null)
                     setManualNoSession(false)
                     setManualHasSession(false)
+                    setManualForgotOutData(null)
                   }}>Change</button>
                 </div>
 
@@ -625,7 +748,7 @@ export default function ScannerPage({ isOnline }) {
                   </div>
                 ) : (
                   <>
-                    {manualEntryType === 'out' && manualOpenSession && (
+                    {manualEntryType === 'out' && manualOpenSession && !manualForgotOutData && (
                       <div className="session-info-box">
                         <Info size={14} />
                         <div>
@@ -633,6 +756,28 @@ export default function ScannerPage({ isOnline }) {
                           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
                             IN: {manualOpenSession.in_date} at {formatTime12Hour(manualOpenSession.in_time)}
                           </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {manualForgotOutData && (
+                      <div className="warning-box" style={{ borderColor: '#f59e0b', background: 'rgba(245, 158, 11, 0.08)' }}>
+                        <AlertTriangle size={14} color="#f59e0b" />
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: 12, color: '#f59e0b' }}>Previous Session Still Open</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                            From {manualForgotOutData.inDate} at {formatTime12Hour(manualForgotOutData.inTime)}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {manualForgotOutData && (
+                      <div style={{ marginBottom: '1rem' }}>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>When did you leave?</label>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          <input type="date" className="input" value={manualForgotOutData?.date || ''} onChange={e => setManualForgotOutData(f => ({ ...f, date: e.target.value }))} />
+                          <input type="time" className="input" value={manualForgotOutData?.time || ''} onChange={e => setManualForgotOutData(f => ({ ...f, time: e.target.value }))} />
                         </div>
                       </div>
                     )}
@@ -668,6 +813,7 @@ export default function ScannerPage({ isOnline }) {
                           setManualEntryType('in')
                           setManualNoSession(false)
                           setManualHasSession(false)
+                          setManualForgotOutData(null)
                         }}
                       >
                         IN
@@ -685,36 +831,33 @@ export default function ScannerPage({ isOnline }) {
                       </button>
                     </div>
 
-                    <div className="time-inputs">
-                      <div className="time-field">
-                        <label>Date</label>
-                        <input
-                          type="date"
-                          value={manualEntryTime.date}
-                          onChange={e => setManualEntryTime(t => ({ ...t, date: e.target.value }))}
-                        />
+                    {!manualForgotOutData && (
+                      <div className="time-inputs">
+                        <div className="time-field">
+                          <label>Date</label>
+                          <input
+                            type="date"
+                            value={manualEntryTime.date}
+                            onChange={e => setManualEntryTime(t => ({ ...t, date: e.target.value }))}
+                          />
+                        </div>
+                        <div className="time-field">
+                          <label>Time</label>
+                          <input
+                            type="time"
+                            value={manualEntryTime.time}
+                            onChange={e => setManualEntryTime(t => ({ ...t, time: e.target.value }))}
+                          />
+                        </div>
                       </div>
-                      <div className="time-field">
-                        <label>Time</label>
-                        <input
-                          type="time"
-                          value={manualEntryTime.time}
-                          onChange={e => setManualEntryTime(t => ({ ...t, time: e.target.value }))}
-                        />
-                      </div>
-                    </div>
+                    )}
 
                     <button
                       className={manualEntryType === 'in' ? 'btn-in' : 'btn-out'}
                       onClick={submitManualEntry}
-                      disabled={
-                        !manualEntryTime.date || 
-                        !manualEntryTime.time || 
-                        (manualEntryType === 'out' && !manualOpenSession) ||
-                        (manualEntryType === 'in' && manualOpenSession)
-                      }
+                      disabled={false}
                     >
-                      Mark {manualEntryType.toUpperCase()}
+                      {manualForgotOutData ? 'Close Session' : `Mark ${manualEntryType.toUpperCase()}`}
                     </button>
                   </>
                 )}

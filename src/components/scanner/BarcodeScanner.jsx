@@ -48,19 +48,29 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const fpsRef = useRef({ frames: 0, last: Date.now() })
 
   const stopScanner = () => {
+    console.log('stopScanner called')
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
-    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
-    if (videoRef.current) videoRef.current.srcObject = null
+    if (streamRef.current) { 
+      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current = null 
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+      videoRef.current.load()
+    }
     isDetectingRef.current = false
   }
 
   const startScanner = async () => {
+    console.log('startScanner called, mounted:', mountedRef.current)
     if (!mountedRef.current) return
+    
+    // Stop existing first
     stopScanner()
+    
     setStatus('loading')
     setErrorMsg('')
     setLastScanned('')
-    lastScanRef.current = { badge: null, time: 0 }
     fpsRef.current = { frames: 0, last: Date.now() }
 
     // ── Step 1: Load barcode engine ──
@@ -169,9 +179,22 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   }, [])
 
   useImperativeHandle(ref, () => ({
-    stop: stopScanner,
-    resume: () => { if (mountedRef.current) startScanner() },
-    restart: () => { stopScanner(); setTimeout(() => { if (mountedRef.current) startScanner() }, 100) }
+    stop: () => {
+      console.log('Scanner: stop')
+      stopScanner()
+    },
+    resume: () => { 
+      console.log('Scanner: resume')
+      if (mountedRef.current) startScanner() 
+    },
+    restart: () => { 
+      console.log('Scanner: restart')
+      stopScanner()
+      setTimeout(() => { 
+        console.log('Scanner: starting after delay')
+        if (mountedRef.current) startScanner() 
+      }, 300) 
+    }
   }), [])
 
   if (status === 'error') {

@@ -551,6 +551,7 @@ function JathaEntryForm({ onSuccess }) {
 
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
+  const [remarks, setRemarks] = useState('')
 
   const resetForm = () => {
     setSelectedJatha(null)
@@ -729,6 +730,12 @@ function JathaEntryForm({ onSuccess }) {
 
   const submitJathaAttendance = async () => {
     if (!selectedJatha) { toast.error('Please select a jatha'); return }
+    
+    // Check required remarks for jatha_home
+    if (jathaType === 'jatha_home' && !remarks?.trim()) {
+      toast.error('Remarks is required for Jatha Home')
+      return
+    }
 
     const result = await validateAndCheck()
     if (result.error) { toast.error(result.error); return }
@@ -755,6 +762,7 @@ function JathaEntryForm({ onSuccess }) {
         sewadar_name: sewadar.sewadar_name,
         from_date: fromDate,
         to_date: toDate,
+        remarks: remarks?.trim() || null,
         entered_by_badge: profile.badge_number,
         entered_by_name: profile.name,
       }))
@@ -913,6 +921,19 @@ function JathaEntryForm({ onSuccess }) {
                     </div>
                   )}
 
+                  {/* REMARKS - Required for Jatha Home, Optional for others */}
+                  <div className="entry-field" style={{ marginTop: '1rem' }}>
+                    <label style={{ color: jathaType === 'jatha_home' ? 'var(--error)' : 'var(--text-muted)' }}>
+                      Remarks {jathaType === 'jatha_home' && <span style={{ color: 'var(--error)' }}>*</span>}
+                    </label>
+                    <input
+                      type="text"
+                      placeholder={jathaType === 'jatha_home' ? 'Enter remarks (required)' : 'Enter remarks (optional)'}
+                      value={remarks}
+                      onChange={e => setRemarks(e.target.value)}
+                    />
+                  </div>
+
                   {warnings.length > 0 && (
                     <div className="jatha-warnings">
                       {warnings.map((w, i) => (
@@ -924,7 +945,7 @@ function JathaEntryForm({ onSuccess }) {
                     </div>
                   )}
 
-                  <button className="submit-gate-btn" onClick={submitJathaAttendance} disabled={submitting}>
+                  <button className="submit-gate-btn" onClick={submitJathaAttendance} disabled={submitting || (jathaType === 'jatha_home' && !remarks?.trim())}>
                     {submitting ? <><div className="spinner" style={{ width: 18, height: 18 }} /> Saving...</> :
                       <><CheckCircle size={18} /> Mark {sewadars.length} Sewadar(s) for Jatha</>}
                   </button>

@@ -95,6 +95,11 @@ function JathaCard({ session }) {
           <span>Entered by: {session.entered_by_name || 'Unknown'}</span>
           <span className="jatha-scanner-badge">{session.entered_by_badge || 'N/A'}</span>
         </div>
+        {session.remarks && (
+          <div className="jatha-remarks-row">
+            <span>Remarks: {session.remarks}</span>
+          </div>
+        )}
         <div className="jatha-record-date">{formatDateIndian(session.in_date)}</div>
       </div>
     </div>
@@ -197,7 +202,7 @@ function JathaTable({ records }) {
       <table className="records-table">
         <thead>
           <tr>
-            <th>Badge</th><th>Name</th><th>Destination</th><th>Type</th><th>Department</th><th>From Date</th><th>To Date</th><th>Entered By</th>
+            <th>Badge</th><th>Name</th><th>Destination</th><th>Type</th><th>Department</th><th>From Date</th><th>To Date</th><th>Remarks</th><th>Entered By</th>
           </tr>
         </thead>
         <tbody>
@@ -210,6 +215,7 @@ function JathaTable({ records }) {
               <td className="cell-centre">{r.jatha_department || '-'}</td>
               <td className="cell-date">{formatDateIndian(r.in_date)}</td>
               <td className="cell-date">{formatDateIndian(r.out_date)}</td>
+              <td className="cell-remarks" style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.remarks || '-'}</td>
               <td className="cell-scanner">{r.entered_by_name || '-'}</td>
             </tr>
           ))}
@@ -344,11 +350,11 @@ export default function RecordsPage() {
         r.in_scanner_name || 'Admin', r.out_scanner_name || ''
       ])
     } else {
-      headers = ['Badge', 'Name', 'Destination', 'Type', 'Department', 'From Date', 'To Date', 'Entered By']
+      headers = ['Badge', 'Name', 'Destination', 'Type', 'Department', 'From Date', 'To Date', 'Remarks', 'Entered By']
       rows = records.map(r => [
         r.badge_number, `"${r.sewadar_name}"`, r.centre || '',
         getJathaTypeLabel(r.jatha_type), r.jatha_department || '',
-        r.in_date, r.out_date, r.entered_by_name || ''
+        r.in_date, r.out_date, r.remarks || '', r.entered_by_name || ''
       ])
     }
 

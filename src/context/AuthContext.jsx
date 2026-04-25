@@ -37,18 +37,8 @@ export function AuthProvider({ children }) {
     
     let perms = {}
     if (isASO) {
-      // ASO gets all permissions - fetch from role_masters if available
-      const { data: roleData } = await supabase
-        .from('role_masters')
-        .select('permissions')
-        .eq('role_key', ROLES.SUPER_ADMIN)
-        .single()
-      
-      if (roleData?.permissions) {
-        perms = typeof roleData.permissions === 'string' ? JSON.parse(roleData.permissions) : roleData.permissions
-      } else {
-        perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true, allow_settings: true }
-      }
+      // ASO gets all permissions by default - skip role_masters query to avoid RLS errors
+      perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true, allow_settings: true }
     } else if (data?.role) {
       if (data.permissions) {
         if (typeof data.permissions === 'string') {

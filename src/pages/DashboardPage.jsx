@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase, ROLES, formatDateIndian } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { RefreshCw, Users, UserCheck, UserPlus, ChevronDown, ChevronUp, Building, Calendar, Shield, MapPin, ChevronRight } from 'lucide-react'
+import { RefreshCw, Users, UserCheck, UserPlus, ChevronDown, ChevronUp, Building, Calendar, Shield, MapPin, ChevronRight, Download } from 'lucide-react'
 
 function StatCard({ icon: Icon, label, value, subValue, color = 'green', loading }) {
   return (
@@ -131,7 +131,7 @@ export default function DashboardPage() {
   const { profile } = useAuth()
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
-  const [today] = useState(new Date().toISOString().split('T')[0])
+  const today = new Date().toISOString().split('T')[0] // Refreshed each render
   
   const isASO = profile?.role === ROLES.SUPER_ADMIN
   const isCentreAdmin = profile?.role === ROLES.CENTRE_ADMIN
@@ -161,6 +161,10 @@ export default function DashboardPage() {
   const fetchDashboard = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
+
+    // Use local date format consistent with other pages
+    const todayStr = new Date().toISOString().split('T')[0]
+    const pageSize = 1000
 
     try {
       // 1. Fetch centres
@@ -200,31 +204,65 @@ export default function DashboardPage() {
       }
       const { count: femaleTotal } = await femaleQuery
 
-      // 3. Today's sessions
+      // 3. Today's sessions - use in_date
       const { data: todaySessions } = await supabase
         .from('attendance_sessions')
         .select('badge_number')
-        .eq('in_date', today)
+        .eq('in_date', todayStr)
 
-      // 4. Open sessions
+      // 4. Open sessions (status = 'OPEN')
       const { data: openSessions } = await supabase
         .from('attendance_sessions')
         .select('badge_number')
         .eq('status', 'OPEN')
 
-      // 5. Get all sewadars
-      let sewadarQuery = supabase.from('sewadars').select('*')
-      if (!canViewAllCentres && userCentre) {
-        sewadarQuery = sewadarQuery.eq('centre', userCentre)
+      // 5. Get all sewadars - fetch ALL using pagination to override 1000 limit
+      let allSewadars = []
+      let page = 0
+      const pageSize = 1000
+      while (true) {
+        const from = page * pageSize
+        const to = from + pageSize - 1
+        const { data: batch } = await supabase
+          .from('sewadars')
+          .select('badge_number')
+          .range(from, to)
+        if (!batch || batch.length === 0) break
+        allSewadars = [...allSewadars, ...batch]
+        if (batch.length < pageSize) break
+        page++
       }
-      const { data: sewadars } = await sewadarQuery
+      console.log('All sewadars fetched:', allSewadars.length)
+
+      // Also get full data for stats using pagination
+      let sewadars = []
+      let page2 = 0
+      while (true) {
+        const from = page2 * pageSize
+        const to = from + pageSize - 1
+        let query = supabase.from('sewadars').select('*').range(from, to)
+        if (!canViewAllCentres && userCentre) {
+          query = query.eq('centre', userCentre)
+        }
+        const { data: batch } = await query
+        if (!batch || batch.length === 0) break
+        sewadars = [...sewadars, ...batch]
+        if (batch.length < pageSize) break
+        page2++
+      }
+      console.log('Full sewadars for stats:', sewadars.length)
 
       const localPresentSet = new Set((todaySessions || []).map(s => s.badge_number))
       const localInsideSet = new Set((openSessions || []).map(s => s.badge_number))
-      const scopeBadges = new Set(sewadars?.map(s => s.badge_number) || [])
+      const scopeBadges = new Set(allSewadars?.map(s => s.badge_number) || [])
 
       const presentInScope = [...localPresentSet].filter(b => scopeBadges.has(b))
       const insideInScope = [...localInsideSet].filter(b => scopeBadges.has(b))
+
+      console.log('Present set:', [...localPresentSet].slice(0,5))
+      console.log('Inside set:', [...localInsideSet].slice(0,5))
+      console.log('Present in scope:', presentInScope.length, presentInScope.slice(0,5))
+      console.log('Inside in scope:', insideInScope.length, insideInScope.slice(0,5))
 
       // 6. Build centre tree
       const centreMap = {}
@@ -353,15 +391,65 @@ export default function DashboardPage() {
   const totalPercent = stats.totalBadges > 0 ? Math.round(stats.presentToday / stats.totalBadges * 100) : 0
   const presentPercent = stats.presentToday > 0 ? Math.round(stats.currentlyInside / stats.presentToday * 100) : 0
 
+  const exportDashboard = () => {
+    // Centre data
+    const centreRows = []
+    const addCentreRow = (centre, level = 0) => {
+      const deptRows = []
+      if (centre.departments) {
+        for (const [dept, d] of Object.entries(centre.departments)) {
+          const deptPresent = d.sewadars.filter(s => presentSet.has(s.badge_number)).length
+          const deptInside = d.sewadars.filter(s => insideSet.has(s.badge_number)).length
+          deptRows.push([dept, d.sewadars.length, deptPresent, deptInside])
+        }
+      }
+      centreRows.push([centre.name, centre.total, centre.sewadars.filter(s => presentSet.has(s.badge_number)).length, centre.sewadars.filter(s => insideSet.has(s.badge_number)).length, deptRows])
+    }
+    for (const c of centreTree) addCentreRow(c)
+    
+    // Flatten for CSV
+    const csvRows = [['Centre', 'Department', 'Total', 'Present', 'Inside']]
+    for (const [centreName, total, present, inside, depts] of centreRows) {
+      csvRows.push([centreName, '', total, present, inside])
+      for (const [dept, t, p, i] of depts) {
+        csvRows.push(['', dept, t, p, i])
+      }
+    }
+    
+    // Gender section
+    csvRows.push([])
+    csvRows.push(['Gender', 'Total', 'OPEN', 'PERMANENT', 'Present', 'Inside'])
+    csvRows.push(['Male', genderStats.male.total, genderStats.male.open, genderStats.male.permanent, genderStats.male.present, genderStats.male.inside])
+    csvRows.push(['Female', genderStats.female.total, genderStats.female.open, genderStats.female.permanent, genderStats.female.present, genderStats.female.inside])
+    
+    // Badge status
+    csvRows.push([])
+    csvRows.push(['Badge Status', 'Total'])
+    csvRows.push(['OPEN', stats.openBadges])
+    csvRows.push(['PERMANENT', stats.permanentBadges])
+    
+    // Download
+    const csv = csvRows.map(r => r.join(',')).join('\n')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.download = `dashboard_${today}.csv`
+    a.click()
+  }
+
   return (
     <div className="page-full pb-nav">
       <div className="header">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h2>Dashboard</h2>
-          <button className="refresh-btn" onClick={() => fetchDashboard(true)} disabled={refreshing}>
-            <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
-          </button>
-        </div>
+            <h2>Dashboard</h2>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="refresh-btn" onClick={exportDashboard} title="Export CSV">
+                <Download size={14} />
+              </button>
+              <button className="refresh-btn" onClick={() => fetchDashboard(true)} disabled={refreshing}>
+                <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
+              </button>
+            </div>
+          </div>
         <div className="header-date"><Calendar size={14} />{formatDateIndian(today)} {userCentre && !canViewAllCentres && `- ${userCentre}`}</div>
       </div>
 

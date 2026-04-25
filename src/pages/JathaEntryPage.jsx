@@ -33,6 +33,7 @@ export default function JathaEntryPage() {
 
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
+  const [remarks, setRemarks] = useState('')
 
   const resetForm = () => {
     setSelectedJatha(null)
@@ -42,6 +43,7 @@ export default function JathaEntryPage() {
     setSearchResults([])
     setFromDate('')
     setToDate('')
+    setRemarks('')
     setSubmitResult(null)
     setWarnings([])
   }
@@ -262,12 +264,19 @@ export default function JathaEntryPage() {
     if (!fromDate) return 'Please select FROM DATE'
     if (!toDate) return 'Please select TO DATE'
     if (new Date(toDate) < new Date(fromDate)) return 'TO DATE must be after FROM DATE'
+    if (jathaType === 'jatha_home' && !remarks?.trim()) return 'Remarks is required for Jatha Home'
     return null
   }
 
   const submitJathaAttendance = async () => {
     if (!selectedJatha) {
       toast.error('Please select a jatha')
+      return
+    }
+
+    const validationError = validateForm()
+    if (validationError) {
+      toast.error(validationError)
       return
     }
 
@@ -298,6 +307,7 @@ export default function JathaEntryPage() {
         sewadar_name: sewadar.sewadar_name,
         from_date: fromDate,
         to_date: toDate,
+        remarks: remarks?.trim() || null,
         entered_by_badge: profile?.badge_number,
         entered_by_name: profile?.name,
       }))
@@ -416,6 +426,7 @@ export default function JathaEntryPage() {
                 setSewadars([])
                 setFromDate('')
                 setToDate('')
+                setRemarks('')
                 setWarnings([])
               }}
             >
@@ -567,7 +578,7 @@ export default function JathaEntryPage() {
       )}
 
       {/* Submit */}
-      {selectedJatha && sewadars.length > 0 && fromDate && toDate && (
+      {selectedJatha && sewadars.length > 0 && fromDate && toDate && (jathaType !== 'jatha_home' || remarks?.trim()) && (
         <button
           className="submit-gate-btn"
           onClick={submitJathaAttendance}

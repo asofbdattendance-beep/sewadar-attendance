@@ -3,8 +3,7 @@ import { supabase, ROLES, formatDateIndian, formatTime12Hour } from '../lib/supa
 import { useAuth } from '../context/AuthContext'
 import { 
   ChevronDown, Calendar, Download, FileSpreadsheet, FileText, 
-  Users, UserCheck, Clock, AlertTriangle, UserX, BarChart3,
-  Building, MapPin, RefreshCw, Settings, CheckCircle
+  Users, UserCheck, Clock, AlertTriangle, UserX, Building, MapPin, RefreshCw, Settings, CheckCircle
 } from 'lucide-react'
 
 const REPORTS = {
@@ -15,9 +14,7 @@ const REPORTS = {
     subReports: [
       { id: 'absenteeism', label: 'Absenteeism List', icon: UserX },
       { id: 'currently_inside', label: 'Currently Inside', icon: UserCheck },
-      { id: 'gate_summary', label: 'Gate Summary', icon: Clock },
       { id: 'late_coming', label: 'Late Coming', icon: AlertTriangle },
-      { id: 'missing_out', label: 'Missing OUT', icon: AlertTriangle },
     ]
   },
   JATHA: {
@@ -26,17 +23,6 @@ const REPORTS = {
     icon: Users,
     subReports: [
       { id: 'jatha_attendance', label: 'Jatha Attendance', icon: Calendar },
-      { id: 'jatha_summary', label: 'Jatha Summary', icon: BarChart3 },
-    ]
-  },
-  SUMMARY: {
-    id: 'summary',
-    label: 'Summary',
-    icon: BarChart3,
-    subReports: [
-      { id: 'weekly_summary', label: 'Weekly Summary', icon: Calendar },
-      { id: 'department_wise', label: 'Department Wise', icon: Building },
-      { id: 'centre_wise', label: 'Centre Wise', icon: MapPin },
     ]
   }
 }
@@ -319,17 +305,30 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
   // Absenteeism: All sewadars - present today
   const fetchAbsenteeism = async (canViewAllCentres, userCentre) => {
-    let query = supabase
-      .from('sewadars')
-      .select('badge_number, sewadar_name, centre, department, badge_status, gender')
-      .order('centre')
-      .order('sewadar_name')
+    const pageSize = 1000
+    let allSewadars = []
+    let page = 0
+    
+    while (true) {
+      const from = page * pageSize
+      const to = from + pageSize - 1
+      let query = supabase
+        .from('sewadars')
+        .select('badge_number, sewadar_name, centre, department, badge_status, gender')
+        .order('centre')
+        .order('sewadar_name')
+        .range(from, to)
 
-    if (!canViewAllCentres && userCentre) {
-      query = query.eq('centre', userCentre)
+      if (!canViewAllCentres && userCentre) {
+        query = query.eq('centre', userCentre)
+      }
+
+      const { data: batch } = await query
+      if (!batch || batch.length === 0) break
+      allSewadars = [...allSewadars, ...batch]
+      if (batch.length < pageSize) break
+      page++
     }
-
-    const { data: sewadars } = await query
 
     const { data: todaySessions } = await supabase
       .from('attendance_sessions')
@@ -338,7 +337,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
     const presentBadges = new Set(todaySessions?.map(s => s.badge_number) || [])
     
-    const filtered = (sewadars || []).filter(s => !presentBadges.has(s.badge_number))
+    const filtered = allSewadars.filter(s => !presentBadges.has(s.badge_number))
 
     setReportData(filtered.map(s => ({
       badge_number: { value: s.badge_number, className: 'cell-badge' },
@@ -425,27 +424,39 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     })
   }
 
-  // Late Coming: After threshold
+  // Late Coming: Present but after threshold time
   const fetchLateComing = async (canViewAllCentres, userCentre) => {
-    let query = supabase
-      .from('attendance_sessions')
-      .select('*')
-      .gte('in_date', dateFrom)
-      .lte('in_date', dateTo)
-      .eq('status', 'CLOSED')
-      .order('in_time', { ascending: false })
-      .limit(1000)
+    const pageSize = 1000
+    let allSessions = []
+    let page = 0
+    
+    while (true) {
+      const from = page * pageSize
+      const to = from + pageSize - 1
+      let query = supabase
+        .from('attendance_sessions')
+        .select('*')
+        .gte('in_date', dateFrom)
+        .lte('in_date', dateTo)
+        .eq('status', 'CLOSED')
+        .order('in_time', { ascending: false })
+        .range(from, to)
 
-    if (!canViewAllCentres && userCentre) {
-      query = query.eq('centre', userCentre)
+      if (!canViewAllCentres && userCentre) {
+        query = query.eq('centre', userCentre)
+      }
+
+      const { data: batch } = await query
+      if (!batch || batch.length === 0) break
+      allSessions = [...allSessions, ...batch]
+      if (batch.length < pageSize) break
+      page++
     }
-
-    const { data: sessions } = await query
 
     const [thresholdHour, thresholdMin] = lateThreshold.split(':').map(Number)
     const thresholdMins = thresholdHour * 60 + thresholdMin
 
-    const lateSessions = (sessions || []).filter(s => {
+    const lateSessions = allSessions.filter(s => {
       const [h, m] = s.in_time.split(':').map(Number)
       const sessionMins = h * 60 + m
       return sessionMins > thresholdMins
@@ -501,13 +512,14 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     setReportSummary({ total: rows.length })
   }
 
-  // Jatha Attendance: Active jatha entries
+  // Jatha Attendance: Currently active jatha entries (to_date >= today)
   const fetchJathaAttendance = async (canViewAllCentres, userCentre) => {
+    const today = new Date().toISOString().split('T')[0]
+    
     let query = supabase
       .from('jatha_attendance')
       .select('*, jatha_master(jatha_type, centre_name, department)')
-      .lte('from_date', dateTo)
-      .gte('to_date', dateFrom)
+      .gte('to_date', today) // Only ongoing or future jathas
       .order('entered_at', { ascending: false })
 
     const { data: records } = await query
@@ -535,7 +547,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     }))
 
     setReportData(rows)
-    setReportSummary({ total: rows.length })
+    setReportSummary({ total: rows.length, active: rows.length })
   }
 
   // Jatha Summary: Grouped by jatha type
