@@ -12,8 +12,9 @@ const REPORTS = {
     label: 'Gate',
     icon: Users,
     subReports: [
-      { id: 'absenteeism', label: 'Absenteeism List', icon: UserX },
-      { id: 'currently_inside', label: 'Currently Inside', icon: UserCheck },
+      { id: 'present', label: 'Present List', icon: UserCheck },
+      { id: 'absenteeism', label: 'Absent List', icon: UserX },
+      { id: 'currently_inside', label: 'Currently Inside', icon: Clock },
       { id: 'late_coming', label: 'Late Coming', icon: AlertTriangle },
     ]
   },
@@ -22,14 +23,16 @@ const REPORTS = {
     label: 'Jatha',
     icon: Users,
     subReports: [
-      { id: 'jatha_attendance', label: 'Jatha Attendance', icon: Calendar },
+      { id: 'jatha_active', label: 'Active Jathas', icon: Calendar },
+      { id: 'jatha_historical', label: 'Past Jathas', icon: Calendar },
+      { id: 'jatha_all', label: 'All Jathas', icon: Calendar },
     ]
   }
 }
 
 const LATE_THRESHOLD_DEFAULT = '10:00'
 
-function DateRangePicker({ dateFrom, dateTo, onDateFromChange, onDateToChange }) {
+function DateRangePicker({ dateFrom, dateTo, onDateFromChange, onDateToChange, singleDate = false }) {
   return (
     <div className="report-date-range">
       <div className="date-input-group">
@@ -40,15 +43,19 @@ function DateRangePicker({ dateFrom, dateTo, onDateFromChange, onDateToChange })
           onChange={(e) => onDateFromChange(e.target.value)}
         />
       </div>
-      <span className="date-separator">to</span>
-      <div className="date-input-group">
-        <label>To</label>
-        <input 
-          type="date" 
-          value={dateTo} 
-          onChange={(e) => onDateToChange(e.target.value)}
-        />
-      </div>
+      {!singleDate && (
+        <>
+          <span className="date-separator">to</span>
+          <div className="date-input-group">
+            <label>To</label>
+            <input 
+              type="date" 
+              value={dateTo} 
+              onChange={(e) => onDateToChange(e.target.value)}
+            />
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -199,11 +206,10 @@ export default function ReportsPage() {
   const userCentre = profile?.centre
   
   const today = new Date().toISOString().split('T')[0]
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
   
   const [activeCategory, setActiveCategory] = useState('gate')
-  const [activeReport, setActiveReport] = useState('absenteeism')
-  const [dateFrom, setDateFrom] = useState(weekAgo)
+  const [activeReport, setActiveReport] = useState('present')
+  const [dateFrom, setDateFrom] = useState(today)
   const [dateTo, setDateTo] = useState(today)
   
   const [reportData, setReportData] = useState([])
@@ -211,6 +217,7 @@ export default function ReportsPage() {
   
   const [lateThreshold, setLateThreshold] = useState(LATE_THRESHOLD_DEFAULT)
   const [showSettings, setShowSettings] = useState(false)
+  const [jathaFilter, setJathaFilter] = useState('active') // active, historical, all
 
   const currentCategory = Object.values(REPORTS).find(c => c.id === activeCategory)
   const currentSubReports = currentCategory?.subReports || []
@@ -247,6 +254,9 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     setLoading(true)
     try {
       switch (activeReport) {
+        case 'present':
+          await fetchPresent(canViewAllCentres, userCentre)
+          break
         case 'absenteeism':
           await fetchAbsenteeism(canViewAllCentres, userCentre)
           break
@@ -261,6 +271,18 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           break
         case 'missing_out':
           await fetchMissingOut(canViewAllCentres, userCentre)
+          break
+        case 'jatha_active':
+          setJathaFilter('active')
+          await fetchJathaAttendance(canViewAllCentres, userCentre, 'active')
+          break
+        case 'jatha_historical':
+          setJathaFilter('historical')
+          await fetchJathaAttendance(canViewAllCentres, userCentre, 'historical')
+          break
+        case 'jatha_all':
+          setJathaFilter('all')
+          await fetchJathaAttendance(canViewAllCentres, userCentre, 'all')
           break
         case 'jatha_attendance':
           await fetchJathaAttendance(canViewAllCentres, userCentre)
@@ -303,7 +325,60 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     return query
   }
 
-  // Absenteeism: All sewadars - present today
+  // Present: All sewadars present today (closed sessions + currently inside for same date)
+  const fetchPresent = async (canViewAllCentres, userCentre) => {
+    const pageSize = 1000
+    let allSewadars = []
+    let page = 0
+    
+    while (true) {
+      const from = page * pageSize
+      const to = from + pageSize - 1
+      let query = supabase
+        .from('sewadars')
+        .select('badge_number, sewadar_name, centre, department, badge_status, gender')
+        .order('centre')
+        .order('sewadar_name')
+        .range(from, to)
+
+      if (!canViewAllCentres && userCentre) {
+        query = query.eq('centre', userCentre)
+      }
+
+      const { data: batch } = await query
+      if (!batch || batch.length === 0) break
+      allSewadars = [...allSewadars, ...batch]
+      if (batch.length < pageSize) break
+      page++
+    }
+
+    // Get all sessions for today (both CLOSED and OPEN)
+    const { data: todaySessions } = await supabase
+      .from('attendance_sessions')
+      .select('badge_number, out_date, status')
+      .eq('in_date', today)
+      .in('status', ['OPEN', 'CLOSED'])
+
+    const presentBadges = new Set(todaySessions?.map(s => s.badge_number) || [])
+    
+    const filtered = allSewadars.filter(s => presentBadges.has(s.badge_number))
+
+    setReportData(filtered.map(s => ({
+      badge_number: { value: s.badge_number, className: 'cell-badge' },
+      name: { value: s.sewadar_name, className: 'cell-name' },
+      centre: s.centre,
+      department: s.department || '—',
+      status: { value: s.badge_status, className: `cell-status ${s.badge_status.toLowerCase()}` },
+    })))
+
+    setReportSummary({
+      total: filtered.length,
+      permanent: filtered.filter(s => s.badge_status === 'PERMANENT').length,
+      open: filtered.filter(s => s.badge_status === 'OPEN').length,
+    })
+  }
+
+  // Absenteeism: All sewadars NOT present today (for same date)
   const fetchAbsenteeism = async (canViewAllCentres, userCentre) => {
     const pageSize = 1000
     let allSewadars = []
@@ -330,10 +405,12 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       page++
     }
 
+    // Get all sessions for today (both CLOSED and OPEN)
     const { data: todaySessions } = await supabase
       .from('attendance_sessions')
       .select('badge_number')
       .eq('in_date', today)
+      .in('status', ['OPEN', 'CLOSED'])
 
     const presentBadges = new Set(todaySessions?.map(s => s.badge_number) || [])
     
@@ -354,12 +431,13 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     })
   }
 
-  // Currently Inside: Open sessions
+  // Currently Inside: Open sessions from today (still inside now)
   const fetchCurrentlyInside = async (canViewAllCentres, userCentre) => {
     let query = supabase
       .from('attendance_sessions')
       .select('*')
       .eq('status', 'OPEN')
+      .eq('in_date', today)
       .order('in_time', { ascending: false })
 
     if (!canViewAllCentres && userCentre) {
@@ -512,15 +590,26 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     setReportSummary({ total: rows.length })
   }
 
-  // Jatha Attendance: Currently active jatha entries (to_date >= today)
-  const fetchJathaAttendance = async (canViewAllCentres, userCentre) => {
-    const today = new Date().toISOString().split('T')[0]
+  // Jatha Attendance: jatha entries based on filter
+  const fetchJathaAttendance = async (canViewAllCentres, userCentre, filterType) => {
+    const filter = filterType || jathaFilter
+    const todayStr = new Date().toISOString().split('T')[0]
     
     let query = supabase
       .from('jatha_attendance')
       .select('*, jatha_master(jatha_type, centre_name, department)')
-      .gte('to_date', today) // Only ongoing or future jathas
-      .order('entered_at', { ascending: false })
+
+    // Apply date filter based on filter
+    if (filter === 'active') {
+      query = query.gte('to_date', todayStr)
+    } else if (filter === 'historical') {
+      query = query.lt('from_date', todayStr)
+    } else {
+      // 'all' - use date range from page state
+      query = query.gte('from_date', dateFrom).lte('from_date', dateTo)
+    }
+    
+    query = query.order('entered_at', { ascending: false })
 
     const { data: records } = await query
 
@@ -773,6 +862,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
   const getReportHeaders = () => {
     const reportHeaders = {
+      present: ['Badge', 'Name', 'Centre', 'Department', 'Status'],
       absenteeism: ['Badge', 'Name', 'Centre', 'Department', 'Status'],
       currently_inside: ['Badge', 'Name', 'IN Time', 'Duration', 'Centre', 'Duty'],
       gate_summary: ['Badge', 'Name', 'Date', 'IN', 'OUT', 'Status', 'Centre', 'Duty'],
@@ -888,10 +978,11 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       {/* Date Range */}
       <div className="report-filters">
         <DateRangePicker
-          dateFrom={dateFrom}
-          dateTo={dateTo}
-          onDateFromChange={setDateFrom}
-          onDateToChange={setDateTo}
+          dateFrom={['late_coming', 'jatha_all'].includes(activeReport) ? dateFrom : today}
+          dateTo={['late_coming', 'jatha_all'].includes(activeReport) ? dateTo : today}
+          onDateFromChange={(val) => ['late_coming', 'jatha_all'].includes(activeReport) && setDateFrom(val)}
+          onDateToChange={(val) => ['late_coming', 'jatha_all'].includes(activeReport) ? setDateTo(val) : setDateTo(val)}
+          singleDate={!['late_coming', 'jatha_all'].includes(activeReport)}
         />
         <ExportDropdown onExport={handleExport} loading={loading} />
       </div>
@@ -919,6 +1010,13 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       {/* Summary Cards */}
       {Object.keys(reportSummary).length > 0 && (
         <div className="report-summary-grid">
+          {activeReport === 'present' && (
+            <>
+              <SummaryCard title="Present" value={reportSummary.total} icon={UserCheck} color="green" />
+              <SummaryCard title="PERMANENT" value={reportSummary.permanent} icon={CheckCircle} color="blue" />
+              <SummaryCard title="OPEN" value={reportSummary.open} icon={Users} color="gold" />
+            </>
+          )}
           {activeReport === 'absenteeism' && (
             <>
               <SummaryCard title="Absent" value={reportSummary.total} icon={UserX} color="red" />
@@ -942,7 +1040,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           {activeReport === 'missing_out' && (
             <SummaryCard title="Missing OUT" value={reportSummary.total} icon={AlertTriangle} color="red" />
           )}
-          {(activeReport === 'jatha_attendance' || activeReport === 'jatha_summary') && (
+          {['jatha_active', 'jatha_historical', 'jatha_all', 'jatha_attendance', 'jatha_summary'].includes(activeReport) && (
             <SummaryCard title="Total Records" value={reportSummary.total} icon={Users} color="purple" />
           )}
           {(activeReport === 'weekly_summary') && (

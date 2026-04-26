@@ -103,16 +103,6 @@ export default function LoginPage() {
             </button>
           </form>
         </div>
-
-        <div style={{ 
-          textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.78rem', 
-          marginTop: '1rem', padding: '0.75rem', background: 'var(--bg-card)', 
-          borderRadius: '8px', border: '1px solid var(--border)'
-        }}>
-          <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>Test Credentials</div>
-          <div>Email: <span style={{ fontFamily: 'monospace', color: 'var(--excel-green)' }}>admin@sewadar.app</span></div>
-          <div>Pass: <span style={{ fontFamily: 'monospace', color: 'var(--excel-green)' }}>Admin@123</span></div>
-        </div>
       </div>
     </div>
   )
