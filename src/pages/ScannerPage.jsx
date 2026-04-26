@@ -2,7 +2,19 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, ROLES, DUTY_TYPES, SESSION_STATUS, getDutyType, formatTime12Hour } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
-import { Wifi, WifiOff, CheckCircle, XCircle, Clock, AlertTriangle, Keyboard, Search, Info } from 'lucide-react'
+import { Wifi, WifiOff, CheckCircle, XCircle, Clock, AlertTriangle, Keyboard, Search, Info, MapPin, RefreshCw } from 'lucide-react'
+
+// Geofencing: Calculate distance between two coordinates using Haversine formula
+function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000 // Earth's radius in meters
+  const dLat = (lat2 - lat1) * Math.PI / 180
+  const dLon = (lon2 - lon1) * Math.PI / 180
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2)
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  return R * c
+}
 
 export default function ScannerPage({ isOnline }) {
   const { profile } = useAuth()
@@ -28,6 +40,10 @@ export default function ScannerPage({ isOnline }) {
   const lastScanRef = useRef({ badge: null, time: 0 })
   const manualSearchTimeout = useRef(null)
   const popupOpenRef = useRef(false)
+  const [geoCheckDone, setGeoCheckDone] = useState(false)
+  const [geoBlocked, setGeoBlocked] = useState(false)
+  const [geoDistance, setGeoDistance] = useState(null)
+  const [geoLoading, setGeoLoading] = useState(true)
 
   const fetchRecentScans = useCallback(async () => {
     if (!profile?.centre) return
@@ -46,6 +62,69 @@ export default function ScannerPage({ isOnline }) {
     if (!profile?.centre) return
     fetchRecentScans()
   }, [profile?.centre, fetchRecentScans])
+
+  // Geofencing: Check location on page load
+  useEffect(() => {
+    const checkGeoLocation = async () => {
+      const isASO = profile?.role === 'aso' || profile?.role === 'super_admin'
+      
+      // ASO is exempt from geofencing
+      if (isASO) {
+        setGeoCheckDone(true)
+        setGeoLoading(false)
+        return
+      }
+
+      // Check if centre has geofencing enabled
+      const { data: centreData } = await supabase
+        .from('centres')
+        .select('latitude, longitude, geo_radius, geo_enabled')
+        .eq('name', profile.centre)
+        .single()
+
+      if (!centreData?.geo_enabled || !centreData?.latitude) {
+        setGeoCheckDone(true)
+        setGeoLoading(false)
+        return
+      }
+
+      try {
+        const position = await new Promise((resolve, reject) => {
+          if (!navigator.geolocation) {
+            reject(new Error('Geolocation not supported'))
+            return
+          }
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 60000
+          })
+        })
+
+        const userLat = position.coords.latitude
+        const userLon = position.coords.longitude
+        const distance = getDistanceFromLatLonInMeters(userLat, userLon, centreData.latitude, centreData.longitude)
+        const radius = centreData.geo_radius || 200
+
+        console.log(`Initial geo check: ${distance.toFixed(0)}m from centre (max ${radius}m)`)
+
+        if (distance > radius) {
+          setGeoBlocked(true)
+          setGeoDistance(Math.round(distance))
+        }
+      } catch (geoError) {
+        console.warn('Geo check failed:', geoError.message)
+        // Allow if location check fails
+      }
+
+      setGeoCheckDone(true)
+      setGeoLoading(false)
+    }
+
+    if (profile?.centre) {
+      checkGeoLocation()
+    }
+  }, [profile?.centre, profile?.role])
 
   useEffect(() => {
     if (!profile?.centre) return
@@ -127,6 +206,55 @@ const handleScan = useCallback(async (badge) => {
       popupOpenRef.current = true
       setProcessing(false)
       return
+    }
+
+    // Geofencing: Check if user is within centre radius
+    const isASO = profile?.role === 'aso' || profile?.role === 'super_admin'
+    if (!isASO && profile?.centre) {
+      const { data: centreData } = await supabase
+        .from('centres')
+        .select('latitude, longitude, geo_radius, geo_enabled')
+        .eq('name', profile.centre)
+        .single()
+      
+      if (centreData?.geo_enabled && centreData?.latitude && centreData?.longitude) {
+        try {
+          const position = await new Promise((resolve, reject) => {
+            if (!navigator.geolocation) {
+              reject(new Error('Geolocation not supported'))
+              return
+            }
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+              enableHighAccuracy: true,
+              timeout: 5000,
+              maximumAge: 30000
+            })
+          })
+          
+          const userLat = position.coords.latitude
+          const userLon = position.coords.longitude
+          const distance = getDistanceFromLatLonInMeters(userLat, userLon, centreData.latitude, centreData.longitude)
+          const radius = centreData.geo_radius || 200
+          
+          console.log(`Geo check: ${distance.toFixed(0)}m from centre (max ${radius}m)`)
+          
+          if (distance > radius) {
+            setPopupState({ 
+              type: 'out_of_range', 
+              sewadar: found, 
+              distance: Math.round(distance),
+              radius: radius,
+              centre: profile.centre
+            })
+            popupOpenRef.current = true
+            setProcessing(false)
+            return
+          }
+        } catch (geoError) {
+          console.warn('Geo check failed:', geoError.message)
+          // Allow scan if location check fails (graceful degradation)
+        }
+      }
     }
 
     let openSession = null
@@ -491,15 +619,38 @@ const handleScan = useCallback(async (badge) => {
       <div className="scanner-status-bar">
         <span className="scanner-centre-name">{profile?.centre}</span>
         <div className="scanner-indicators">
-          <span className={`scanner-pill ${isOnline ? 'pill-online' : 'pill-offline'}`}>
+<span className={`scanner-pill ${isOnline ? 'pill-online' : 'pill-offline'}`}>
             {isOnline ? <Wifi size={11} /> : <WifiOff size={11} />}
             {isOnline ? 'Online' : 'Offline'}
           </span>
         </div>
       </div>
 
-      {/* Scanner */}
-      <BarcodeScanner ref={scannerRef} onScan={handleScan} />
+      {/* Geofencing Blocked - Show instead of scanner */}
+      {geoLoading ? (
+        <div className="scanner-processing">
+          <div className="scanner-processing-dot" />Checking location...
+        </div>
+      ) : geoBlocked ? (
+        <div className="popup-error">
+          <MapPin size={48} color="#ef4444" style={{ margin: '0 auto 16px', display: 'block' }} />
+          <div className="error-title">Out of Range</div>
+          <div className="error-msg">You are {geoDistance}m away from centre</div>
+          <div className="error-msg" style={{ fontSize: '0.88rem', marginTop: 8 }}>
+            Must be within 200m of {profile?.centre} to scan
+          </div>
+          <button 
+            className="btn-primary" 
+            style={{ marginTop: '1rem', width: '100%' }}
+            onClick={() => window.location.reload()}
+          >
+            <RefreshCw size={16} style={{ marginRight: 8 }} />
+            Retry
+          </button>
+        </div>
+      ) : (
+        <BarcodeScanner ref={scannerRef} onScan={handleScan} />
+      )}
 
       {/* Manual Entry Button */}
       <button className="manual-entry-btn" onClick={() => setManualEntryOpen(true)}>
@@ -656,6 +807,20 @@ const handleScan = useCallback(async (badge) => {
                 <div className="error-badge">{popupState.sewadar.sewadar_name}</div>
                 <div className="error-msg">Sewadar is from {popupState.sewadar.centre}</div>
                 <div className="error-msg" style={{ fontSize: 11, marginTop: 4 }}>Only {profile?.centre} + child centres allowed</div>
+                <button className="btn-cancel" onClick={closePopup}>Try Again</button>
+              </div>
+            )}
+
+            {/* Out of Range - Geofencing */}
+            {popupState.type === 'out_of_range' && (
+              <div className="popup-error">
+                <MapPin size={32} color="#ef4444" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <div className="error-title">Out of Range</div>
+                <div className="error-badge">{popupState.sewadar.sewadar_name}</div>
+                <div className="error-msg">You are {popupState.distance}m away</div>
+                <div className="error-msg" style={{ fontSize: 11, marginTop: 4 }}>
+                  Must be within {popupState.radius}m of {popupState.centre}
+                </div>
                 <button className="btn-cancel" onClick={closePopup}>Try Again</button>
               </div>
             )}
