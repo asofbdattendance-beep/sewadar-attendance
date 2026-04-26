@@ -5,8 +5,9 @@ import { useToast } from '../components/Toast'
 import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search } from 'lucide-react'
 
 const TABLES = [
-  { id: 'centres', label: 'Centres', icon: MapPin, columns: ['name', 'parent_centre', 'is_active'], 
-    sortBy: 'name', defaults: { is_active: true } },
+  { id: 'centres', label: 'Centres', icon: MapPin, 
+    columns: ['name', 'parent_centre', 'latitude', 'longitude', 'geo_radius', 'geo_enabled', 'is_active'], 
+    sortBy: 'name', defaults: { is_active: true, geo_enabled: true, geo_radius: 200 } },
   { id: 'jatha_master', label: 'Jatha Master', icon: Shield, columns: ['jatha_type', 'centre_name', 'department', 'is_active'],
     sortBy: 'centre_name', defaults: { is_active: true } },
   { id: 'role_masters', label: 'Roles', icon: Shield, columns: ['role_key', 'role_label', 'role_description', 'permissions', 'is_active'],
