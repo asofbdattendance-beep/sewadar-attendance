@@ -12,103 +12,93 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   realtime: { params: { eventsPerSecond: 10 } }
 })
 
-// Badge parser utility
-export function parseBadge(badge) {
-  if (!badge || badge.length < 12) return null
-  const prefix = badge.substring(0, 2)
-  const centreCode = badge.substring(2, 6)
-  const gender = badge.substring(6, 7)
-  const fixed = badge.substring(7, 8)
-  const serial = badge.substring(8)
-  if (prefix !== 'FB' || fixed !== 'A') return null
-  return { prefix, centreCode, gender: gender === 'G' ? 'Male' : 'Female', serial, raw: badge }
+export const ROLES = {
+  SUPER_ADMIN: 'super_admin', // ASO - Full access
+  CENTRE_ADMIN: 'centre_admin',  // Parent Centre Admin
+  SC_SP_USER: 'sc_sp_user'      // Child Centre / Scanner
 }
 
-// Departments that travel centre-to-centre — scanned by ANY authorised user
-export const EXCEPTION_DEPARTMENTS = [
-  'Administration', 'Office', 'Area Secretary Office',
-  'Pathis', 'Baal Pathis', 'Satsang Kartas', 'Baal Satsang Kartas',
-  'Pathi', 'Satsang Karta', 'Baal Satsang Karta',
+export const ROLE_LABELS = {
+  super_admin: 'ASO (Super Admin)',
+  centre_admin: 'Centre Admin',
+  sc_sp_user: 'Scanner'
+}
+
+export const ROLE_COLORS = {
+  super_admin: '#dc2626',
+  centre_admin: '#7c3aed',
+  sc_sp_user: '#16a34a'
+}
+
+export const DUTY_TYPES = {
+  SATSCAN: 'SATSCAN',
+  DAILY: 'DAILY',
+  NIGHT: 'NIGHT',
+  WATCH_AND_WARD: 'WATCH_AND_WARD',
+  JATHA: 'JATHA'
+}
+
+export const SESSION_STATUS = {
+  OPEN: 'OPEN',
+  CLOSED: 'CLOSED'
+}
+
+export const SPECIAL_DEPARTMENTS = [
+  'ADMINISTRATION',
+  'PATHI',
+  'SATSANG KARTA',
+  'BAAL SATSANG KARTA',
+  'OFFICE',
+  'AREA SECRETARY OFFICE',
+  'MAINTENANCE'
 ]
 
-export function isExceptionDept(dept) {
-  if (!dept) return false
-  const lower = dept.trim().toLowerCase()
-  return EXCEPTION_DEPARTMENTS.some(d => d.toLowerCase() === lower)
+export function isSatsangDay(date = new Date()) {
+  const day = date.getDay()
+  return day === 0 || day === 3
 }
 
-// Count total calendar days in a jatha range, inclusive (To - From + 1)
+export function getDutyType(date = new Date()) {
+  return isSatsangDay(date) ? DUTY_TYPES.SATSCAN : DUTY_TYPES.DAILY
+}
+
+export function isSpecialDepartment(department) {
+  if (!department) return false
+  return SPECIAL_DEPARTMENTS.includes(department.toUpperCase())
+}
+
 export function countSatsangDays(fromDate, toDate) {
   if (!fromDate || !toDate) return 0
   const from = new Date(fromDate + 'T00:00:00')
   const to = new Date(toDate + 'T00:00:00')
   if (to < from) return 0
-  return Math.round((to - from) / 86400000) + 1
+  let count = 0
+  const current = new Date(from)
+  while (current <= to) {
+    if (isSatsangDay(current)) count++
+    current.setDate(current.getDate() + 1)
+  }
+  return count
 }
 
-// Validate jatha date range: max 10 days, to >= from
-export function validateJathaRange(fromDate, toDate) {
-  if (!fromDate || !toDate) return 'Both dates are required'
-  const from = new Date(fromDate + 'T00:00:00')
-  const to   = new Date(toDate   + 'T00:00:00')
-  if (to < from) return 'End date must be on or after start date'
-  const diff = Math.round((to - from) / 86400000)
-  if (diff > 10) return `Range is ${diff} days — maximum allowed is 10 days`
-  return null
+export function formatTime12Hour(timeStr) {
+  if (!timeStr || typeof timeStr !== 'string') return '—'
+  const parts = timeStr.split(':')
+  if (parts.length < 2) return '—'
+  const h = parseInt(parts[0], 10)
+  const m = parseInt(parts[1], 10)
+  if (isNaN(h) || isNaN(m)) return '—'
+  const ampm = h >= 12 ? 'PM' : 'AM'
+  const hour12 = h % 12 || 12
+  return `${hour12}:${String(m).padStart(2, '0')} ${ampm}`
 }
 
-export const JATHA_TYPE = {
-  MAJOR_CENTRE: 'major_centre',
-  BEAS: 'beas',
+export function formatDateIndian(dateStr) {
+  if (!dateStr) return '—'
+  return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
-export const JATHA_TYPE_LABEL = {
-  major_centre: 'Major Centre',
-  beas: 'Beas',
-}
-
-export async function getCentreScope(centreName, role) {
-  if (role === ROLES.ASO) return null
-  const { data } = await supabase
-    .from('centres')
-    .select('centre_name, parent_centre')
-    .or(`centre_name.eq.${centreName},parent_centre.eq.${centreName}`)
-  return data?.map(c => c.centre_name) || [centreName]
-}
-
-export async function getViewableCentres(profile) {
-  if (!profile) return []
-  if (profile.role === ROLES.ASO) return null
-  if (profile.role === ROLES.CENTRE_USER) return getCentreScope(profile.centre, ROLES.CENTRE_USER)
-  return [profile.centre]
-}
-
-export function getDistanceMetres(lat1, lon1, lat2, lon2) {
-  const R = 6371000
-  const dLat = (lat2 - lat1) * Math.PI / 180
-  const dLon = (lon2 - lon1) * Math.PI / 180
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) ** 2
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-}
-
-export const ROLES = {
-  ASO: 'aso',
-  CENTRE_USER: 'centre_user',
-  SC_SP_USER: 'sc_sp_user'
-}
-
-export const FLAG_TYPES = [
-  { value: 'error_entry',   label: 'Error entry' },
-  { value: 'wrong_badge',   label: 'Wrong badge scanned' },
-  { value: 'duplicate',     label: 'Duplicate entry' },
-  { value: 'not_present',   label: 'Sewadar was not present' },
-  { value: 'other',         label: 'Other' },
-]
-
-export const FLAG_STATUS = {
-  OPEN: 'open',
-  IN_PROGRESS: 'in_progress',
-  RESOLVED: 'resolved',
+export const GENDER = {
+  MALE: 'M',
+  FEMALE: 'F'
 }

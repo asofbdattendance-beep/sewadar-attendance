@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase, ROLES } from '../lib/supabase'
 
 const AuthContext = createContext(null)
 
@@ -7,6 +7,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [permissions, setPermissions] = useState({})
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -18,7 +19,7 @@ export function AuthProvider({ children }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
       if (session?.user) fetchProfile(session.user.id)
-      else { setProfile(null); setLoading(false) }
+      else { setProfile(null); setPermissions({}); setLoading(false) }
     })
 
     return () => subscription.unsubscribe()
@@ -30,8 +31,39 @@ export function AuthProvider({ children }) {
       .select('*')
       .eq('auth_id', userId)
       .single()
+    
+    // Determine if user is Super Admin (aso or super_admin)
+    const isASO = data?.role === ROLES.SUPER_ADMIN || data?.role === 'aso' || data?.role === 'admin'
+    
+    let perms = {}
+    if (isASO) {
+      // ASO gets all permissions by default - skip role_masters query to avoid RLS errors
+      perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true, allow_settings: true }
+    } else if (data?.role) {
+      if (data.permissions) {
+        if (typeof data.permissions === 'string') {
+          try { perms = JSON.parse(data.permissions) } catch { perms = {} }
+        } else {
+          perms = data.permissions || {}
+        }
+      }
+      
+      if (Object.keys(perms).length === 0 && data?.role) {
+        perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true }
+      }
+    }
+    
     setProfile(data)
+    setPermissions(perms)
     setLoading(false)
+  }
+
+  // Helper function to check permission
+  const hasPermission = (permKey) => {
+    if (profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'aso' || profile?.role === 'admin') {
+      return true
+    }
+    return !!permissions[permKey]
   }
 
   async function signIn(email, password) {
@@ -44,10 +76,11 @@ export function AuthProvider({ children }) {
     await supabase.auth.signOut()
     setUser(null)
     setProfile(null)
+    setPermissions({})
   }
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, profile, permissions, loading, signIn, signOut, hasPermission }}>
       {children}
     </AuthContext.Provider>
   )

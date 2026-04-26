@@ -1,13 +1,10 @@
 /**
  * BarcodeScanner — Single-engine, cross-platform
+ * Works on mobile (back camera) and desktop (webcam)
  *
  * Uses BarcodeDetector API everywhere.
- * On Android/Chrome: native hardware-accelerated (built-in, ~2-8ms/frame)
- * On iOS/Safari + others: @undecaf/barcode-detector-polyfill (ZBar WASM, ~15-30ms/frame)
- *
- * Same code path for all devices — polyfill just fills the gap where native isn't available.
- * iOS Safari does have BarcodeDetector but only supports QR/2D formats, NOT Code39/128.
- * The polyfill replaces it entirely and supports all linear barcode formats.
+ * On Android/Chrome: native hardware-accelerated
+ * On iOS/Safari + others: @undecaf/barcode-detector-polyfill (ZBar WASM)
  */
 
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
@@ -19,8 +16,6 @@ function clean(raw) {
   return raw.trim().toUpperCase().replace(/\s+/g, '')
 }
 
-// Check if native BarcodeDetector supports linear barcodes (Code39/128)
-// iOS Safari has BarcodeDetector but only QR/2D — we need linear support
 async function hasLinearBarcodeSupport() {
   if (!('BarcodeDetector' in window)) return false
   try {
@@ -31,11 +26,7 @@ async function hasLinearBarcodeSupport() {
   }
 }
 
-// Load polyfill from CDN — only called on iOS/unsupported browsers
-// Uses ZBar WASM which supports Code39, Code128, and all linear formats
 async function loadPolyfill() {
-  // vite-ignore: loaded only on iOS/non-native — Android never hits this path
-  // eslint-disable-next-line
   const { BarcodeDetectorPolyfill } = await import(/* @vite-ignore */ '@undecaf/barcode-detector-polyfill')
   window.BarcodeDetector = BarcodeDetectorPolyfill
 }
@@ -53,37 +44,46 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const [errorMsg, setErrorMsg] = useState('')
   const [lastScanned, setLastScanned] = useState('')
   const [engineLabel, setEngineLabel] = useState('')
-  const fpsRef = useRef({ frames: 0, last: Date.now() })
   const [fps, setFps] = useState(0)
+  const fpsRef = useRef({ frames: 0, last: Date.now() })
 
   const stopScanner = () => {
+    console.log('stopScanner called')
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
-    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
-    if (videoRef.current) videoRef.current.srcObject = null
+    if (streamRef.current) { 
+      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current = null 
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+      videoRef.current.load()
+    }
     isDetectingRef.current = false
   }
 
   const startScanner = async () => {
+    console.log('startScanner called, mounted:', mountedRef.current)
     if (!mountedRef.current) return
+    
+    // Stop existing first
     stopScanner()
+    
     setStatus('loading')
     setErrorMsg('')
     setLastScanned('')
-    lastScanRef.current = { badge: null, time: 0 }
     fpsRef.current = { frames: 0, last: Date.now() }
 
-    // ── Step 1: Ensure BarcodeDetector supports linear barcodes ──
+    // ── Step 1: Load barcode engine ──
     const hasNative = await hasLinearBarcodeSupport()
     if (!hasNative) {
-      // Load polyfill — replaces window.BarcodeDetector with ZBar WASM
       try {
-        setStatus('loading') // still loading while WASM downloads
+        setStatus('loading')
         await loadPolyfill()
         setEngineLabel('WASM')
       } catch (err) {
         if (mountedRef.current) {
           setStatus('error')
-          setErrorMsg('Could not load barcode engine. Check internet connection and retry.')
+          setErrorMsg('Could not load barcode engine. Check internet connection.')
         }
         return
       }
@@ -103,26 +103,31 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
     // ── Step 3: Get camera stream ──
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const constraints = {
         video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: 'environment'
         },
         audio: false
-      })
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
       if (!mountedRef.current) { stream.getTracks().forEach(t => t.stop()); return }
+      
       streamRef.current = stream
       videoRef.current.srcObject = stream
       await videoRef.current.play()
     } catch (err) {
       if (!mountedRef.current) return
       setStatus('error')
-      setErrorMsg(
-        err.name === 'NotAllowedError'
-          ? 'Camera permission denied. Please allow camera access and retry.'
-          : 'Camera not available on this device.'
-      )
+      if (err.name === 'NotAllowedError') {
+        setErrorMsg('Camera permission denied. Please allow camera access in your browser settings, then tap Retry.')
+      } else if (err.name === 'NotFoundError') {
+        setErrorMsg('No camera found on this device. Please connect a camera.')
+      } else {
+        setErrorMsg('Camera not available. Please check camera connection.')
+      }
       return
     }
 
@@ -155,7 +160,9 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             onScan(text)
             break
           }
-        } catch {}
+        } catch (err) {
+          console.warn('Barcode detection error:', err)
+        }
         isDetectingRef.current = false
       }
 
@@ -172,9 +179,22 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   }, [])
 
   useImperativeHandle(ref, () => ({
-    stop: stopScanner,
-    resume: () => { if (mountedRef.current) startScanner() },
-    restart: () => { stopScanner(); setTimeout(() => { if (mountedRef.current) startScanner() }, 100) }
+    stop: () => {
+      console.log('Scanner: stop')
+      stopScanner()
+    },
+    resume: () => { 
+      console.log('Scanner: resume')
+      if (mountedRef.current) startScanner() 
+    },
+    restart: () => { 
+      console.log('Scanner: restart')
+      stopScanner()
+      setTimeout(() => { 
+        console.log('Scanner: starting after delay')
+        if (mountedRef.current) startScanner() 
+      }, 300) 
+    }
   }), [])
 
   if (status === 'error') {
@@ -183,7 +203,9 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
         <div className="scanner-error-simple">
           <CameraOff size={32} />
           <p style={{ textAlign: 'center', padding: '0 1rem', fontSize: '0.85rem' }}>{errorMsg}</p>
-          <button onClick={startScanner}><RefreshCw size={14} /> Retry</button>
+          <button onClick={() => startScanner()}>
+            <RefreshCw size={14} /> Retry
+          </button>
         </div>
       </div>
     )
@@ -192,13 +214,13 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   return (
     <div className="scanner-wrapper">
       <div className="scanner-view">
-  <video ref={videoRef} playsInline muted autoPlay />
-</div>
+        <video ref={videoRef} playsInline muted autoPlay />
+      </div>
 
       {status === 'loading' && (
         <div className="scanner-overlay">
           <div className="scanner-spinner" />
-          <span>{engineLabel === 'WASM' ? 'Loading iOS engine…' : 'Starting camera...'}</span>
+          <span>{engineLabel === 'WASM' ? 'Loading engine…' : 'Starting camera...'}</span>
         </div>
       )}
 
@@ -212,7 +234,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
             <div className="scan-line" />
           </div>
 
-          <div className="scanner-fps-badge">
+          <div className="scanner-info-badge">
             <Zap size={10} />
             {fps}fps · {engineLabel}
           </div>

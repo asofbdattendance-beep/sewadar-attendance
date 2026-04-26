@@ -11,18 +11,16 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
     "@undecaf/barcode-detector-polyfill": "^0.9.23",
-    "html5-qrcode": "^2.3.8",
     "lucide-react": "^0.303.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.21.0",
-    "recharts": "^2.10.0"
+    "react-router-dom": "^6.21.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.2.0",
     "vite": "^5.0.0",
-    "vite-plugin-pwa": "^0.17.0"
+    "vite-plugin-mkcert": "^2.0.0"
   }
 }
