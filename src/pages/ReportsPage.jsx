@@ -248,7 +248,7 @@ export default function ReportsPage() {
   }
 
   const fetchReport = useCallback(async () => {
-const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.CENTRE_ADMIN
+const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN
     const userCentre = profile?.centre
     
     setLoading(true)

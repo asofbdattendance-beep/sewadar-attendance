@@ -134,10 +134,10 @@ export default function DashboardPage() {
   const today = new Date().toISOString().split('T')[0] // Refreshed each render
   
   const isASO = profile?.role === ROLES.SUPER_ADMIN
-  const isCentreAdmin = profile?.role === ROLES.CENTRE_ADMIN
   const userCentre = profile?.centre
 
-  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.CENTRE_ADMIN
+  // Only super_admin can view ALL centres. admin/centre_user see their own + children
+  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN
 
   const [stats, setStats] = useState({
     totalBadges: 0,

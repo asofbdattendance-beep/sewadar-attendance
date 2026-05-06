@@ -467,6 +467,7 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px;
 }
 .filter-row svg { color:var(--text-muted); flex-shrink:0; }
+.filter-label { font-size:12px; font-weight:600; color:var(--text-secondary); white-space:nowrap; }
 
 .input-v2 { 
   background:var(--bg); border:1.5px solid var(--border); border-radius:8px; 
@@ -474,6 +475,8 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   transition:all 0.15s;
 }
 .input-v2:focus { border-color:var(--excel-green); outline:none; box-shadow:0 0 0 3px rgba(33,115,70,0.1); }
+
+.centre-select { min-width:180px; cursor:pointer; }
 
 .duty-filters { display:flex; gap:6px; flex-wrap:wrap; }
 .chip { 
@@ -2656,6 +2659,9 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   display:flex; justify-content:space-between; align-items:center;
   padding:14px 16px; gap:12px;
   background:white; border-bottom:1px solid var(--border);
+}
+.table-count {
+  font-size:13px; font-weight:600; color:#6b7280; white-space:nowrap;
 }
 .search-box {
   display:flex; align-items:center; gap:10px;

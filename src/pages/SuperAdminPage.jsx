@@ -97,7 +97,8 @@ function FormFields({ table, formData, setFormData, centres, isUsersTable }) {
             >
               <option value="">Select Role</option>
               <option value="super_admin">ASO (Super Admin)</option>
-              <option value="centre_admin">Centre Admin</option>
+              <option value="admin">Admin</option>
+              <option value="centre_user">Centre Admin</option>
               <option value="sc_sp_user">Scanner</option>
             </select>
           ) : col === 'jatha_type' ? (
@@ -155,7 +156,7 @@ function FormFields({ table, formData, setFormData, centres, isUsersTable }) {
               onChange={e => setFormData({ ...formData, [col]: e.target.value })}
               placeholder="Optional description"
             />
-          ) : col === 'permissions' && isUsersTable ? (
+          ) : col === 'permissions' && (isUsersTable || table.id === 'role_masters') ? (
             <PermissionToggle 
               permissions={formData.permissions} 
               onChange={(perms) => setFormData({ ...formData, permissions: perms })} 
@@ -197,7 +198,7 @@ export default function SuperAdminPage() {
   const [centres, setCentres] = useState([])
 
   const currentTable = TABLES.find(t => t.id === activeTable)
-  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'super_admin' || profile?.role === 'admin'
+  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'super_admin' || profile?.role === 'aso'
 
   useEffect(() => {
     if (!isSuperAdmin) return
@@ -226,18 +227,18 @@ export default function SuperAdminPage() {
     setLoading(l => ({ ...l, [tableId]: false }))
   }
 
-  // For users table - parse permissions from JSON string to object for display
-      const tableData = data[activeTable]?.map(row => {
-        if (activeTable === 'users' && row.permissions) {
-          return {
-            ...row,
-            permissions: typeof row.permissions === 'string' 
-              ? JSON.parse(row.permissions) 
-              : row.permissions
-          }
-        }
-        return row
-      }) || []
+  // For users and role_masters tables - parse permissions from JSON to object for display
+  const tableData = data[activeTable]?.map(row => {
+    if ((activeTable === 'users' || activeTable === 'role_masters') && row.permissions) {
+      return {
+        ...row,
+        permissions: typeof row.permissions === 'string' 
+          ? JSON.parse(row.permissions) 
+          : row.permissions
+      }
+    }
+    return row
+  }) || []
       
       const filteredData = tableData.filter(row => {
     if (!search) return true
@@ -297,6 +298,10 @@ export default function SuperAdminPage() {
         if (typeof payload.permissions === 'string') {
           try { payload.permissions = JSON.parse(payload.permissions) } catch {}
         }
+        // Ensure permissions is an object for JSONB column
+        if (typeof payload.permissions !== 'object' || payload.permissions === null) {
+          payload.permissions = {}
+        }
       }
       
       // Filter out undefined/null values - but keep id for update
@@ -306,11 +311,12 @@ export default function SuperAdminPage() {
       })
       
       let result
+      const { id: _, created_at, auth_id, email, ...updatePayload } = payload
+      
       if (modal.mode === 'add') {
         result = await supabase.from(activeTable).insert([payload]).select()
-} else {
+      } else {
         // For update, don't include id, created_at, auth_id, email in payload (read-only fields)
-        const { id, created_at, auth_id, email, ...updatePayload } = payload
         
         // Try direct update using the client
         result = await supabase.from(activeTable).update(updatePayload).eq('id', formData.id)
@@ -339,7 +345,23 @@ export default function SuperAdminPage() {
         return
       }
 
-      // Update/insert returns empty data array but status 200 means success
+      // When role_masters permissions are updated, cascade to all users with that role
+      if (activeTable === 'role_masters' && modal.mode === 'edit') {
+        const roleKey = formData.role_key
+        const newPerms = updatePayload.permissions || {}
+        const { error: cascadeError } = await supabase
+          .from('users')
+          .update({ permissions: newPerms })
+          .eq('role', roleKey)
+        if (cascadeError) {
+          console.error('Cascade error:', cascadeError)
+        } else {
+          const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', roleKey)
+          toast.success(`Role updated — ${count || 0} users synced`)
+          await fetchData('users')
+        }
+      }
+
       toast.success(modal.mode === 'add' ? 'Added successfully' : 'Updated successfully')
       setModal({ open: false, mode: 'add', data: null })
       
@@ -399,6 +421,9 @@ export default function SuperAdminPage() {
             onChange={e => setSearch(e.target.value)}
           />
         </div>
+        {!loading[activeTable] && (
+          <span className="table-count">{filteredData.length} of {data[activeTable]?.length || 0} records</span>
+        )}
       </div>
 
       <div className="superadmin-table-wrap">
@@ -427,25 +452,27 @@ export default function SuperAdminPage() {
                         <span className={`status-dot ${row[col] ? 'active' : 'inactive'}`}>
                           {row[col] ? 'Active' : 'Inactive'}
                         </span>
-                      ) : col === 'permissions' && activeTable === 'users' ? (
+                      ) : col === 'permissions' && (activeTable === 'users' || activeTable === 'role_masters') ? (
                         <span style={{ fontSize: 12, color: '#6b7280' }}>
                           {(() => {
                             let p = row[col]
-                            // Parse if it's a string
                             if (typeof p === 'string') {
                               try { p = JSON.parse(p) } catch { p = {} }
                             }
                             p = p || {}
-                            const count = Object.values(p).filter(Boolean).length
-                            return count > 0 ? `${count} permissions` : 'No permissions'
+                            const enabled = Object.entries(p).filter(([k, v]) => v).map(([k]) => {
+                              const perm = PERMISSIONS_LIST.find(x => x.key === k)
+                              return perm ? perm.label.replace('Allow ', '') : k
+                            })
+                            return enabled.length > 0 ? enabled.join(', ') : 'None'
                           })()}
                         </span>
                       ) : col === 'permissions' ? (
                         <span className="cell-mono">{JSON.stringify(row[col] || {}).slice(0, 30)}</span>
                       ) : col === 'role_key' ? (
-                        <span className={`role-pill ${row[col]}`}>{row[col] === 'super_admin' ? 'ASO' : row[col] === 'centre_admin' ? 'Centre Admin' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
+                        <span className={`role-pill ${row[col]}`}>{row[col] === 'super_admin' ? 'ASO' : row[col] === 'admin' ? 'Admin' : row[col] === 'centre_user' ? 'Centre Admin' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
                       ) : col === 'role' ? (
-                        <span className={`role-pill ${row[col]}`}>{row[col] === 'super_admin' ? 'ASO' : row[col] === 'centre_admin' ? 'Centre Admin' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
+                        <span className={`role-pill ${row[col]}`}>{row[col] === 'super_admin' ? 'ASO' : row[col] === 'admin' ? 'Admin' : row[col] === 'centre_user' ? 'Centre Admin' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
                       ) : col === 'jatha_type' ? (
                         <span className={`type-pill ${row[col]}`}>{row[col].replace('_', ' ')}</span>
                       ) : (
