@@ -110,14 +110,16 @@ function SessionCard({ session }) {
   const isOpen = session.status === 'OPEN'
   const isManual = session.is_manual === true
   const isGateEntry = session.is_gate_entry === true
+  const isCrossScan = session.is_cross_scan === true
   const sameDate = session.in_date === session.out_date && session.out_date
   const duration = calculateDuration(session.in_date, session.in_time, session.out_date, session.out_time)
   
   return (
-    <div className="session-card">
+    <div className={`session-card ${isCrossScan ? 'session-card-cross' : ''}`}>
       <div className="session-card-header">
         <div className="session-name">{session.sewadar_name || 'Unknown'}</div>
         <div className="session-badges">
+          {isCrossScan && <span className="cross-scan-badge"><MapPin size={9} />Cross-Scan</span>}
           {isGateEntry && <span className="gate-badge"><DoorOpen size={9} />Gate</span>}
           {!isGateEntry && isManual && <span className="manual-badge"><Edit3 size={9} />Manual</span>}
           <span className={`status-badge ${isOpen ? 'status-open' : 'status-closed'}`}>{isOpen ? 'IN' : 'OUT'}</span>
@@ -125,7 +127,16 @@ function SessionCard({ session }) {
       </div>
       <div className="session-badge">{session.badge_number || 'N/A'}</div>
       <div className="session-grid">
-        <div className="session-info"><span className="info-label">Centre</span><span className="info-value">{session.centre || 'Unknown'}</span></div>
+        <div className="session-info">
+          <span className="info-label">Centre</span>
+          <span className="info-value">{isCrossScan ? session.scan_centre : (session.centre || 'Unknown')}</span>
+        </div>
+        {isCrossScan && (
+          <div className="session-info cross-info">
+            <span className="info-label">Home Centre</span>
+            <span className="info-value">{session.centre}</span>
+          </div>
+        )}
         <div className="session-info"><span className="info-label">Duty</span><span className={`duty-badge ${session.duty_type}`}>{session.duty_type || 'N/A'}</span></div>
       </div>
       <div className="session-time-row">
@@ -162,7 +173,7 @@ function SessionTable({ records }) {
       <table className="records-table">
         <thead>
           <tr>
-            <th>Status</th><th>Badge</th><th>Name</th><th>Centre</th><th>Duty</th><th>Type</th><th>IN Date</th><th>IN Time</th><th>OUT Date</th><th>OUT Time</th><th>Duration</th><th>IN By</th><th>OUT By</th>
+            <th>Status</th><th>Badge</th><th>Name</th><th>Centre</th><th>Type</th><th>Duty</th><th>IN Date</th><th>IN Time</th><th>OUT Date</th><th>OUT Time</th><th>Duration</th><th>IN By</th><th>OUT By</th>
           </tr>
         </thead>
         <tbody>
@@ -170,14 +181,20 @@ function SessionTable({ records }) {
             const isOpen = r.status === 'OPEN'
             const isManual = r.is_manual === true
             const isGateEntry = r.is_gate_entry === true
+            const isCrossScan = r.is_cross_scan === true
             const duration = calculateDuration(r.in_date, r.in_time, r.out_date, r.out_time)
             const sameDate = r.in_date === r.out_date && r.out_date
             return (
-              <tr key={r.id || idx}>
+              <tr key={r.id || idx} className={isCrossScan ? 'row-cross-scan' : ''}>
                 <td><span className={`status-pill ${isOpen ? 'status-pill-open' : 'status-pill-closed'}`}>{isOpen ? 'IN' : 'OUT'}</span></td>
                 <td className="cell-badge">{r.badge_number || 'N/A'}</td>
                 <td className="cell-name">{r.sewadar_name || 'Unknown'}</td>
-                <td className="cell-centre">{r.centre || '-'}</td>
+                <td className="cell-centre">
+                  <div className="centre-cell-content">
+                    {r.centre || '-'}
+                    {isCrossScan && <span className="cross-badge">Scanned at {r.scan_centre}</span>}
+                  </div>
+                </td>
                 <td><span className={`duty-badge-sm ${r.duty_type}`}>{r.duty_type || 'N/A'}</span></td>
                 <td><span className="entry-type-pill">{isGateEntry ? 'GATE' : isManual ? 'MANUAL' : 'SCAN'}</span></td>
                 <td className="cell-date">{r.in_date ? formatDateIndian(r.in_date) : '-'}</td>
@@ -270,37 +287,114 @@ export default function RecordsPage() {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
 
-    // Fetch Gate Records
-    let gateQuery = supabase.from('attendance_sessions')
-      .select('*')
-      .gte('in_date', dateFrom)
-      .lte('in_date', dateTo)
-      .order('in_time', { ascending: false })
-      .limit(500)
+    const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'super_admin' || profile?.role === 'aso'
+    const targetCentre = centreFilter || profile?.centre
 
-    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
-      gateQuery = gateQuery.eq('in_scanner_centre', profile.centre)
-    } else if (profile?.role === 'admin' && profile?.centre) {
-      gateQuery = gateQuery.eq('centre', profile.centre)
+    let sessions = []
+
+    // Step 1: Fetch sessions based on role
+    if (isASO) {
+      let q = supabase.from('attendance_sessions')
+        .select('*')
+        .gte('in_date', dateFrom)
+        .lte('in_date', dateTo)
+        .order('in_time', { ascending: false })
+        .limit(500)
+      if (targetCentre) q = q.eq('centre', targetCentre)
+      const { data } = await q
+      sessions = data || []
+    } else if (targetCentre) {
+      // Fetch sessions AT the user's centre
+      let q = supabase.from('attendance_sessions')
+        .select('*')
+        .gte('in_date', dateFrom)
+        .lte('in_date', dateTo)
+        .order('in_time', { ascending: false })
+        .limit(500)
+
+      if (profile?.role === ROLES.SC_SP_USER) {
+        q = q.eq('in_scanner_centre', targetCentre)
+      } else {
+        q = q.eq('centre', targetCentre)
+      }
+
+      const { data: localSessions } = await q
+      sessions = localSessions || []
+
+      // Also fetch sessions where sewadars from this centre scanned ELSEWHERE
+      const { data: centreSewadars } = await supabase
+        .from('sewadars')
+        .select('badge_number')
+        .eq('centre', targetCentre)
+
+      if (centreSewadars && centreSewadars.length > 0) {
+        const centreBadges = centreSewadars.map(s => s.badge_number)
+        const badgeBatches = []
+        for (let i = 0; i < centreBadges.length; i += 100) {
+          badgeBatches.push(centreBadges.slice(i, i + 100))
+        }
+
+        let outboundSessions = []
+        for (const batch of badgeBatches) {
+          let q = supabase.from('attendance_sessions')
+            .select('*')
+            .gte('in_date', dateFrom)
+            .lte('in_date', dateTo)
+            .in('badge_number', batch)
+            .limit(500)
+          if (profile?.role === ROLES.SC_SP_USER) {
+            // SC_SP_USER only sees sessions scanned by their centre
+          } else {
+            q = q.neq('centre', targetCentre)
+          }
+          const { data: crossData } = await q
+          if (crossData) outboundSessions = outboundSessions.concat(crossData)
+        }
+
+        // Merge and deduplicate by id
+        const existingIds = new Set(sessions.map(s => s.id))
+        for (const os of outboundSessions) {
+          if (!existingIds.has(os.id)) {
+            sessions.push(os)
+          }
+        }
+      }
     }
 
-    if (centreFilter) {
-      gateQuery = gateQuery.eq('centre', centreFilter)
+    // Step 2: Detect cross-scans for ALL roles
+    // Compare each session's centre vs the sewadar's home centre
+    if (sessions.length > 0) {
+      const badgeNumbers = [...new Set(sessions.map(s => s.badge_number))]
+      const homeCentreMap = {}
+      for (let i = 0; i < badgeNumbers.length; i += 100) {
+        const batch = badgeNumbers.slice(i, i + 100)
+        const { data: sewadars } = await supabase
+          .from('sewadars')
+          .select('badge_number, centre')
+          .in('badge_number', batch)
+        for (const s of (sewadars || [])) {
+          homeCentreMap[s.badge_number] = s.centre
+        }
+      }
+
+      sessions = sessions.map(s => {
+        const homeCentre = homeCentreMap[s.badge_number]
+        if (homeCentre && homeCentre !== s.centre) {
+          return { ...s, is_cross_scan: true, scan_centre: s.centre, centre: homeCentre }
+        }
+        return s
+      })
     }
 
+    // Step 3: Apply filters
+    let gateFiltered = sessions.filter(r => r.is_jatha_entry !== true)
     if (dutyFilter && dutyFilter !== 'JATHA') {
-      gateQuery = gateQuery.eq('duty_type', dutyFilter)
+      gateFiltered = gateFiltered.filter(r => r.duty_type === dutyFilter)
     }
-
-    const { data: gateData } = await gateQuery
-    console.log('Gate records sample:', gateData?.[0])
-    let gateFiltered = (gateData || []).filter(r => r.is_jatha_entry !== true)
-    
     if (searchTerm) {
       const term = searchTerm.toUpperCase()
       gateFiltered = gateFiltered.filter(r => r.badge_number?.includes(term) || r.sewadar_name?.toUpperCase().includes(term))
     }
-
     setGateRecords(gateFiltered)
 
     // Fetch Jatha Records

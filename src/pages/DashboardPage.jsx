@@ -55,7 +55,7 @@ function SplitTable({ headers, rows }) {
   )
 }
 
-function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, defaultOpen = false }) {
+function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, sessionMap, guestMap, defaultOpen = false }) {
   const [isOpen, setIsOpen] = useState(defaultOpen)
   const hasChildren = data.children && data.children.length > 0
   const hasDepts = data.departments && Object.keys(data.departments).length > 0
@@ -64,10 +64,15 @@ function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, default
   const presentCount = data.sewadars ? data.sewadars.filter(s => presentSet.has(s.badge_number)).length : 0
   const insideCount = data.sewadars ? data.sewadars.filter(s => insideSet.has(s.badge_number)).length : 0
 
+  // Guest sewadars who scanned at this centre but belong elsewhere
+  const guests = (guestMap && guestMap[centre]) || []
+  const guestPresentCount = guests.filter(g => presentSet.has(g.badge_number)).length
+  const guestInsideCount = guests.filter(g => insideSet.has(g.badge_number)).length
+
   return (
     <div className="centre-tree-item">
       <div 
-        className={`centre-tree-row ${isExpandable ? 'clickable' : ''}`}
+        className={`centre-tree-row ${isExpandable ? 'clickable' : ''} ${guests.length > 0 ? 'has-guests' : ''}`}
         style={{ paddingLeft: `${12 + level * 20}px` }}
         onClick={() => isExpandable && setIsOpen(!isOpen)}
       >
@@ -81,14 +86,34 @@ function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, default
         <span className="centre-tree-name">
           {level === 0 && <MapPin size={14} />}
           {centre}
+          {guests.length > 0 && <span className="guest-badge">+{guests.length} guest{guests.length > 1 ? 's' : ''}</span>}
         </span>
         <span className="centre-tree-stats">
           <span className="centre-stat total">{data.total || 0}</span>
-          <span className="centre-stat present">{presentCount}</span>
-          <span className="centre-stat inside">{insideCount}</span>
+          <span className="centre-stat present">{presentCount + guestPresentCount}</span>
+          <span className="centre-stat inside">{insideCount + guestInsideCount}</span>
         </span>
       </div>
       
+      {/* Guest list */}
+      {isOpen && guests.length > 0 && (
+        <div className="guest-list" style={{ paddingLeft: `${28 + level * 20}px` }}>
+          {guests.map(g => {
+            const isPresent = presentSet.has(g.badge_number)
+            const isInside = insideSet.has(g.badge_number)
+            return (
+              <div key={g.badge_number} className={`guest-row ${isInside ? 'guest-inside' : ''}`}>
+                <span className="guest-name">{g.badge_number}</span>
+                <span className="guest-status">
+                  {isInside ? 'Inside' : isPresent ? 'Present' : 'Away'}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Department breakdown */}
       {isOpen && hasDepts && (
         <div className="centre-depts">
           <div className="dept-header" style={{ paddingLeft: `${28 + level * 20}px` }}>
@@ -97,14 +122,22 @@ function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, default
             <span>Present</span>
             <span>Inside</span>
           </div>
-          {Object.entries(data.departments).map(([dept, deptData]) => (
-            <div key={dept} className="dept-row" style={{ paddingLeft: `${28 + level * 20}px` }}>
-              <span className="dept-name">{dept}</span>
-              <span className="dept-stat">{deptData.sewadars?.length || 0}</span>
-              <span className="dept-stat">{deptData.sewadars?.filter(s => presentSet.has(s.badge_number)).length || 0}</span>
-              <span className="dept-stat">{deptData.sewadars?.filter(s => insideSet.has(s.badge_number)).length || 0}</span>
-            </div>
-          ))}
+          {Object.entries(data.departments).map(([dept, deptData]) => {
+            // Count present/inside including cross-centre scans
+            const deptPresent = deptData.sewadars.filter(s => {
+              const session = sessionMap?.[s.badge_number]
+              return session !== undefined && session.scanCentre !== undefined
+            }).length
+            const deptInside = deptData.sewadars.filter(s => insideSet.has(s.badge_number)).length
+            return (
+              <div key={dept} className="dept-row" style={{ paddingLeft: `${28 + level * 20}px` }}>
+                <span className="dept-name">{dept}</span>
+                <span className="dept-stat">{deptData.sewadars?.length || 0}</span>
+                <span className="dept-stat">{deptPresent}</span>
+                <span className="dept-stat">{deptInside}</span>
+              </div>
+            )
+          })}
         </div>
       )}
       
@@ -118,6 +151,8 @@ function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, default
               level={level + 1}
               presentSet={presentSet}
               insideSet={insideSet}
+              sessionMap={sessionMap}
+              guestMap={guestMap}
               defaultOpen={level === 0}
             />
           ))}
@@ -157,6 +192,8 @@ export default function DashboardPage() {
   const [centresList, setCentresList] = useState([])
   const [presentSet, setPresentSet] = useState(new Set())
   const [insideSet, setInsideSet] = useState(new Set())
+  const [sessionMap, setSessionMap] = useState({})
+  const [guestMap, setGuestMap] = useState({})
 
   const fetchDashboard = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
@@ -204,10 +241,10 @@ export default function DashboardPage() {
       }
       const { count: femaleTotal } = await femaleQuery
 
-      // 3. Today's sessions - use in_date
+      // 3. Today's sessions - include centre (scan location)
       const { data: todaySessions } = await supabase
         .from('attendance_sessions')
-        .select('badge_number')
+        .select('badge_number, centre, status')
         .eq('in_date', todayStr)
 
       // 4. Open sessions (status = 'OPEN')
@@ -251,6 +288,31 @@ export default function DashboardPage() {
         page2++
       }
       console.log('Full sewadars for stats:', sewadars.length)
+
+      // Build session map: badge_number -> { scanCentre, status }
+      const sMap = {}
+      for (const s of (todaySessions || [])) {
+        sMap[s.badge_number] = { scanCentre: s.centre, status: s.status }
+      }
+
+      // Build guest map: centre -> array of guest sessions (scanned here but belong elsewhere)
+      const gMap = {}
+      const sewadarCentreMap = {}
+      for (const s of (sewadars || [])) {
+        sewadarCentreMap[s.badge_number] = s.centre
+      }
+      for (const session of (todaySessions || [])) {
+        const homeCentre = sewadarCentreMap[session.badge_number]
+        if (homeCentre && homeCentre !== session.centre) {
+          // This is a cross-centre scan
+          if (!gMap[session.centre]) gMap[session.centre] = []
+          gMap[session.centre].push({
+            badge_number: session.badge_number,
+            homeCentre,
+            status: session.status
+          })
+        }
+      }
 
       const localPresentSet = new Set((todaySessions || []).map(s => s.badge_number))
       const localInsideSet = new Set((openSessions || []).map(s => s.badge_number))
@@ -358,6 +420,8 @@ export default function DashboardPage() {
 
       setPresentSet(localPresentSet)
       setInsideSet(localInsideSet)
+      setSessionMap(sMap)
+      setGuestMap(gMap)
       setCentreTree(rootCentres)
       setDeptStats(Object.entries(deptMap).sort((a, b) => b[1].total - a[1].total))
 
@@ -480,6 +544,8 @@ export default function DashboardPage() {
               data={centre}
               presentSet={presentSet}
               insideSet={insideSet}
+              sessionMap={sessionMap}
+              guestMap={guestMap}
               defaultOpen={false}
             />
           ))}
