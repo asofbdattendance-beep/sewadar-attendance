@@ -202,7 +202,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   
-  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN
+  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'aso'
   const userCentre = profile?.centre
   
   const today = new Date().toISOString().split('T')[0]
@@ -248,7 +248,7 @@ export default function ReportsPage() {
   }
 
   const fetchReport = useCallback(async () => {
-const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN
+const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'aso'
     const userCentre = profile?.centre
     
     setLoading(true)

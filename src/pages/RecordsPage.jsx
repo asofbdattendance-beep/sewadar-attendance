@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, ROLES, formatTime12Hour, formatDateIndian } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { Search, Download, Filter, Calendar, Clock, Scan, Timer, Edit3, DoorOpen, RefreshCw, Truck, MapPin, Briefcase, ArrowRight, LayoutGrid, Table2 } from 'lucide-react'
+import { useToast } from '../components/Toast'
+import { logAction } from '../lib/logger'
+import { Search, Download, Filter, Calendar, Clock, Scan, Timer, Edit3, DoorOpen, RefreshCw, Truck, MapPin, Briefcase, ArrowRight, LayoutGrid, Table2, Trash2 } from 'lucide-react'
 
 function SkeletonCard() {
   return (
@@ -48,7 +50,8 @@ function getJathaTypeLabel(type) {
   return labels[type] || type
 }
 
-function JathaCard({ session }) {
+function JathaCard({ session, onDelete }) {
+  const isSuperAdmin = session.role === 'super_admin'
   return (
     <div className="jatha-record-card">
       <div className="jatha-record-header">
@@ -101,12 +104,17 @@ function JathaCard({ session }) {
           </div>
         )}
         <div className="jatha-record-date">{formatDateIndian(session.in_date)}</div>
+        {onDelete && (
+          <button className="btn-icon btn-delete" style={{ marginLeft: 8 }} title="Delete entry" onClick={() => onDelete('jatha_attendance', session.id)}>
+            <Trash2 size={14} />
+          </button>
+        )}
       </div>
     </div>
   )
 }
 
-function SessionCard({ session }) {
+function SessionCard({ session, onDelete }) {
   const isOpen = session.status === 'OPEN'
   const isManual = session.is_manual === true
   const isGateEntry = session.is_gate_entry === true
@@ -162,18 +170,25 @@ function SessionCard({ session }) {
         <div className="scanner-row"><Scan size={11} /><span>IN by:</span><span className="scanner-name">{session.in_scanner_name || 'Unknown'}</span><span className="scanner-badge">{session.in_scanner_badge || 'N/A'}</span></div>
         {session.out_scanner_badge && <div className="scanner-row"><Scan size={11} /><span>OUT by:</span><span className="scanner-name">{session.out_scanner_name || 'Unknown'}</span><span className="scanner-badge">{session.out_scanner_badge}</span></div>}
       </div>
-      <div className="session-footer"><span className="session-date">{formatDateIndian(session.in_date)}</span></div>
+      <div className="session-footer">
+        <span className="session-date">{formatDateIndian(session.in_date)}</span>
+        {onDelete && (
+          <button className="btn-icon btn-delete" style={{ marginLeft: 'auto' }} title="Delete entry" onClick={() => onDelete('attendance_sessions', session.id)}>
+            <Trash2 size={14} />
+          </button>
+        )}
+      </div>
     </div>
   )
 }
 
-function SessionTable({ records }) {
+function SessionTable({ records, onDelete }) {
   return (
     <div className="records-table-wrapper">
       <table className="records-table">
         <thead>
           <tr>
-            <th>Status</th><th>Badge</th><th>Name</th><th>Centre</th><th>Type</th><th>Duty</th><th>IN Date</th><th>IN Time</th><th>OUT Date</th><th>OUT Time</th><th>Duration</th><th>IN By</th><th>OUT By</th>
+            <th>Status</th><th>Badge</th><th>Name</th><th>Centre</th><th>Type</th><th>Duty</th><th>IN Date</th><th>IN Time</th><th>OUT Date</th><th>OUT Time</th><th>Duration</th><th>IN By</th><th>OUT By</th><th style={{width:50}}></th>
           </tr>
         </thead>
         <tbody>
@@ -204,6 +219,7 @@ function SessionTable({ records }) {
                 <td className="cell-duration">{duration || (isOpen ? 'In progress' : '-')}</td>
                 <td className="cell-scanner">{r.in_scanner_name || '-'}</td>
                 <td className="cell-scanner">{r.out_scanner_name || '-'}</td>
+                <td>{onDelete && <button className="btn-icon btn-delete" onClick={() => onDelete('attendance_sessions', r.id)} title="Delete"><Trash2 size={13} /></button>}</td>
               </tr>
             )
           })}
@@ -213,13 +229,13 @@ function SessionTable({ records }) {
   )
 }
 
-function JathaTable({ records }) {
+function JathaTable({ records, onDelete }) {
   return (
     <div className="records-table-wrapper">
       <table className="records-table">
         <thead>
           <tr>
-            <th>Badge</th><th>Name</th><th>Destination</th><th>Type</th><th>Department</th><th>From Date</th><th>To Date</th><th>Remarks</th><th>Entered By</th>
+            <th>Badge</th><th>Name</th><th>Destination</th><th>Type</th><th>Department</th><th>From Date</th><th>To Date</th><th>Remarks</th><th>Entered By</th><th style={{width:50}}></th>
           </tr>
         </thead>
         <tbody>
@@ -234,6 +250,7 @@ function JathaTable({ records }) {
               <td className="cell-date">{formatDateIndian(r.out_date)}</td>
               <td className="cell-remarks" style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.remarks || '-'}</td>
               <td className="cell-scanner">{r.entered_by_name || '-'}</td>
+              <td>{onDelete && <button className="btn-icon btn-delete" onClick={() => onDelete('jatha_attendance', r.id)} title="Delete"><Trash2 size={13} /></button>}</td>
             </tr>
           ))}
         </tbody>
@@ -244,6 +261,7 @@ function JathaTable({ records }) {
 
 export default function RecordsPage() {
   const { profile } = useAuth()
+  const toast = useToast()
   const [activeTab, setActiveTab] = useState('gate')
   const [gateRecords, setGateRecords] = useState([])
   const [jathaRecords, setJathaRecords] = useState([])
@@ -283,12 +301,22 @@ export default function RecordsPage() {
 
   const isMobile = () => window.innerWidth < 768
 
+  const handleDelete = async (table, id) => {
+    const label = table === 'attendance_sessions' ? 'attendance' : 'jatha'
+    if (!window.confirm(`Delete this ${label} record?`)) return
+    const { error } = await supabase.from(table).delete().eq('id', id)
+    if (error) { toast.error(error.message); return }
+    toast.success(`${label} record deleted`)
+    logAction(profile?.badge_number, profile?.name, 'RECORD_DELETE', { table, record_id: id, type: label })
+    fetchRecords()
+  }
+
   const fetchRecords = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
 
     const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'super_admin' || profile?.role === 'aso'
-    const targetCentre = centreFilter || profile?.centre
+    const targetCentre = centreFilter || (isASO ? null : profile?.centre)
 
     let sessions = []
 
@@ -581,10 +609,10 @@ export default function RecordsPage() {
       ) : currentRecords.length === 0 ? (
         <div className="empty-state"><Calendar size={48} /><p>No {activeTab === 'gate' ? 'sessions' : 'jatha records'} found</p></div>
       ) : showTable ? (
-        activeTab === 'gate' ? <SessionTable records={currentRecords} /> : <JathaTable records={currentRecords} />
+        activeTab === 'gate' ? <SessionTable records={currentRecords} onDelete={handleDelete} /> : <JathaTable records={currentRecords} onDelete={handleDelete} />
       ) : (
         <div className="cards-grid">
-          {currentRecords.map(r => activeTab === 'gate' ? <SessionCard key={r.id} session={r} /> : <JathaCard key={r.id} session={r} />)}
+          {currentRecords.map(r => activeTab === 'gate' ? <SessionCard key={r.id} session={r} onDelete={handleDelete} /> : <JathaCard key={r.id} session={r} onDelete={handleDelete} />)}
         </div>
       )}
     </div>

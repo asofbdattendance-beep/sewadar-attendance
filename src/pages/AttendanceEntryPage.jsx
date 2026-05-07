@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, ROLES, SESSION_STATUS, formatDateIndian } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { logAction } from '../lib/logger'
 import { useToast } from '../components/Toast'
 import { Users, Search, Plus, AlertTriangle, CheckCircle, Calendar, MapPin, Briefcase, ChevronDown, X, DoorOpen, Truck, RefreshCw, Shield } from 'lucide-react'
 
@@ -376,6 +377,13 @@ function GateEntryForm({ onSuccess }) {
       if (insertError) throw insertError
 
       toast.success(`${records.length} entries added!`)
+      logAction(profile?.badge_number, profile?.name, 'GATE_ENTRY', { 
+        count: records.length, 
+        centre: centre,
+        duty_type: dutyType,
+        from_date: fromDate,
+        to_date: toDate
+      })
       setSubmitResult({ success: true, count: records.length })
       setValidationErrors({})
       setValidationMsg('')
@@ -774,6 +782,14 @@ function JathaEntryForm({ onSuccess }) {
 
       if (insertError) throw insertError
       toast.success(`${records.length} sewadars added to jatha!`)
+      logAction(profile?.badge_number, profile?.name, 'JATHA_ENTRY', {
+        count: records.length,
+        jatha_id: selectedJatha?.id,
+        jatha_centre: selectedJatha?.centre_name,
+        jatha_department: selectedJatha?.department,
+        from_date: fromDate,
+        to_date: toDate
+      })
       setSubmitResult({ success: true, count: records.length })
       setTimeout(() => { resetForm(); setSubmitResult(null) }, 2000)
 

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
+import { supabase } from '../lib/supabase'
 import { Eye, EyeOff, ScanLine } from 'lucide-react'
+import { logAction } from '../lib/logger'
 
 export default function LoginPage() {
   const { signIn } = useAuth()
@@ -16,6 +18,8 @@ export default function LoginPage() {
     setError('')
     try {
       await signIn(email, password)
+      const { data: user } = await supabase.from('users').select('badge_number, name').eq('email', email).maybeSingle()
+      logAction(user?.badge_number || 'login', user?.name || email, 'LOGIN', { email })
     } catch (err) {
       setError(err.message || 'Login failed. Check your credentials.')
     } finally {

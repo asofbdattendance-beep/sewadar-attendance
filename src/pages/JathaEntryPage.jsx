@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, ROLES, formatDateIndian } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { logAction } from '../lib/logger'
 import { useToast } from '../components/Toast'
 import { Users, Search, Plus, Trash2, AlertTriangle, CheckCircle, Calendar, MapPin, Briefcase, ChevronDown, X } from 'lucide-react'
 
@@ -34,6 +35,7 @@ export default function JathaEntryPage() {
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
   const [remarks, setRemarks] = useState('')
+  const [lastCreatedIds, setLastCreatedIds] = useState([])
 
   const resetForm = () => {
     setSelectedJatha(null)
@@ -46,7 +48,10 @@ export default function JathaEntryPage() {
     setRemarks('')
     setSubmitResult(null)
     setWarnings([])
+    setLastCreatedIds([])
   }
+
+  const [lastCreatedIds, setLastCreatedIds] = useState([])
 
   const checkDateValidations = () => {
     const today = new Date()
@@ -323,7 +328,18 @@ export default function JathaEntryPage() {
         throw new Error(`Some records failed to insert. Expected ${records.length}, got ${data.length}`)
       }
 
+      const ids = data.map(r => r.id)
+      setLastCreatedIds(ids)
+
       toast.success(`${records.length} sewadars added to jatha!`)
+      logAction(profile?.badge_number, profile?.name, 'JATHA_ENTRY', { 
+        count: records.length, 
+        jatha_id: selectedJatha?.id,
+        jatha_centre: selectedJatha?.centre_name,
+        jatha_department: selectedJatha?.department,
+        from_date: fromDate,
+        to_date: toDate
+      })
       setSubmitResult({ success: true, count: records.length })
       setTimeout(() => {
         resetForm()
@@ -608,6 +624,24 @@ export default function JathaEntryPage() {
                 <div style={{ fontWeight: 700 }}>{submitResult.count} Entries Added!</div>
                 <div style={{ fontSize: 12 }}>Jatha attendance recorded</div>
               </div>
+              <button
+                className="btn-icon btn-delete"
+                style={{ marginLeft: 'auto' }}
+                title="Undo - Delete these entries"
+                onClick={async () => {
+                  if (!window.confirm(`Delete last ${submitResult.count} jatha entries?`)) return
+                  const { error } = await supabase.from('jatha_attendance').delete().in('id', lastCreatedIds)
+                  if (error) { toast.error(error.message); return }
+                  logAction(profile?.badge_number, profile?.name, 'JATHA_DELETE', { 
+                    count: lastCreatedIds.length, 
+                    ids: lastCreatedIds 
+                  })
+                  toast.success('Entries deleted')
+                  resetForm()
+                }}
+              >
+                <Trash2 size={16} />
+              </button>
             </>
           ) : (
             <>

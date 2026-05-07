@@ -2873,6 +2873,35 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 }
 .btn-ghost:hover { background:#f3f4f6; color:#111827; }
 
+/* User Success Card */
+.user-success-card { padding:8px 0; }
+.user-success-header { text-align:center; margin-bottom:24px; }
+.user-success-header svg { color:#16a34a; margin-bottom:8px; }
+.user-success-header h3 { margin:0; font-size:1.2rem; font-weight:700; color:#111827; }
+.user-success-details { background:#f9fafb; border-radius:12px; padding:16px; margin-bottom:20px; }
+.user-success-row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid #e5e7eb; }
+.user-success-row:last-child { border-bottom:none; }
+.user-success-row span { font-size:13px; color:#6b7280; }
+.user-success-row strong { font-size:14px; color:#111827; }
+.user-success-copy { display:flex; flex-direction:column; gap:8px; }
+.user-success-copy .btn-primary { width:100%; justify-content:center; }
+
+/* Password Display */
+.password-row span { align-self:flex-start; padding-top:2px; }
+.password-display { display:flex; align-items:center; gap:6px; }
+.password-display code { font-family:'JetBrains Mono',monospace; font-size:15px; font-weight:700; color:#6366f1; background:#eef2ff; padding:4px 10px; border-radius:6px; letter-spacing:0.5px; }
+.password-auto { margin-top:16px; padding-top:16px; border-top:1px solid #e5e7eb; }
+.password-auto label { font-size:12px; font-weight:600; color:#374151; display:block; margin-bottom:6px; }
+.password-hint { font-size:11px; color:#9ca3af; margin-top:4px; }
+
+/* Sewadar Search Flow */
+.sewadar-search-flow { min-height:200px; }
+.user-add-form .selected-sewadar-chip { display:flex; align-items:center; gap:8px; padding:10px 14px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; }
+.user-add-form .selected-sewadar-chip .name { font-weight:600; font-size:14px; color:#166534; }
+.user-add-form .selected-sewadar-chip .badge { font-family:'JetBrains Mono',monospace; font-size:11px; color:#16a34a; }
+.user-add-form .selected-sewadar-chip .centre { font-size:12px; color:#6b7280; background:#f3f4f6; padding:2px 8px; border-radius:4px; margin-left:auto; }
+.user-add-form .selected-sewadar-chip .btn-icon { margin-left:4px; color:#6b7280; }
+
 /* Skeleton */
 .skeleton { background:linear-gradient(90deg, var(--bg) 25%, var(--bg-secondary) 50%, var(--bg) 75%); background-size:200% 100%; animation:shimmer 1.5s infinite; }
 @keyframes shimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }

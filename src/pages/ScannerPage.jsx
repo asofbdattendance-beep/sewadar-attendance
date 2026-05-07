@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, ROLES, DUTY_TYPES, SESSION_STATUS, getDutyType, formatTime12Hour } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { logAction } from '../lib/logger'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import { Wifi, WifiOff, CheckCircle, XCircle, Clock, AlertTriangle, Keyboard, Search, Info, MapPin, RefreshCw } from 'lucide-react'
 
@@ -331,6 +332,14 @@ const handleScan = useCallback(async (badge) => {
           }
           console.error('Failed to insert session:', error)
         }
+        if (!error) {
+          await logAction(profile?.badge_number, profile?.name, 'SCAN_IN', {
+            badge: sewadar.badge_number,
+            name: sewadar.sewadar_name,
+            centre: profile?.centre,
+            duty: getDutyType()
+          })
+        }
         fetchRecentScans()
       } catch (err) {
         console.error('Failed to insert session:', err)
@@ -360,6 +369,11 @@ const handleScan = useCallback(async (badge) => {
         p_out_scanner_badge: profile?.badge_number,
         p_out_scanner_name: profile?.name,
         p_out_scanner_centre: profile?.centre || popupState?.sewadar?.centre || 'UNKNOWN'
+      })
+      await logAction(profile?.badge_number, profile?.name, 'SCAN_OUT', {
+        badge: popupState?.sewadar?.badge_number,
+        name: popupState?.sewadar?.sewadar_name,
+        session_id: sessionId
       })
       fetchRecentScans()
     }
@@ -535,6 +549,14 @@ const handleScan = useCallback(async (badge) => {
           }
           console.error('Failed to insert session:', error)
         }
+        if (!error) {
+          await logAction(profile?.badge_number, profile?.name, 'MANUAL_IN', {
+            badge: manualSelectedSewadar.badge_number,
+            name: manualSelectedSewadar.sewadar_name,
+            centre: profile?.centre,
+            duty: getDutyType()
+          })
+        }
         fetchRecentScans()
       }
     } else {
@@ -589,6 +611,12 @@ const handleScan = useCallback(async (badge) => {
         })
         console.log('RPC result:', rpcResult)
         
+        await logAction(profile?.badge_number, profile?.name, 'MANUAL_OUT', {
+          badge: manualSelectedSewadar.badge_number,
+          name: manualSelectedSewadar.sewadar_name,
+          session_id: sessionId
+        })
+
         const { data: updated } = await supabase
           .from('attendance_sessions')
           .select('*')
@@ -780,7 +808,7 @@ const handleScan = useCallback(async (badge) => {
                   </div>
                 </div>
                 <div className="popup-actions">
-                  <button className="btn-out" onClick={() => markOUT(forgotOutData?.date, forgotOutData?.time)} disabled={!forgotOutData?.date || !forgotOutData?.time}>Close Session</button>
+                  <button className="btn-out" onClick={() => { logAction(profile?.badge_number, profile?.name, 'FORGOT_OUT', { badge: popupState?.sewadar?.badge_number, name: popupState?.sewadar?.sewadar_name, session_id: popupState?.openSession?.id }); markOUT(forgotOutData?.date, forgotOutData?.time) }} disabled={!forgotOutData?.date || !forgotOutData?.time}>Close Session</button>
                 </div>
                 <button className="btn-cancel" onClick={closePopup}>Cancel</button>
               </>

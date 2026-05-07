@@ -166,13 +166,13 @@ export default function DashboardPage() {
   const { profile } = useAuth()
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
-  const today = new Date().toISOString().split('T')[0] // Refreshed each render
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
   
-  const isASO = profile?.role === ROLES.SUPER_ADMIN
+  const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'aso'
   const userCentre = profile?.centre
 
   // Only super_admin can view ALL centres. admin/centre_user see their own + children
-  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN
+  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'aso'
 
   const [stats, setStats] = useState({
     totalBadges: 0,
@@ -200,7 +200,6 @@ export default function DashboardPage() {
     else setLoading(true)
 
     // Use local date format consistent with other pages
-    const todayStr = new Date().toISOString().split('T')[0]
     const pageSize = 1000
 
     try {
@@ -245,7 +244,7 @@ export default function DashboardPage() {
       const { data: todaySessions } = await supabase
         .from('attendance_sessions')
         .select('badge_number, centre, status')
-        .eq('in_date', todayStr)
+        .eq('in_date', selectedDate)
 
       // 4. Open sessions (status = 'OPEN')
       const { data: openSessions } = await supabase
@@ -434,7 +433,7 @@ export default function DashboardPage() {
       const { data: jathaToday } = await supabase
         .from('jatha_attendance')
         .select('badge_number')
-        .or(`and(from_date.lte.${today},to_date.gte.${today})`)
+        .or(`and(from_date.lte.${selectedDate},to_date.gte.${selectedDate})`)
 
       const jathaBadges = new Set(jathaToday?.map(j => j.badge_number) || [])
       const jathaInScope = [...jathaBadges].filter(b => scopeBadges.has(b))
@@ -448,7 +447,7 @@ export default function DashboardPage() {
 
     setLoading(false)
     setRefreshing(false)
-  }, [today, canViewAllCentres, userCentre])
+  }, [selectedDate, canViewAllCentres, userCentre])
 
   useEffect(() => { fetchDashboard() }, [fetchDashboard])
 
@@ -496,7 +495,7 @@ export default function DashboardPage() {
     const csv = csvRows.map(r => r.join(',')).join('\n')
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = `dashboard_${today}.csv`
+    a.download = `dashboard_${selectedDate}.csv`
     a.click()
   }
 
@@ -514,7 +513,17 @@ export default function DashboardPage() {
               </button>
             </div>
           </div>
-        <div className="header-date"><Calendar size={14} />{formatDateIndian(today)} {userCentre && !canViewAllCentres && `- ${userCentre}`}</div>
+        <div className="header-date">
+          <Calendar size={14} />
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={e => setSelectedDate(e.target.value)}
+            style={{ border: 'none', background: 'transparent', fontSize: 'inherit', fontWeight: 600, color: 'inherit', outline: 'none', cursor: 'pointer' }}
+            max={new Date().toISOString().split('T')[0]}
+          />
+          {userCentre && !canViewAllCentres && `- ${userCentre}`}
+        </div>
       </div>
 
       {/* Main Stats */}

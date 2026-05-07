@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, ROLES, SESSION_STATUS, formatTime12Hour } from '../lib/supabase'
+import { logAction } from '../lib/logger'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import { UserPlus, Search, Plus, Trash2, AlertTriangle, CheckCircle, Clock, Calendar, Lock, Unlock, RefreshCw, MapPin, Briefcase, Shield } from 'lucide-react'
@@ -300,6 +301,15 @@ export default function GateEntryPage() {
         resetForm()
         setSubmitResult(null)
       }, 2000)
+
+      logAction(profile?.badge_number, profile?.name, 'GATE_ENTRY', {
+        count: records.length,
+        centre: centre,
+        duty_type: dutyType,
+        from_date: fromDate,
+        to_date: toDate,
+        entered_by: profile?.name
+      })
 
     } catch (err) {
       console.error('Gate entry error:', err)
