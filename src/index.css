@@ -1283,6 +1283,27 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .guest-row.guest-inside .guest-status {
   background:rgba(249,115,22,0.1); color:#ea580c;
 }
+.guest-table-header,
+.guest-table-row {
+  display:grid;
+  grid-template-columns: 140px 90px 120px 110px 70px;
+  gap:6px;
+  padding:4px 12px 4px 8px;
+  align-items:center;
+}
+.guest-table-header {
+  font-size:10px; font-weight:600; color:#9ca3af; text-transform:uppercase;
+  border-bottom:1px solid #e5e7eb; margin-bottom:2px;
+}
+.guest-table-row { font-size:12px; }
+.guest-table-row .guest-name { font-weight:500; font-family:inherit; color:inherit; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.guest-table-row .guest-badge { font-family:'JetBrains Mono',monospace; font-size:11px; color:#6b7280; background:none; padding:0; }
+.guest-table-row .guest-dept { color:#6b7280; font-size:11px; }
+.guest-table-row .guest-home { color:#6b7280; font-size:11px; }
+.guest-table-row .guest-stat { font-size:11px; font-weight:600; padding:2px 8px; border-radius:8px; text-align:center; width:fit-content; }
+.guest-table-row .guest-stat.present { background:rgba(168,85,247,0.1); color:#9333ea; }
+.guest-table-row .guest-stat.inside { background:rgba(249,115,22,0.1); color:#ea580c; }
+.guest-table-row .guest-stat.away { background:#f3f4f6; color:#9ca3af; }
 
 .centre-depts { background:rgba(0,0,0,0.02); }
 .dept-header {

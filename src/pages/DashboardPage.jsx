@@ -61,7 +61,10 @@ function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, session
   const hasDepts = data.departments && Object.keys(data.departments).length > 0
   const isExpandable = hasChildren || hasDepts
 
-  const presentCount = data.sewadars ? data.sewadars.filter(s => presentSet.has(s.badge_number)).length : 0
+  const presentCount = data.sewadars ? data.sewadars.filter(s => {
+    const session = sessionMap?.[s.badge_number]
+    return session && session.scanCentre === centre
+  }).length : 0
   const insideCount = data.sewadars ? data.sewadars.filter(s => insideSet.has(s.badge_number)).length : 0
 
   // Guest sewadars who scanned at this centre but belong elsewhere
@@ -98,13 +101,23 @@ function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, session
       {/* Guest list */}
       {isOpen && guests.length > 0 && (
         <div className="guest-list" style={{ paddingLeft: `${28 + level * 20}px` }}>
+          <div className="guest-table-header">
+            <span>Name</span>
+            <span>Badge</span>
+            <span>Dept</span>
+            <span>Home Centre</span>
+            <span>Status</span>
+          </div>
           {guests.map(g => {
             const isPresent = presentSet.has(g.badge_number)
             const isInside = insideSet.has(g.badge_number)
             return (
-              <div key={g.badge_number} className={`guest-row ${isInside ? 'guest-inside' : ''}`}>
-                <span className="guest-name">{g.badge_number}</span>
-                <span className="guest-status">
+              <div key={g.badge_number} className={`guest-table-row ${isInside ? 'guest-inside' : ''}`}>
+                <span className="guest-name" title={g.name}>{g.name || g.badge_number}</span>
+                <span className="guest-badge">{g.badge_number}</span>
+                <span className="guest-dept">{g.department || '-'}</span>
+                <span className="guest-home">{g.homeCentre}</span>
+                <span className={`guest-stat ${isInside ? 'inside' : isPresent ? 'present' : 'away'}`}>
                   {isInside ? 'Inside' : isPresent ? 'Present' : 'Away'}
                 </span>
               </div>
@@ -195,206 +208,129 @@ export default function DashboardPage() {
   const [sessionMap, setSessionMap] = useState({})
   const [guestMap, setGuestMap] = useState({})
 
+  const fetchAllSewadars = async () => {
+    const all = []
+    let page = 0
+    const pageSize = 1000
+    while (true) {
+      const from = page * pageSize
+      const { data: batch } = await supabase.from('sewadars').select('*').range(from, from + pageSize - 1)
+      if (!batch || batch.length === 0) break
+      all.push(...batch)
+      if (batch.length < pageSize) break
+      page++
+    }
+    return all
+  }
+
   const fetchDashboard = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
 
-    // Use local date format consistent with other pages
-    const pageSize = 1000
-
     try {
-      // 1. Fetch centres
-      const { data: centresData } = await supabase.from('centres').select('name, parent_centre').order('name')
-      setCentresList(centresData || [])
+      const centreFilter = (!canViewAllCentres && userCentre) ? userCentre : null
 
-      // 2. Get counts directly using count queries
-      let countQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true })
-      if (!canViewAllCentres && userCentre) {
-        countQuery = countQuery.eq('centre', userCentre)
-      }
-      const { count: totalBadges } = await countQuery
+      // Run all independent queries in PARALLEL
+      const [centresRes, totalRes, permRes, openRes, maleRes, femaleRes, sessionsRes, openSessionsRes, jathaRes, sewadars] = await Promise.all([
+        supabase.from('centres').select('name, parent_centre').order('name'),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'PERMANENT').eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'PERMANENT'),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'OPEN').eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'OPEN'),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Male').eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Male'),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Female').eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Female'),
+        supabase.from('attendance_sessions').select('badge_number, centre, status').eq('in_date', selectedDate),
+        supabase.from('attendance_sessions').select('badge_number').eq('status', 'OPEN'),
+        supabase.from('jatha_attendance').select('badge_number').or(`and(from_date.lte.${selectedDate},to_date.gte.${selectedDate})`),
+        fetchAllSewadars()
+      ])
 
-      let permQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true })
-        .eq('badge_status', 'PERMANENT')
-      if (!canViewAllCentres && userCentre) {
-        permQuery = permQuery.eq('centre', userCentre)
-      }
-      const { count: permanentBadges } = await permQuery
+      const centresData = centresRes.data || []
+      const totalBadges = totalRes.count || 0
+      const permanentBadges = permRes.count || 0
+      const openBadgesCount = openRes.count || 0
+      const maleTotal = maleRes.count || 0
+      const femaleTotal = femaleRes.count || 0
+      const todaySessions = sessionsRes.data || []
+      const openSessions = openSessionsRes.data || []
+      const jathaToday = jathaRes.data || []
 
-      let openQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true })
-        .eq('badge_status', 'OPEN')
-      if (!canViewAllCentres && userCentre) {
-        openQuery = openQuery.eq('centre', userCentre)
-      }
-      const { count: openBadgesCount } = await openQuery
+      setCentresList(centresData)
 
-      let maleQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true }).eq('gender', 'Male')
-      if (!canViewAllCentres && userCentre) {
-        maleQuery = maleQuery.eq('centre', userCentre)
-      }
-      const { count: maleTotal } = await maleQuery
-
-      let femaleQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true }).eq('gender', 'Female')
-      if (!canViewAllCentres && userCentre) {
-        femaleQuery = femaleQuery.eq('centre', userCentre)
-      }
-      const { count: femaleTotal } = await femaleQuery
-
-      // 3. Today's sessions - include centre (scan location)
-      const { data: todaySessions } = await supabase
-        .from('attendance_sessions')
-        .select('badge_number, centre, status')
-        .eq('in_date', selectedDate)
-
-      // 4. Open sessions (status = 'OPEN')
-      const { data: openSessions } = await supabase
-        .from('attendance_sessions')
-        .select('badge_number')
-        .eq('status', 'OPEN')
-
-      // 5. Get all sewadars - fetch ALL using pagination to override 1000 limit
-      let allSewadars = []
-      let page = 0
-      const pageSize = 1000
-      while (true) {
-        const from = page * pageSize
-        const to = from + pageSize - 1
-        const { data: batch } = await supabase
-          .from('sewadars')
-          .select('badge_number')
-          .range(from, to)
-        if (!batch || batch.length === 0) break
-        allSewadars = [...allSewadars, ...batch]
-        if (batch.length < pageSize) break
-        page++
-      }
-      console.log('All sewadars fetched:', allSewadars.length)
-
-      // Also get full data for stats using pagination
-      let sewadars = []
-      let page2 = 0
-      while (true) {
-        const from = page2 * pageSize
-        const to = from + pageSize - 1
-        let query = supabase.from('sewadars').select('*').range(from, to)
-        if (!canViewAllCentres && userCentre) {
-          query = query.eq('centre', userCentre)
-        }
-        const { data: batch } = await query
-        if (!batch || batch.length === 0) break
-        sewadars = [...sewadars, ...batch]
-        if (batch.length < pageSize) break
-        page2++
-      }
-      console.log('Full sewadars for stats:', sewadars.length)
-
-      // Build session map: badge_number -> { scanCentre, status }
+      // Build session map & sets
       const sMap = {}
-      for (const s of (todaySessions || [])) {
-        sMap[s.badge_number] = { scanCentre: s.centre, status: s.status }
-      }
-
-      // Build guest map: centre -> array of guest sessions (scanned here but belong elsewhere)
-      const gMap = {}
-      const sewadarCentreMap = {}
-      for (const s of (sewadars || [])) {
-        sewadarCentreMap[s.badge_number] = s.centre
-      }
-      for (const session of (todaySessions || [])) {
-        const homeCentre = sewadarCentreMap[session.badge_number]
-        if (homeCentre && homeCentre !== session.centre) {
-          // This is a cross-centre scan
-          if (!gMap[session.centre]) gMap[session.centre] = []
-          gMap[session.centre].push({
-            badge_number: session.badge_number,
-            homeCentre,
-            status: session.status
-          })
-        }
-      }
-
-      const localPresentSet = new Set((todaySessions || []).map(s => s.badge_number))
-      const localInsideSet = new Set((openSessions || []).map(s => s.badge_number))
-      const scopeBadges = new Set(allSewadars?.map(s => s.badge_number) || [])
+      for (const s of todaySessions) sMap[s.badge_number] = { scanCentre: s.centre, status: s.status }
+      const localPresentSet = new Set(todaySessions.map(s => s.badge_number))
+      const localInsideSet = new Set(openSessions.map(s => s.badge_number))
+      const scopeBadges = new Set(sewadars.map(s => s.badge_number))
 
       const presentInScope = [...localPresentSet].filter(b => scopeBadges.has(b))
       const insideInScope = [...localInsideSet].filter(b => scopeBadges.has(b))
 
-      console.log('Present set:', [...localPresentSet].slice(0,5))
-      console.log('Inside set:', [...localInsideSet].slice(0,5))
-      console.log('Present in scope:', presentInScope.length, presentInScope.slice(0,5))
-      console.log('Inside in scope:', insideInScope.length, insideInScope.slice(0,5))
-
-      // 6. Build centre tree
-      const centreMap = {}
-      const rootCentres = []
-      
-      // Initialize all centres
-      for (const c of (centresData || [])) {
-        centreMap[c.name] = {
-          name: c.name,
-          parent: c.parent_centre,
-          total: 0,
-          sewadars: [],
-          departments: {},
-          children: []
+      // Build guest map & sewadar centre map
+      const sewadarMap = {}
+      for (const s of sewadars) sewadarMap[s.badge_number] = s
+      const gMap = {}
+      for (const session of todaySessions) {
+        const sewadar = sewadarMap[session.badge_number]
+        const homeCentre = sewadar?.centre
+        if (homeCentre && homeCentre !== session.centre) {
+          if (!gMap[session.centre]) gMap[session.centre] = []
+          gMap[session.centre].push({ badge_number: session.badge_number, name: sewadar.sewadar_name, department: sewadar.department, homeCentre, status: session.status })
         }
       }
 
-      // Assign sewadars to centres
-      for (const s of (sewadars || [])) {
+      // Build centre tree (single pass through sewadars)
+      const centreMap = {}
+      const rootCentres = []
+      for (const c of centresData) {
+        centreMap[c.name] = { name: c.name, parent: c.parent_centre, total: 0, sewadars: [], departments: {}, children: [] }
+      }
+      for (const s of sewadars) {
         const centre = centreMap[s.centre]
         if (centre) {
           centre.sewadars.push(s)
           centre.total++
-          
           const dept = s.department || 'UNKNOWN'
-          if (!centre.departments[dept]) {
-            centre.departments[dept] = { sewadars: [] }
-          }
+          if (!centre.departments[dept]) centre.departments[dept] = { sewadars: [] }
           centre.departments[dept].sewadars.push(s)
         }
       }
-
-      // Build hierarchy
-      for (const [name, data] of Object.entries(centreMap)) {
-        if (data.parent && centreMap[data.parent]) {
-          centreMap[data.parent].children.push(data)
-        } else {
-          rootCentres.push(data)
-        }
+      for (const [, data] of Object.entries(centreMap)) {
+        if (data.parent && centreMap[data.parent]) centreMap[data.parent].children.push(data)
+        else rootCentres.push(data)
       }
-
-      // Sort A-Z by name
       const sortAZ = (arr) => {
         arr.sort((a, b) => a.name.localeCompare(b.name))
-        for (const item of arr) {
-          if (item.children.length > 0) sortAZ(item.children)
-        }
+        for (const item of arr) { if (item.children.length > 0) sortAZ(item.children) }
       }
       sortAZ(rootCentres)
 
-      // Department stats
+      // Department stats (single pass through sewadars)
       const deptMap = {}
-      for (const s of (sewadars || [])) {
-        const dept = s.department || 'UNKNOWN'
-        if (!deptMap[dept]) {
-          deptMap[dept] = { total: 0, present: 0, inside: 0, permanent: 0, open: 0 }
-        }
-        deptMap[dept].total++
-        if (s.badge_status === 'PERMANENT') deptMap[dept].permanent++
-        else deptMap[dept].open++
-        if (localPresentSet.has(s.badge_number)) deptMap[dept].present++
-        if (localInsideSet.has(s.badge_number)) deptMap[dept].inside++
-      }
-
-      // Gender stats
       let malePresentCount = 0, femalePresentCount = 0
       let maleInsideCount = 0, femaleInsideCount = 0
       let malePermanentCount = 0, femalePermanentCount = 0
       let maleOpenCount = 0, femaleOpenCount = 0
 
-      for (const s of (sewadars || [])) {
+      for (const s of sewadars) {
+        const dept = s.department || 'UNKNOWN'
+        if (!deptMap[dept]) deptMap[dept] = { total: 0, present: 0, inside: 0, permanent: 0, open: 0 }
+        deptMap[dept].total++
+        if (s.badge_status === 'PERMANENT') deptMap[dept].permanent++
+        else deptMap[dept].open++
+        if (localPresentSet.has(s.badge_number)) deptMap[dept].present++
+        if (localInsideSet.has(s.badge_number)) deptMap[dept].inside++
+
         const gender = s.gender?.toUpperCase() || ''
         if (gender === 'MALE') {
           if (localPresentSet.has(s.badge_number)) malePresentCount++
@@ -409,36 +345,22 @@ export default function DashboardPage() {
         }
       }
 
-      setStats({
-        totalBadges: totalBadges || 0,
-        presentToday: presentInScope.length,
-        currentlyInside: insideInScope.length,
-        permanentBadges: permanentBadges || 0,
-        openBadges: openBadgesCount || 0
-      })
-
+      setStats({ totalBadges, presentToday: presentInScope.length, currentlyInside: insideInScope.length, permanentBadges, openBadges: openBadgesCount })
       setPresentSet(localPresentSet)
       setInsideSet(localInsideSet)
       setSessionMap(sMap)
       setGuestMap(gMap)
       setCentreTree(rootCentres)
       setDeptStats(Object.entries(deptMap).sort((a, b) => b[1].total - a[1].total))
-
       setGenderStats({
-        male: { total: maleTotal || 0, present: malePresentCount, inside: maleInsideCount, permanent: malePermanentCount, open: maleOpenCount },
-        female: { total: femaleTotal || 0, present: femalePresentCount, inside: femaleInsideCount, permanent: femalePermanentCount, open: femaleOpenCount }
+        male: { total: maleTotal, present: malePresentCount, inside: maleInsideCount, permanent: malePermanentCount, open: maleOpenCount },
+        female: { total: femaleTotal, present: femalePresentCount, inside: femaleInsideCount, permanent: femalePermanentCount, open: femaleOpenCount }
       })
 
       // Jatha stats
-      const { data: jathaToday } = await supabase
-        .from('jatha_attendance')
-        .select('badge_number')
-        .or(`and(from_date.lte.${selectedDate},to_date.gte.${selectedDate})`)
-
-      const jathaBadges = new Set(jathaToday?.map(j => j.badge_number) || [])
+      const jathaBadges = new Set(jathaToday.map(j => j.badge_number))
       const jathaInScope = [...jathaBadges].filter(b => scopeBadges.has(b))
       const jathaPresent = jathaInScope.filter(b => localPresentSet.has(b))
-
       setJathaStats({ total: jathaInScope.length, present: jathaPresent.length })
 
     } catch (err) {
