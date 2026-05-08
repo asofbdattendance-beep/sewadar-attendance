@@ -304,10 +304,11 @@ export default function RecordsPage() {
   const handleDelete = async (table, id) => {
     const label = table === 'attendance_sessions' ? 'attendance' : 'jatha'
     if (!window.confirm(`Delete this ${label} record?`)) return
+    const { data: deletedRecord } = await supabase.from(table).select('*').eq('id', id).single()
     const { error } = await supabase.from(table).delete().eq('id', id)
     if (error) { toast.error(error.message); return }
     toast.success(`${label} record deleted`)
-    logAction(profile?.badge_number, profile?.name, 'RECORD_DELETE', { table, record_id: id, type: label })
+    logAction(profile?.badge_number, profile?.name, 'RECORD_DELETE', { table, record_id: id, type: label, deleted_record: deletedRecord || null })
     fetchRecords()
   }
 

@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { supabase, ROLES } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import { logAction } from '../lib/logger'
-import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search, Copy, CheckCircle, UserPlus, FileText } from 'lucide-react'
+import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search, Copy, CheckCircle, UserPlus, FileText, ChevronRight, ChevronDown } from 'lucide-react'
 
 const TABLES = [
   { id: 'centres', label: 'Centres', icon: MapPin, 
@@ -96,13 +96,23 @@ function FormFields({ table, formData, setFormData, centres, isUsersTable }) {
           ) : col === 'role' ? (
             <select
               value={formData[col] || ''}
-              onChange={e => setFormData({ ...formData, [col]: e.target.value })}
+              onChange={e => {
+                const newRole = e.target.value
+                setFormData({ ...formData, [col]: newRole })
+                if (newRole) {
+                  supabase.from('role_masters').select('permissions').eq('role_key', newRole).single().then(({ data }) => {
+                    if (data?.permissions) {
+                      setFormData(prev => ({ ...prev, permissions: data.permissions }))
+                    }
+                  })
+                }
+              }}
               required
             >
               <option value="">Select Role</option>
               <option value="super_admin">ASO (Super Admin)</option>
               <option value="admin">Admin</option>
-              <option value="centre_user">Centre Admin</option>
+              <option value="centre_user">Centre User</option>
               <option value="sc_sp_user">Scanner</option>
             </select>
           ) : col === 'jatha_type' ? (
@@ -206,6 +216,7 @@ export default function SuperAdminPage() {
   const [generatedPassword, setGeneratedPassword] = useState('')
   const [showSuccess, setShowSuccess] = useState(false)
   const [successData, setSuccessData] = useState(null)
+  const [expandedLog, setExpandedLog] = useState(null)
   const sewadarSearchTimeout = useRef(null)
 
   const currentTable = TABLES.find(t => t.id === activeTable)
@@ -314,7 +325,7 @@ export default function SuperAdminPage() {
     try {
       await supabase.from(activeTable).delete().eq('id', row.id)
       toast.success('Deleted successfully')
-      logAction(profile?.badge_number, profile?.name, 'ADMIN_DELETE', { table: activeTable, id: row.id, name: deleteName })
+      logAction(profile?.badge_number, profile?.name, 'ADMIN_DELETE', { table: activeTable, id: row.id, name: deleteName, deleted_record: row })
       fetchData(activeTable)
     } catch (err) {
       console.error('Delete error:', err)
@@ -329,6 +340,13 @@ export default function SuperAdminPage() {
       // For users table - don't send role if it's empty, handle permissions
       if (activeTable === 'users') {
         if (!payload.role) delete payload.role
+        // Auto-sync permissions from role_masters
+        if (payload.role) {
+          const { data: rolePerms } = await supabase.from('role_masters').select('permissions').eq('role_key', payload.role).single()
+          if (rolePerms?.permissions) {
+            payload.permissions = typeof rolePerms.permissions === 'string' ? JSON.parse(rolePerms.permissions) : rolePerms.permissions
+          }
+        }
         // Convert permissions object to JSON string for storage
         if (payload.permissions && typeof payload.permissions === 'object') {
           payload.permissions = JSON.stringify(payload.permissions)
@@ -466,7 +484,7 @@ export default function SuperAdminPage() {
           <button
             key={table.id}
             className={`tab-btn ${activeTable === table.id ? 'active' : ''}`}
-            onClick={() => { setActiveTable(table.id); setSearch('') }}
+            onClick={() => { setActiveTable(table.id); setSearch(''); setExpandedLog(null) }}
           >
             <table.icon size={15} />
             <span>{table.label}</span>
@@ -493,7 +511,8 @@ export default function SuperAdminPage() {
         <table className="superadmin-table">
           <thead>
             <tr>
-              {currentTable.columns.map(col => (
+              {activeTable === 'logs' && <th style={{ width: 40 }}></th>}
+              {currentTable.columns.filter(col => activeTable !== 'logs' || col !== 'details').map(col => (
                 <th key={col}>{col.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</th>
               ))}
               {activeTable !== 'logs' && <th style={{ width: 80 }}>Actions</th>}
@@ -508,70 +527,91 @@ export default function SuperAdminPage() {
               </td></tr>
             ) : (
               filteredData.map(row => (
-                <tr key={row.id}>
-                  {currentTable.columns.map(col => (
-                    <td key={col}>
-                      {col === 'is_active' ? (
-                        <span className={`status-dot ${row[col] ? 'active' : 'inactive'}`}>
-                          {row[col] ? 'Active' : 'Inactive'}
-                        </span>
-                      ) : col === 'permissions' && (activeTable === 'users' || activeTable === 'role_masters') ? (
-                        <span style={{ fontSize: 12, color: '#6b7280' }}>
-                          {(() => {
-                            let p = row[col]
-                            if (typeof p === 'string') {
-                              try { p = JSON.parse(p) } catch { p = {} }
+                <React.Fragment key={row.id}>
+                  <tr className={expandedLog === row.id ? 'expanded' : ''}>
+                    {activeTable === 'logs' && (
+                      <td style={{ width: 40 }}>
+                        <button className="btn-icon" onClick={() => setExpandedLog(expandedLog === row.id ? null : row.id)} title="Toggle details">
+                          {expandedLog === row.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        </button>
+                      </td>
+                    )}
+                    {currentTable.columns.filter(col => activeTable !== 'logs' || col !== 'details').map(col => (
+                      <td key={col}>
+                        {col === 'is_active' ? (
+                          <span className={`status-dot ${row[col] ? 'active' : 'inactive'}`}>
+                            {row[col] ? 'Active' : 'Inactive'}
+                          </span>
+                        ) : col === 'permissions' && (activeTable === 'users' || activeTable === 'role_masters') ? (
+                          <span style={{ fontSize: 12, color: '#6b7280' }}>
+                            {(() => {
+                              let p = row[col]
+                              if (typeof p === 'string') {
+                                try { p = JSON.parse(p) } catch { p = {} }
+                              }
+                              p = p || {}
+                              const enabled = Object.entries(p).filter(([k, v]) => v).map(([k]) => {
+                                const perm = PERMISSIONS_LIST.find(x => x.key === k)
+                                return perm ? perm.label.replace('Allow ', '') : k
+                              })
+                              return enabled.length > 0 ? enabled.join(', ') : 'None'
+                            })()}
+                          </span>
+                        ) : col === 'permissions' ? (
+                          <span className="cell-mono">{JSON.stringify(row[col] || {}).slice(0, 30)}</span>
+                        ) : col === 'role_key' ? (
+                          <span className="cell-mono">{row[col]}</span>
+                        ) : col === 'role_label' && activeTable === 'role_masters' ? (
+                          <span className={`role-pill ${row.role_key}`}>{(row[col] || '').replace(/_/g, ' ') || '—'}</span>
+                        ) : col === 'role' ? (
+                          <span className={`role-pill ${row[col]}`}>{row[col] === 'super_admin' ? 'ASO' : row[col] === 'admin' ? 'Admin' : row[col] === 'centre_user' ? 'Centre User' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
+                        ) : col === 'jatha_type' ? (
+                          <span className={`type-pill ${row[col]}`}>{row[col].replace('_', ' ')}</span>
+                        ) : col === 'action' && activeTable === 'logs' ? (
+                          <span className={`action-pill ${row[col]}`}>{row[col]}</span>
+                        ) : col === 'timestamp' && activeTable === 'logs' ? (
+                          <span style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
+                            {new Date(row[col]).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        ) : col === 'user_badge' && activeTable === 'logs' ? (
+                          <span className="cell-mono">{row[col]}</span>
+                        ) : col === 'user_name' && activeTable === 'logs' ? (
+                          <span style={{ fontWeight: 500 }}>{row[col]}</span>
+                        ) : (
+                          row[col] || '—'
+                        )}
+                      </td>
+                    ))}
+                    {activeTable !== 'logs' && (
+                      <td>
+                        <div className="action-btns">
+                          <button className="btn-icon" onClick={() => handleEdit(row)} title="Edit">
+                            <Pencil size={14} />
+                          </button>
+                          <button className="btn-icon btn-delete" onClick={() => handleDelete(row)} title="Delete">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                  {activeTable === 'logs' && expandedLog === row.id && (
+                    <tr className="expanded-detail-row">
+                      <td colSpan={currentTable.columns.filter(col => col !== 'details').length + 1}>
+                        <div className="log-detail-content">
+                          <pre>{(() => {
+                            try {
+                              const d = JSON.parse(row.details)
+                              return JSON.stringify(d, null, 2)
+                            } catch {
+                              return row.details || 'No details'
                             }
-                            p = p || {}
-                            const enabled = Object.entries(p).filter(([k, v]) => v).map(([k]) => {
-                              const perm = PERMISSIONS_LIST.find(x => x.key === k)
-                              return perm ? perm.label.replace('Allow ', '') : k
-                            })
-                            return enabled.length > 0 ? enabled.join(', ') : 'None'
-                          })()}
-                        </span>
-                      ) : col === 'permissions' ? (
-                        <span className="cell-mono">{JSON.stringify(row[col] || {}).slice(0, 30)}</span>
-                      ) : col === 'role_key' ? (
-                        <span className={`role-pill ${row[col]}`}>{row[col] === 'super_admin' ? 'ASO' : row[col] === 'admin' ? 'Admin' : row[col] === 'centre_user' ? 'Centre Admin' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
-                      ) : col === 'role' ? (
-                        <span className={`role-pill ${row[col]}`}>{row[col] === 'super_admin' ? 'ASO' : row[col] === 'admin' ? 'Admin' : row[col] === 'centre_user' ? 'Centre Admin' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
-                      ) : col === 'jatha_type' ? (
-                        <span className={`type-pill ${row[col]}`}>{row[col].replace('_', ' ')}</span>
-                      ) : col === 'action' && activeTable === 'logs' ? (
-                        <span className={`action-pill ${row[col]}`}>{row[col]}</span>
-                      ) : col === 'details' && activeTable === 'logs' ? (
-                        <span className="cell-mono" style={{ fontSize: 11, maxWidth: 300, display: 'inline-block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {(() => {
-                            try { const d = JSON.parse(row[col]); return JSON.stringify(d).slice(0, 120) } catch { return String(row[col] || '').slice(0, 120) }
-                          })()}
-                        </span>
-                      ) : col === 'timestamp' && activeTable === 'logs' ? (
-                        <span style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
-                          {new Date(row[col]).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      ) : col === 'user_badge' && activeTable === 'logs' ? (
-                        <span className="cell-mono">{row[col]}</span>
-                      ) : col === 'user_name' && activeTable === 'logs' ? (
-                        <span style={{ fontWeight: 500 }}>{row[col]}</span>
-                      ) : (
-                        row[col] || '—'
-                      )}
-                    </td>
-                  ))}
-                  {activeTable !== 'logs' && (
-                    <td>
-                      <div className="action-btns">
-                        <button className="btn-icon" onClick={() => handleEdit(row)} title="Edit">
-                          <Pencil size={14} />
-                        </button>
-                        <button className="btn-icon btn-delete" onClick={() => handleDelete(row)} title="Delete">
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </td>
+                          })()}</pre>
+                        </div>
+                      </td>
+                    </tr>
                   )}
-                </tr>
+                </React.Fragment>
               ))
             )}
           </tbody>
@@ -595,7 +635,7 @@ export default function SuperAdminPage() {
               <div className="user-success-row"><span>Email</span><strong>{successData.email}</strong></div>
               <div className="user-success-row"><span>Badge No.</span><strong>{successData.badge}</strong></div>
               <div className="user-success-row"><span>Centre</span><strong>{successData.centre}</strong></div>
-              <div className="user-success-row"><span>Role</span><strong className="role-pill" style={{ fontSize: 13, padding: '2px 10px' }}>{successData.role === 'super_admin' ? 'ASO (Super Admin)' : successData.role === 'admin' ? 'Admin' : successData.role === 'centre_user' ? 'Centre Admin' : successData.role === 'sc_sp_user' ? 'Scanner' : successData.role}</strong></div>
+              <div className="user-success-row"><span>Role</span><strong className="role-pill" style={{ fontSize: 13, padding: '2px 10px' }}>{successData.role === 'super_admin' ? 'ASO (Super Admin)' : successData.role === 'admin' ? 'Admin' : successData.role === 'centre_user' ? 'Centre User' : successData.role === 'sc_sp_user' ? 'Scanner' : successData.role}</strong></div>
               <div className="user-success-row password-row">
                 <span>Password</span>
                 <div className="password-display">

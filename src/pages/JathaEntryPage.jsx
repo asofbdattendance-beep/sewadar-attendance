@@ -628,17 +628,19 @@ export default function JathaEntryPage() {
                 className="btn-icon btn-delete"
                 style={{ marginLeft: 'auto' }}
                 title="Undo - Delete these entries"
-                onClick={async () => {
-                  if (!window.confirm(`Delete last ${submitResult.count} jatha entries?`)) return
-                  const { error } = await supabase.from('jatha_attendance').delete().in('id', lastCreatedIds)
-                  if (error) { toast.error(error.message); return }
-                  logAction(profile?.badge_number, profile?.name, 'JATHA_DELETE', { 
-                    count: lastCreatedIds.length, 
-                    ids: lastCreatedIds 
-                  })
-                  toast.success('Entries deleted')
-                  resetForm()
-                }}
+                  onClick={async () => {
+                    if (!window.confirm(`Delete last ${submitResult.count} jatha entries?`)) return
+                    const { data: deletedRecords } = await supabase.from('jatha_attendance').select('*').in('id', lastCreatedIds)
+                    const { error } = await supabase.from('jatha_attendance').delete().in('id', lastCreatedIds)
+                    if (error) { toast.error(error.message); return }
+                    logAction(profile?.badge_number, profile?.name, 'JATHA_DELETE', { 
+                      count: lastCreatedIds.length, 
+                      ids: lastCreatedIds,
+                      deleted_records: deletedRecords || []
+                    })
+                    toast.success('Entries deleted')
+                    resetForm()
+                  }}
               >
                 <Trash2 size={16} />
               </button>

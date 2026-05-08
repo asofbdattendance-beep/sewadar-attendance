@@ -67,6 +67,13 @@ CREATE POLICY "sessions_update" ON attendance_sessions FOR UPDATE TO authenticat
     OR (get_user_role() IN ('admin', 'centre_user') AND centre = ANY (SELECT get_user_accessible_centres()))
   );
 
+DROP POLICY IF EXISTS "sessions_delete" ON attendance_sessions;
+CREATE POLICY "sessions_delete" ON attendance_sessions FOR DELETE TO authenticated
+  USING (
+    get_user_role() = 'super_admin'
+    OR (get_user_role() IN ('admin', 'centre_user') AND centre = ANY (SELECT get_user_accessible_centres()))
+  );
+
 -- CENTRES
 DROP POLICY IF EXISTS "centres_write" ON centres;
 CREATE POLICY "centres_write" ON centres FOR ALL TO authenticated

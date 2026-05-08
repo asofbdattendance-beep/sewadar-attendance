@@ -22,7 +22,7 @@ export const ROLES = {
 export const ROLE_LABELS = {
   super_admin: 'ASO (Super Admin)',
   admin: 'Admin',
-  centre_user: 'Centre Admin',
+  centre_user: 'Centre User',
   sc_sp_user: 'Scanner'
 }
 
