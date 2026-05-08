@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { supabase, ROLES } from '../lib/supabase'
+import { supabase, ROLES, ROLE_LABELS } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import { logAction } from '../lib/logger'
@@ -78,7 +78,7 @@ function PermissionToggle({ permissions, onChange }) {
   )
 }
 
-function FormFields({ table, formData, setFormData, centres, isUsersTable }) {
+function FormFields({ table, formData, setFormData, centres, isUsersTable, roleLabelMap }) {
   return (
     <div className="form-fields-wrapper">
       {table.columns.map(col => (
@@ -110,10 +110,9 @@ function FormFields({ table, formData, setFormData, centres, isUsersTable }) {
               required
             >
               <option value="">Select Role</option>
-              <option value="super_admin">ASO (Super Admin)</option>
-              <option value="admin">Admin</option>
-              <option value="centre_user">Centre User</option>
-              <option value="sc_sp_user">Scanner</option>
+              {Object.entries(roleLabelMap).map(([key, label]) => (
+                <option key={key} value={key}>{label}</option>
+              ))}
             </select>
           ) : col === 'jatha_type' ? (
             <select
@@ -210,6 +209,7 @@ export default function SuperAdminPage() {
   const [modal, setModal] = useState({ open: false, mode: 'add', data: null })
   const [formData, setFormData] = useState({})
   const [centres, setCentres] = useState([])
+  const [roleLabelMap, setRoleLabelMap] = useState({})
   const [sewadarSearch, setSewadarSearch] = useState('')
   const [sewadarResults, setSewadarResults] = useState([])
   const [selectedSewadar, setSelectedSewadar] = useState(null)
@@ -229,6 +229,18 @@ export default function SuperAdminPage() {
 
   useEffect(() => {
     if (isSuperAdmin) fetchCentres()
+  }, [isSuperAdmin])
+
+  useEffect(() => {
+    if (isSuperAdmin) {
+      supabase.from('role_masters').select('role_key, role_label').then(({ data }) => {
+        if (data) {
+          const map = {}
+          data.forEach(r => { map[r.role_key] = r.role_label.replace(/_/g, ' ') })
+          setRoleLabelMap(map)
+        }
+      })
+    }
   }, [isSuperAdmin])
 
   const fetchCentres = async () => {
@@ -564,7 +576,7 @@ export default function SuperAdminPage() {
                         ) : col === 'role_label' && activeTable === 'role_masters' ? (
                           <span className={`role-pill ${row.role_key}`}>{(row[col] || '').replace(/_/g, ' ') || '—'}</span>
                         ) : col === 'role' ? (
-                          <span className={`role-pill ${row[col]}`}>{row[col] === 'super_admin' ? 'ASO' : row[col] === 'admin' ? 'Admin' : row[col] === 'centre_user' ? 'Centre User' : row[col] === 'sc_sp_user' ? 'Scanner' : row[col].replace('_', ' ')}</span>
+                          <span className={`role-pill ${row[col]}`}>{roleLabelMap[row[col]] || ROLE_LABELS[row[col]] || row[col]}</span>
                         ) : col === 'jatha_type' ? (
                           <span className={`type-pill ${row[col]}`}>{row[col].replace('_', ' ')}</span>
                         ) : col === 'action' && activeTable === 'logs' ? (
@@ -635,7 +647,7 @@ export default function SuperAdminPage() {
               <div className="user-success-row"><span>Email</span><strong>{successData.email}</strong></div>
               <div className="user-success-row"><span>Badge No.</span><strong>{successData.badge}</strong></div>
               <div className="user-success-row"><span>Centre</span><strong>{successData.centre}</strong></div>
-              <div className="user-success-row"><span>Role</span><strong className="role-pill" style={{ fontSize: 13, padding: '2px 10px' }}>{successData.role === 'super_admin' ? 'ASO (Super Admin)' : successData.role === 'admin' ? 'Admin' : successData.role === 'centre_user' ? 'Centre User' : successData.role === 'sc_sp_user' ? 'Scanner' : successData.role}</strong></div>
+              <div className="user-success-row"><span>Role</span><strong className="role-pill" style={{ fontSize: 13, padding: '2px 10px' }}>{roleLabelMap[successData.role] || ROLE_LABELS[successData.role] || successData.role}</strong></div>
               <div className="user-success-row password-row">
                 <span>Password</span>
                 <div className="password-display">
@@ -721,7 +733,7 @@ export default function SuperAdminPage() {
                   <span className="centre">{selectedSewadar.centre}</span>
                   <button className="btn-icon" onClick={() => { setSelectedSewadar(null); setSewadarSearch(''); setSewadarResults([]); }} title="Change"><X size={14} /></button>
                 </div>
-                <FormFields table={currentTable} formData={formData} setFormData={setFormData} centres={centres} isUsersTable={activeTable === 'users'} />
+                <FormFields table={currentTable} formData={formData} setFormData={setFormData} centres={centres} isUsersTable={activeTable === 'users'} roleLabelMap={roleLabelMap} />
                 <div className="password-auto">
                   <label>Auto-generated Password</label>
                   <div className="password-display">
@@ -747,7 +759,7 @@ export default function SuperAdminPage() {
           </>
         ) : (
           <>
-            <FormFields table={currentTable} formData={formData} setFormData={setFormData} centres={centres} isUsersTable={activeTable === 'users'} />
+            <FormFields table={currentTable} formData={formData} setFormData={setFormData} centres={centres} isUsersTable={activeTable === 'users'} roleLabelMap={roleLabelMap} />
             <div className="modal-actions">
               <button className="btn-ghost" onClick={() => setModal({ open: false, mode: 'add', data: null })}>Cancel</button>
               <button className="btn-primary" onClick={handleSubmit}>

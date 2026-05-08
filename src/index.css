@@ -2786,7 +2786,6 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 
 .role-pill {
   padding:4px 10px; border-radius:12px; font-size:11px; font-weight:600;
-  text-transform:capitalize;
 }
 .role-pill.super_admin { background:rgba(239, 68, 68, 0.1); color:#dc2626; }
 .role-pill.admin { background:rgba(139, 92, 246, 0.1); color:#7c3aed; }
