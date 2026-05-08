@@ -57,7 +57,7 @@ function AppLayout() {
     return hasPermission(item.permission)
   })
 
-  const adminNav = (profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'aso') ? [{ path: '/superadmin', label: 'ASO', icon: Settings }] : []
+  const adminNav = profile?.role === ROLES.SUPER_ADMIN ? [{ path: '/superadmin', label: 'ASO', icon: Settings }] : []
 
   return (
     <div>

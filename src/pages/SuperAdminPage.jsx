@@ -220,19 +220,21 @@ export default function SuperAdminPage() {
   const sewadarSearchTimeout = useRef(null)
 
   const currentTable = TABLES.find(t => t.id === activeTable)
-  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'super_admin' || profile?.role === 'aso'
+  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'super_admin'
+  const canAccessPanel = isSuperAdmin || profile?.role === 'aso'
+  const canWrite = isSuperAdmin
 
   useEffect(() => {
-    if (!isSuperAdmin) return
+    if (!canAccessPanel) return
     fetchData(activeTable)
-  }, [activeTable, isSuperAdmin])
+  }, [activeTable, canAccessPanel])
 
   useEffect(() => {
-    if (isSuperAdmin) fetchCentres()
-  }, [isSuperAdmin])
+    if (canAccessPanel) fetchCentres()
+  }, [canAccessPanel])
 
   useEffect(() => {
-    if (isSuperAdmin) {
+    if (canAccessPanel) {
       supabase.from('role_masters').select('role_key, role_label').then(({ data }) => {
         if (data) {
           const map = {}
@@ -241,7 +243,7 @@ export default function SuperAdminPage() {
         }
       })
     }
-  }, [isSuperAdmin])
+  }, [canAccessPanel])
 
   const fetchCentres = async () => {
     const { data: centresData } = await supabase.from('centres').select('name').order('name')
@@ -331,6 +333,7 @@ export default function SuperAdminPage() {
   }
 
   const handleDelete = async (row) => {
+    if (!canWrite) { toast.error('You do not have write access'); return }
     const deleteName = row.name || row.role_label || row.department_name || row.centre_name || row.badge_number
     const confirmed = window.confirm(`Delete "${deleteName}"?`)
     if (!confirmed) return
@@ -346,6 +349,7 @@ export default function SuperAdminPage() {
   }
 
   const handleSubmit = async () => {
+    if (!canWrite) { toast.error('You do not have write access'); return }
     try {
       const payload = { ...formData }
       
@@ -464,7 +468,7 @@ export default function SuperAdminPage() {
     }
   }
 
-  if (!isSuperAdmin) {
+  if (!canAccessPanel) {
     return (
       <div className="page-full" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
         <div style={{ textAlign: 'center', color: '#9ca3af' }}>
@@ -483,7 +487,7 @@ export default function SuperAdminPage() {
             <Settings size={22} style={{ color: '#6366f1' }} />
             <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>Admin Panel</h2>
           </div>
-          {activeTable !== 'logs' && (
+          {activeTable !== 'logs' && canWrite && (
             <button className="btn-primary" onClick={handleAdd} style={{ padding: '10px 18px', fontSize: 14 }}>
               <Plus size={16} /> Add New
             </button>
@@ -527,14 +531,14 @@ export default function SuperAdminPage() {
               {currentTable.columns.filter(col => activeTable !== 'logs' || col !== 'details').map(col => (
                 <th key={col}>{col.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</th>
               ))}
-              {activeTable !== 'logs' && <th style={{ width: 80 }}>Actions</th>}
+              {activeTable !== 'logs' && canWrite && <th style={{ width: 80 }}>Actions</th>}
             </tr>
           </thead>
           <tbody>
             {loading[activeTable] ? (
               <SkeletonRow cols={currentTable.columns.length} />
             ) : filteredData.length === 0 ? (
-              <tr><td colSpan={currentTable.columns.length + (activeTable !== 'logs' ? 1 : 0)} style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>
+              <tr><td colSpan={currentTable.columns.length + (activeTable !== 'logs' && canWrite ? 1 : 0)} style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>
                 {search ? 'No matching records' : 'No data yet'}
               </td></tr>
             ) : (
@@ -594,7 +598,7 @@ export default function SuperAdminPage() {
                         )}
                       </td>
                     ))}
-                    {activeTable !== 'logs' && (
+                    {activeTable !== 'logs' && canWrite && (
                       <td>
                         <div className="action-btns">
                           <button className="btn-icon" onClick={() => handleEdit(row)} title="Edit">

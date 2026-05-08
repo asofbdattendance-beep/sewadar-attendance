@@ -262,6 +262,7 @@ function JathaTable({ records, onDelete }) {
 export default function RecordsPage() {
   const { profile } = useAuth()
   const toast = useToast()
+  const canWrite = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'super_admin'
   const [activeTab, setActiveTab] = useState('gate')
   const [gateRecords, setGateRecords] = useState([])
   const [jathaRecords, setJathaRecords] = useState([])
@@ -279,7 +280,7 @@ export default function RecordsPage() {
   const pullStartY = useRef(0)
 
   useEffect(() => {
-    if (profile?.role === 'super_admin') {
+    if (profile?.role === 'super_admin' || profile?.role === 'aso') {
       supabase.from('centres').select('name').order('name').then(({ data }) => setCentresList(data || []))
     } else if (profile?.centre) {
       supabase.from('centres').select('name, parent_centre').then(({ data }) => {
@@ -610,10 +611,10 @@ export default function RecordsPage() {
       ) : currentRecords.length === 0 ? (
         <div className="empty-state"><Calendar size={48} /><p>No {activeTab === 'gate' ? 'sessions' : 'jatha records'} found</p></div>
       ) : showTable ? (
-        activeTab === 'gate' ? <SessionTable records={currentRecords} onDelete={handleDelete} /> : <JathaTable records={currentRecords} onDelete={handleDelete} />
+        activeTab === 'gate' ? <SessionTable records={currentRecords} onDelete={canWrite ? handleDelete : null} /> : <JathaTable records={currentRecords} onDelete={canWrite ? handleDelete : null} />
       ) : (
         <div className="cards-grid">
-          {currentRecords.map(r => activeTab === 'gate' ? <SessionCard key={r.id} session={r} onDelete={handleDelete} /> : <JathaCard key={r.id} session={r} onDelete={handleDelete} />)}
+          {currentRecords.map(r => activeTab === 'gate' ? <SessionCard key={r.id} session={r} onDelete={canWrite ? handleDelete : null} /> : <JathaCard key={r.id} session={r} onDelete={canWrite ? handleDelete : null} />)}
         </div>
       )}
     </div>

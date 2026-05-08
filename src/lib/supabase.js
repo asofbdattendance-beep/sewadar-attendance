@@ -13,14 +13,16 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 })
 
 export const ROLES = {
-  SUPER_ADMIN: 'super_admin', // ASO - Full access
+  SUPER_ADMIN: 'super_admin', // Full read/write access
+  ASO: 'aso',  // Read-only access to all data
   ADMIN: 'admin',  // Centre-level admin - sees own centre + children
   CENTRE_USER: 'centre_user', // Centre user - same as admin
   SC_SP_USER: 'sc_sp_user'      // Basic scanning access
 }
 
 export const ROLE_LABELS = {
-  super_admin: 'ASO',
+  super_admin: 'SUPER ADMIN',
+  aso: 'ASO',
   admin: 'Centre Admin',
   centre_user: 'Centre User',
   sc_sp_user: 'SC SP User'
@@ -28,6 +30,7 @@ export const ROLE_LABELS = {
 
 export const ROLE_COLORS = {
   super_admin: '#dc2626',
+  aso: '#f59e0b',
   admin: '#7c3aed',
   centre_user: '#2563eb',
   sc_sp_user: '#16a34a'

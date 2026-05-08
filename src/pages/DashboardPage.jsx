@@ -249,7 +249,7 @@ export default function DashboardPage() {
           ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Female').eq('centre', centreFilter)
           : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Female'),
         supabase.from('attendance_sessions').select('badge_number, centre, status').eq('in_date', selectedDate),
-        supabase.from('attendance_sessions').select('badge_number').eq('status', 'OPEN'),
+        supabase.from('attendance_sessions').select('badge_number').eq('status', 'OPEN').eq('in_date', selectedDate),
         supabase.from('jatha_attendance').select('badge_number').or(`and(from_date.lte.${selectedDate},to_date.gte.${selectedDate})`),
         fetchAllSewadars()
       ])
