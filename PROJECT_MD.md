@@ -424,19 +424,26 @@ ALTER PUBLICATION supabase_realtime ADD TABLE attendance_sessions;
 
 ### 6.2 Row Level Security
 
-```sql
--- SEWADARS
-CREATE POLICY "sewadars_read" ON sewadars FOR SELECT TO authenticated USING (true);
-CREATE POLICY "sewadars_write" ON sewadars FOR ALL TO authenticated
-  USING (get_user_role() = 'aso') WITH CHECK (get_user_role() = 'aso');
+The canonical RLS policies are maintained in `sql/rls_policies_all.sql`.
+Run that file in the Supabase SQL Editor to recreate ALL policies.
 
--- SESSIONS
-CREATE POLICY "sessions_read" ON attendance_sessions FOR SELECT TO authenticated
-  USING (get_user_role() IN ('aso', 'centre_user') OR centre = get_user_centre());
-CREATE POLICY "sessions_insert" ON attendance_sessions FOR INSERT TO authenticated WITH CHECK (true);
-CREATE POLICY "sessions_update" ON attendance_sessions FOR UPDATE TO authenticated
-  USING (get_user_role() IN ('aso', 'centre_user'));
-```
+**Key design decisions:**
+
+| Role | Read | Write (Insert/Update/Delete) |
+|------|------|------------------------------|
+| `super_admin` | All data | Full access to all tables |
+| `aso` | All data (read-only) | No write access |
+| `admin` / `centre_user` | Own centre + children | Can modify data for own centre's sewadars |
+| `sc_sp_user` | Own centre + children | No write access to records |
+
+**Helper functions used by policies:**
+- `get_user_role()` — returns the current user's role from `users` table
+- `get_user_accessible_centres()` — returns own centre + children (recursive CTE), or ALL centres for `super_admin`/`aso`
+
+**Delete access:**
+- `attendance_sessions`: `admin`/`centre_user` can delete sessions where `centre IN get_user_accessible_centres()`
+- `jatha_attendance`: `admin`/`centre_user` can delete records for sewadars from their accessible centres
+- Jatha master, centres, users, etc.: only `super_admin` can delete
 
 ---
 

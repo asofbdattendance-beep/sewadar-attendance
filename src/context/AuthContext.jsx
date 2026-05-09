@@ -16,51 +16,66 @@ export function AuthProvider({ children }) {
       else setLoading(false)
     })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    let initialSession = true
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchProfile(session.user.id)
-      else { setProfile(null); setPermissions({}); setLoading(false) }
+      if (session?.user) {
+        if (initialSession) {
+          initialSession = false
+          return
+        }
+        fetchProfile(session.user.id)
+      } else { setProfile(null); setPermissions({}); setLoading(false) }
     })
 
     return () => subscription.unsubscribe()
   }, [])
 
   async function fetchProfile(userId) {
-    const { data } = await supabase
-      .from('users')
-      .select('*')
-      .eq('auth_id', userId)
-      .single()
-    
-    // Determine if user is Super Admin (aso or super_admin)
-    const isASO = data?.role === ROLES.SUPER_ADMIN || data?.role === 'aso' || data?.role === 'admin'
-    
-    let perms = {}
-    if (isASO) {
-      // ASO gets all permissions by default - skip role_masters query to avoid RLS errors
-      perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true, allow_settings: true }
-    } else if (data?.role) {
-      if (data.permissions) {
-        if (typeof data.permissions === 'string') {
-          try { perms = JSON.parse(data.permissions) } catch { perms = {} }
-        } else {
-          perms = data.permissions || {}
+    try {
+      const { data } = await supabase
+        .from('users')
+        .select('*')
+        .eq('auth_id', userId)
+        .single()
+
+      // Determine if user is Super Admin (only super_admin or aso)
+      const isASO = data?.role === ROLES.SUPER_ADMIN || data?.role === ROLES.ASO
+      const isFullAdmin = data?.role === ROLES.SUPER_ADMIN
+
+      let perms = {}
+      if (isFullAdmin) {
+        // super_admin gets all permissions by default
+        perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true, allow_settings: true }
+      } else if (isASO) {
+        // aso gets read-only permissions
+        perms = { allow_dashboard: true, allow_records: true, allow_reports: true }
+      } else if (data?.role) {
+        if (data.permissions) {
+          if (typeof data.permissions === 'string') {
+            try { perms = JSON.parse(data.permissions) } catch { perms = {} }
+          } else {
+            perms = data.permissions || {}
+          }
         }
+        // If no permissions set, user gets NO access by default (not all access)
       }
-      
-      if (Object.keys(perms).length === 0 && data?.role) {
-        perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true }
-      }
+
+      setProfile(data)
+      setPermissions(perms)
+    } catch (err) {
+      console.error('Failed to fetch profile:', err)
+      setProfile(null)
+      setPermissions({})
+    } finally {
+      setLoading(false)
     }
-    
-    setProfile(data)
-    setPermissions(perms)
-    setLoading(false)
   }
 
   // Helper function to check permission
   const hasPermission = (permKey) => {
-    if (profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'aso' || profile?.role === 'admin') {
+    // super_admin bypasses all permission checks
+    if (profile?.role === ROLES.SUPER_ADMIN) {
       return true
     }
     return !!permissions[permKey]
@@ -73,10 +88,15 @@ export function AuthProvider({ children }) {
   }
 
   async function signOut() {
-    await supabase.auth.signOut()
-    setUser(null)
-    setProfile(null)
-    setPermissions({})
+    try {
+      await supabase.auth.signOut()
+    } catch (err) {
+      console.error('Sign out error:', err)
+    } finally {
+      setUser(null)
+      setProfile(null)
+      setPermissions({})
+    }
   }
 
   return (

@@ -202,7 +202,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   
-  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN
+  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
   const userCentre = profile?.centre
   
   const today = new Date().toISOString().split('T')[0]
@@ -248,7 +248,7 @@ export default function ReportsPage() {
   }
 
   const fetchReport = useCallback(async () => {
-const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.CENTRE_ADMIN
+const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
     const userCentre = profile?.centre
     
     setLoading(true)
@@ -680,7 +680,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
         department: g.department,
         total: g.total,
         present: g.present,
-        percentage: { value: `${Math.round(g.present / g.total * 100)}%`, className: 'cell-percent' },
+        percentage: { value: g.total ? `${Math.round(g.present / g.total * 100)}%` : '—', className: 'cell-percent' },
       }))
 
     setReportData(rows)
@@ -729,7 +729,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
         date: { value: formatDateIndian(d.date), className: 'cell-date' },
         day: d.dayName,
         present: d.count,
-        percentage: { value: `${Math.round(d.count / (totalSewadars || 1) * 100)}%`, className: 'cell-percent' },
+        percentage: { value: totalSewadars ? `${Math.round(d.count / totalSewadars * 100)}%` : '—', className: 'cell-percent' },
       }))
 
     setReportData(rows)
@@ -775,7 +775,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
         department: dept,
         total: d.total,
         present: d.present,
-        percentage: { value: `${Math.round(d.present / d.total * 100)}%`, className: 'cell-percent' },
+        percentage: { value: d.total ? `${Math.round(d.present / d.total * 100)}%` : '—', className: 'cell-percent' },
         permanent: d.permanent,
         open: d.open,
       }))

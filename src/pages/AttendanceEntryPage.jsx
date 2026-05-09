@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, ROLES, SESSION_STATUS, formatDateIndian } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { logAction } from '../lib/logger'
 import { useToast } from '../components/Toast'
 import { Users, Search, Plus, AlertTriangle, CheckCircle, Calendar, MapPin, Briefcase, ChevronDown, X, DoorOpen, Truck, RefreshCw, Shield } from 'lucide-react'
 
@@ -375,7 +376,15 @@ function GateEntryForm({ onSuccess }) {
 
       if (insertError) throw insertError
 
+      const firstEntry = entries[0]
       toast.success(`${records.length} entries added!`)
+      logAction(profile?.badge_number, profile?.name, 'GATE_ENTRY', { 
+        count: records.length, 
+        centre: profile?.centre || selectedSewadar.centre || 'UNKNOWN',
+        duty_type: firstEntry.inDate === firstEntry.outDate ? 'DAILY' : 'WATCH_AND_WARD',
+        from_date: firstEntry.inDate,
+        to_date: firstEntry.outDate
+      })
       setSubmitResult({ success: true, count: records.length })
       setValidationErrors({})
       setValidationMsg('')
@@ -542,6 +551,7 @@ function JathaEntryForm({ onSuccess }) {
   const [submitting, setSubmitting] = useState(false)
   const [submitResult, setSubmitResult] = useState(null)
   const [warnings, setWarnings] = useState([])
+  const [fetchError, setFetchError] = useState('')
 
   const [sewadars, setSewadars] = useState([])
   const [searchTerm, setSearchTerm] = useState('')
@@ -563,6 +573,7 @@ function JathaEntryForm({ onSuccess }) {
     setToDate('')
     setSubmitResult(null)
     setWarnings([])
+    setFetchError('')
   }
 
   useEffect(() => {
@@ -572,15 +583,24 @@ function JathaEntryForm({ onSuccess }) {
 
   const fetchJathas = async () => {
     setLoading(true)
-    const { data } = await supabase
+    setFetchError('')
+    setShowJathaDropdown(false)
+    const { data, error } = await supabase
       .from('jatha_master')
       .select('*')
       .eq('jatha_type', jathaType)
       .eq('is_active', true)
       .order('centre_name')
       .order('department')
-    setJathas(data || [])
+    if (error) {
+      console.error('Failed to load jathas:', error)
+      setFetchError(error.message || 'Failed to load jathas')
+      setJathas([])
+    } else {
+      setJathas(data || [])
+    }
     setLoading(false)
+    setShowJathaDropdown(true)
   }
 
   const searchSewadars = async (query) => {
@@ -593,7 +613,7 @@ function JathaEntryForm({ onSuccess }) {
       .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
       .limit(10)
 
-    if (profile?.centre) {
+    if (profile?.centre && profile?.role !== ROLES.SUPER_ADMIN) {
       const { data: childData } = await supabase.from('centres').select('name').eq('parent_centre', profile.centre)
       const childNames = childData?.map(c => c.name) || []
       const allowed = [profile.centre, ...childNames].filter(Boolean)
@@ -774,6 +794,14 @@ function JathaEntryForm({ onSuccess }) {
 
       if (insertError) throw insertError
       toast.success(`${records.length} sewadars added to jatha!`)
+      logAction(profile?.badge_number, profile?.name, 'JATHA_ENTRY', {
+        count: records.length,
+        jatha_id: selectedJatha?.id,
+        jatha_centre: selectedJatha?.centre_name,
+        jatha_department: selectedJatha?.department,
+        from_date: fromDate,
+        to_date: toDate
+      })
       setSubmitResult({ success: true, count: records.length })
       setTimeout(() => { resetForm(); setSubmitResult(null) }, 2000)
 
@@ -822,6 +850,7 @@ function JathaEntryForm({ onSuccess }) {
                   <div className="dropdown-overlay" onClick={() => setShowJathaDropdown(false)} />
                   <div className="search-results-gate jatha-dropdown">
                     {loading ? <div className="loading-text">Loading...</div> :
+                      fetchError ? <div className="no-results" style={{ color: 'var(--red)' }}>{fetchError}</div> :
                       Object.keys(groupedJathas).length > 0 ?
                         Object.entries(groupedJathas).map(([centre, items]) => (
                           <div key={centre}>

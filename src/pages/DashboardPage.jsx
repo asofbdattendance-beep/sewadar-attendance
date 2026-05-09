@@ -55,19 +55,27 @@ function SplitTable({ headers, rows }) {
   )
 }
 
-function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, defaultOpen = false }) {
+function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, sessionMap, guestMap, defaultOpen = false }) {
   const [isOpen, setIsOpen] = useState(defaultOpen)
   const hasChildren = data.children && data.children.length > 0
   const hasDepts = data.departments && Object.keys(data.departments).length > 0
   const isExpandable = hasChildren || hasDepts
 
-  const presentCount = data.sewadars ? data.sewadars.filter(s => presentSet.has(s.badge_number)).length : 0
+  const presentCount = data.sewadars ? data.sewadars.filter(s => {
+    const session = sessionMap?.[s.badge_number]
+    return session && session.scanCentre === centre
+  }).length : 0
   const insideCount = data.sewadars ? data.sewadars.filter(s => insideSet.has(s.badge_number)).length : 0
+
+  // Guest sewadars who scanned at this centre but belong elsewhere
+  const guests = (guestMap && guestMap[centre]) || []
+  const guestPresentCount = guests.filter(g => presentSet.has(g.badge_number)).length
+  const guestInsideCount = guests.filter(g => insideSet.has(g.badge_number)).length
 
   return (
     <div className="centre-tree-item">
       <div 
-        className={`centre-tree-row ${isExpandable ? 'clickable' : ''}`}
+        className={`centre-tree-row ${isExpandable ? 'clickable' : ''} ${guests.length > 0 ? 'has-guests' : ''}`}
         style={{ paddingLeft: `${12 + level * 20}px` }}
         onClick={() => isExpandable && setIsOpen(!isOpen)}
       >
@@ -81,14 +89,44 @@ function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, default
         <span className="centre-tree-name">
           {level === 0 && <MapPin size={14} />}
           {centre}
+          {guests.length > 0 && <span className="guest-badge">+{guests.length} guest{guests.length > 1 ? 's' : ''}</span>}
         </span>
         <span className="centre-tree-stats">
           <span className="centre-stat total">{data.total || 0}</span>
-          <span className="centre-stat present">{presentCount}</span>
-          <span className="centre-stat inside">{insideCount}</span>
+          <span className="centre-stat present">{presentCount + guestPresentCount}</span>
+          <span className="centre-stat inside">{insideCount + guestInsideCount}</span>
         </span>
       </div>
       
+      {/* Guest list */}
+      {isOpen && guests.length > 0 && (
+        <div className="guest-list" style={{ paddingLeft: `${28 + level * 20}px` }}>
+          <div className="guest-table-header">
+            <span>Name</span>
+            <span>Badge</span>
+            <span>Dept</span>
+            <span>Home Centre</span>
+            <span>Status</span>
+          </div>
+          {guests.map(g => {
+            const isPresent = presentSet.has(g.badge_number)
+            const isInside = insideSet.has(g.badge_number)
+            return (
+              <div key={g.badge_number} className={`guest-table-row ${isInside ? 'guest-inside' : ''}`}>
+                <span className="guest-name" title={g.name}>{g.name || g.badge_number}</span>
+                <span className="guest-badge">{g.badge_number}</span>
+                <span className="guest-dept">{g.department || '-'}</span>
+                <span className="guest-home">{g.homeCentre}</span>
+                <span className={`guest-stat ${isInside ? 'inside' : isPresent ? 'present' : 'away'}`}>
+                  {isInside ? 'Inside' : isPresent ? 'Present' : 'Away'}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Department breakdown */}
       {isOpen && hasDepts && (
         <div className="centre-depts">
           <div className="dept-header" style={{ paddingLeft: `${28 + level * 20}px` }}>
@@ -97,14 +135,22 @@ function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, default
             <span>Present</span>
             <span>Inside</span>
           </div>
-          {Object.entries(data.departments).map(([dept, deptData]) => (
-            <div key={dept} className="dept-row" style={{ paddingLeft: `${28 + level * 20}px` }}>
-              <span className="dept-name">{dept}</span>
-              <span className="dept-stat">{deptData.sewadars?.length || 0}</span>
-              <span className="dept-stat">{deptData.sewadars?.filter(s => presentSet.has(s.badge_number)).length || 0}</span>
-              <span className="dept-stat">{deptData.sewadars?.filter(s => insideSet.has(s.badge_number)).length || 0}</span>
-            </div>
-          ))}
+          {Object.entries(data.departments).map(([dept, deptData]) => {
+            // Count present/inside including cross-centre scans
+            const deptPresent = deptData.sewadars.filter(s => {
+              const session = sessionMap?.[s.badge_number]
+              return session !== undefined && session.scanCentre !== undefined
+            }).length
+            const deptInside = deptData.sewadars.filter(s => insideSet.has(s.badge_number)).length
+            return (
+              <div key={dept} className="dept-row" style={{ paddingLeft: `${28 + level * 20}px` }}>
+                <span className="dept-name">{dept}</span>
+                <span className="dept-stat">{deptData.sewadars?.length || 0}</span>
+                <span className="dept-stat">{deptPresent}</span>
+                <span className="dept-stat">{deptInside}</span>
+              </div>
+            )
+          })}
         </div>
       )}
       
@@ -118,6 +164,8 @@ function CentreTreeRow({ centre, data, level = 0, presentSet, insideSet, default
               level={level + 1}
               presentSet={presentSet}
               insideSet={insideSet}
+              sessionMap={sessionMap}
+              guestMap={guestMap}
               defaultOpen={level === 0}
             />
           ))}
@@ -131,13 +179,13 @@ export default function DashboardPage() {
   const { profile } = useAuth()
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
-  const today = new Date().toISOString().split('T')[0] // Refreshed each render
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
   
-  const isASO = profile?.role === ROLES.SUPER_ADMIN
-  const isCentreAdmin = profile?.role === ROLES.CENTRE_ADMIN
+  const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
   const userCentre = profile?.centre
 
-  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.CENTRE_ADMIN
+  // Only super_admin can view ALL centres. admin/centre_user see their own + children
+  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
 
   const [stats, setStats] = useState({
     totalBadges: 0,
@@ -157,183 +205,132 @@ export default function DashboardPage() {
   const [centresList, setCentresList] = useState([])
   const [presentSet, setPresentSet] = useState(new Set())
   const [insideSet, setInsideSet] = useState(new Set())
+  const [sessionMap, setSessionMap] = useState({})
+  const [guestMap, setGuestMap] = useState({})
+
+  const fetchAllSewadars = async () => {
+    const all = []
+    let page = 0
+    const pageSize = 1000
+    while (true) {
+      const from = page * pageSize
+      const { data: batch } = await supabase.from('sewadars').select('badge_number, sewadar_name, centre, department, badge_status, gender').range(from, from + pageSize - 1)
+      if (!batch || batch.length === 0) break
+      all.push(...batch)
+      if (batch.length < pageSize) break
+      page++
+    }
+    return all
+  }
 
   const fetchDashboard = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
 
-    // Use local date format consistent with other pages
-    const todayStr = new Date().toISOString().split('T')[0]
-    const pageSize = 1000
-
     try {
-      // 1. Fetch centres
-      const { data: centresData } = await supabase.from('centres').select('name, parent_centre').order('name')
-      setCentresList(centresData || [])
+      const centreFilter = (!canViewAllCentres && userCentre) ? userCentre : null
 
-      // 2. Get counts directly using count queries
-      let countQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true })
-      if (!canViewAllCentres && userCentre) {
-        countQuery = countQuery.eq('centre', userCentre)
-      }
-      const { count: totalBadges } = await countQuery
+      // Run all independent queries in PARALLEL
+      const [centresRes, totalRes, permRes, openRes, maleRes, femaleRes, sessionsRes, openSessionsRes, jathaRes, sewadars] = await Promise.all([
+        supabase.from('centres').select('name, parent_centre').order('name'),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'PERMANENT').eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'PERMANENT'),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'OPEN').eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'OPEN'),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Male').eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Male'),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Female').eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Female'),
+        supabase.from('attendance_sessions').select('badge_number, centre, status').eq('in_date', selectedDate),
+        supabase.from('attendance_sessions').select('badge_number').eq('status', 'OPEN').eq('in_date', selectedDate),
+        supabase.from('jatha_attendance').select('badge_number').or(`and(from_date.lte.${selectedDate},to_date.gte.${selectedDate})`),
+        fetchAllSewadars()
+      ])
 
-      let permQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true })
-        .eq('badge_status', 'PERMANENT')
-      if (!canViewAllCentres && userCentre) {
-        permQuery = permQuery.eq('centre', userCentre)
-      }
-      const { count: permanentBadges } = await permQuery
+      const centresData = centresRes.data || []
+      const totalBadges = totalRes.count || 0
+      const permanentBadges = permRes.count || 0
+      const openBadgesCount = openRes.count || 0
+      const maleTotal = maleRes.count || 0
+      const femaleTotal = femaleRes.count || 0
+      const todaySessions = sessionsRes.data || []
+      const openSessions = openSessionsRes.data || []
+      const jathaToday = jathaRes.data || []
 
-      let openQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true })
-        .eq('badge_status', 'OPEN')
-      if (!canViewAllCentres && userCentre) {
-        openQuery = openQuery.eq('centre', userCentre)
-      }
-      const { count: openBadgesCount } = await openQuery
+      setCentresList(centresData)
 
-      let maleQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true }).eq('gender', 'Male')
-      if (!canViewAllCentres && userCentre) {
-        maleQuery = maleQuery.eq('centre', userCentre)
-      }
-      const { count: maleTotal } = await maleQuery
-
-      let femaleQuery = supabase.from('sewadars').select('badge_number', { count: 'exact', head: true }).eq('gender', 'Female')
-      if (!canViewAllCentres && userCentre) {
-        femaleQuery = femaleQuery.eq('centre', userCentre)
-      }
-      const { count: femaleTotal } = await femaleQuery
-
-      // 3. Today's sessions - use in_date
-      const { data: todaySessions } = await supabase
-        .from('attendance_sessions')
-        .select('badge_number')
-        .eq('in_date', todayStr)
-
-      // 4. Open sessions (status = 'OPEN')
-      const { data: openSessions } = await supabase
-        .from('attendance_sessions')
-        .select('badge_number')
-        .eq('status', 'OPEN')
-
-      // 5. Get all sewadars - fetch ALL using pagination to override 1000 limit
-      let allSewadars = []
-      let page = 0
-      const pageSize = 1000
-      while (true) {
-        const from = page * pageSize
-        const to = from + pageSize - 1
-        const { data: batch } = await supabase
-          .from('sewadars')
-          .select('badge_number')
-          .range(from, to)
-        if (!batch || batch.length === 0) break
-        allSewadars = [...allSewadars, ...batch]
-        if (batch.length < pageSize) break
-        page++
-      }
-      console.log('All sewadars fetched:', allSewadars.length)
-
-      // Also get full data for stats using pagination
-      let sewadars = []
-      let page2 = 0
-      while (true) {
-        const from = page2 * pageSize
-        const to = from + pageSize - 1
-        let query = supabase.from('sewadars').select('*').range(from, to)
-        if (!canViewAllCentres && userCentre) {
-          query = query.eq('centre', userCentre)
-        }
-        const { data: batch } = await query
-        if (!batch || batch.length === 0) break
-        sewadars = [...sewadars, ...batch]
-        if (batch.length < pageSize) break
-        page2++
-      }
-      console.log('Full sewadars for stats:', sewadars.length)
-
-      const localPresentSet = new Set((todaySessions || []).map(s => s.badge_number))
-      const localInsideSet = new Set((openSessions || []).map(s => s.badge_number))
-      const scopeBadges = new Set(allSewadars?.map(s => s.badge_number) || [])
+      // Build session map & sets
+      const sMap = {}
+      for (const s of todaySessions) sMap[s.badge_number] = { scanCentre: s.centre, status: s.status }
+      const localPresentSet = new Set(todaySessions.map(s => s.badge_number))
+      const localInsideSet = new Set(openSessions.map(s => s.badge_number))
+      const scopeBadges = new Set(sewadars.map(s => s.badge_number))
 
       const presentInScope = [...localPresentSet].filter(b => scopeBadges.has(b))
       const insideInScope = [...localInsideSet].filter(b => scopeBadges.has(b))
 
-      console.log('Present set:', [...localPresentSet].slice(0,5))
-      console.log('Inside set:', [...localInsideSet].slice(0,5))
-      console.log('Present in scope:', presentInScope.length, presentInScope.slice(0,5))
-      console.log('Inside in scope:', insideInScope.length, insideInScope.slice(0,5))
-
-      // 6. Build centre tree
-      const centreMap = {}
-      const rootCentres = []
-      
-      // Initialize all centres
-      for (const c of (centresData || [])) {
-        centreMap[c.name] = {
-          name: c.name,
-          parent: c.parent_centre,
-          total: 0,
-          sewadars: [],
-          departments: {},
-          children: []
+      // Build guest map & sewadar centre map
+      const sewadarMap = {}
+      for (const s of sewadars) sewadarMap[s.badge_number] = s
+      const gMap = {}
+      for (const session of todaySessions) {
+        const sewadar = sewadarMap[session.badge_number]
+        const homeCentre = sewadar?.centre
+        if (homeCentre && homeCentre !== session.centre) {
+          if (!gMap[session.centre]) gMap[session.centre] = []
+          gMap[session.centre].push({ badge_number: session.badge_number, name: sewadar.sewadar_name, department: sewadar.department, homeCentre, status: session.status })
         }
       }
 
-      // Assign sewadars to centres
-      for (const s of (sewadars || [])) {
+      // Build centre tree (single pass through sewadars)
+      const centreMap = {}
+      const rootCentres = []
+      for (const c of centresData) {
+        centreMap[c.name] = { name: c.name, parent: c.parent_centre, total: 0, sewadars: [], departments: {}, children: [] }
+      }
+      for (const s of sewadars) {
         const centre = centreMap[s.centre]
         if (centre) {
           centre.sewadars.push(s)
           centre.total++
-          
           const dept = s.department || 'UNKNOWN'
-          if (!centre.departments[dept]) {
-            centre.departments[dept] = { sewadars: [] }
-          }
+          if (!centre.departments[dept]) centre.departments[dept] = { sewadars: [] }
           centre.departments[dept].sewadars.push(s)
         }
       }
-
-      // Build hierarchy
-      for (const [name, data] of Object.entries(centreMap)) {
-        if (data.parent && centreMap[data.parent]) {
-          centreMap[data.parent].children.push(data)
-        } else {
-          rootCentres.push(data)
-        }
+      for (const [, data] of Object.entries(centreMap)) {
+        if (data.parent && centreMap[data.parent]) centreMap[data.parent].children.push(data)
+        else rootCentres.push(data)
       }
-
-      // Sort A-Z by name
       const sortAZ = (arr) => {
         arr.sort((a, b) => a.name.localeCompare(b.name))
-        for (const item of arr) {
-          if (item.children.length > 0) sortAZ(item.children)
-        }
+        for (const item of arr) { if (item.children.length > 0) sortAZ(item.children) }
       }
       sortAZ(rootCentres)
 
-      // Department stats
+      // Department stats (single pass through sewadars)
       const deptMap = {}
-      for (const s of (sewadars || [])) {
-        const dept = s.department || 'UNKNOWN'
-        if (!deptMap[dept]) {
-          deptMap[dept] = { total: 0, present: 0, inside: 0, permanent: 0, open: 0 }
-        }
-        deptMap[dept].total++
-        if (s.badge_status === 'PERMANENT') deptMap[dept].permanent++
-        else deptMap[dept].open++
-        if (localPresentSet.has(s.badge_number)) deptMap[dept].present++
-        if (localInsideSet.has(s.badge_number)) deptMap[dept].inside++
-      }
-
-      // Gender stats
       let malePresentCount = 0, femalePresentCount = 0
       let maleInsideCount = 0, femaleInsideCount = 0
       let malePermanentCount = 0, femalePermanentCount = 0
       let maleOpenCount = 0, femaleOpenCount = 0
 
-      for (const s of (sewadars || [])) {
+      for (const s of sewadars) {
+        const dept = s.department || 'UNKNOWN'
+        if (!deptMap[dept]) deptMap[dept] = { total: 0, present: 0, inside: 0, permanent: 0, open: 0 }
+        deptMap[dept].total++
+        if (s.badge_status === 'PERMANENT') deptMap[dept].permanent++
+        else deptMap[dept].open++
+        if (localPresentSet.has(s.badge_number)) deptMap[dept].present++
+        if (localInsideSet.has(s.badge_number)) deptMap[dept].inside++
+
         const gender = s.gender?.toUpperCase() || ''
         if (gender === 'MALE') {
           if (localPresentSet.has(s.badge_number)) malePresentCount++
@@ -348,34 +345,22 @@ export default function DashboardPage() {
         }
       }
 
-      setStats({
-        totalBadges: totalBadges || 0,
-        presentToday: presentInScope.length,
-        currentlyInside: insideInScope.length,
-        permanentBadges: permanentBadges || 0,
-        openBadges: openBadgesCount || 0
-      })
-
+      setStats({ totalBadges, presentToday: presentInScope.length, currentlyInside: insideInScope.length, permanentBadges, openBadges: openBadgesCount })
       setPresentSet(localPresentSet)
       setInsideSet(localInsideSet)
+      setSessionMap(sMap)
+      setGuestMap(gMap)
       setCentreTree(rootCentres)
       setDeptStats(Object.entries(deptMap).sort((a, b) => b[1].total - a[1].total))
-
       setGenderStats({
-        male: { total: maleTotal || 0, present: malePresentCount, inside: maleInsideCount, permanent: malePermanentCount, open: maleOpenCount },
-        female: { total: femaleTotal || 0, present: femalePresentCount, inside: femaleInsideCount, permanent: femalePermanentCount, open: femaleOpenCount }
+        male: { total: maleTotal, present: malePresentCount, inside: maleInsideCount, permanent: malePermanentCount, open: maleOpenCount },
+        female: { total: femaleTotal, present: femalePresentCount, inside: femaleInsideCount, permanent: femalePermanentCount, open: femaleOpenCount }
       })
 
       // Jatha stats
-      const { data: jathaToday } = await supabase
-        .from('jatha_attendance')
-        .select('badge_number')
-        .or(`and(from_date.lte.${today},to_date.gte.${today})`)
-
-      const jathaBadges = new Set(jathaToday?.map(j => j.badge_number) || [])
+      const jathaBadges = new Set(jathaToday.map(j => j.badge_number))
       const jathaInScope = [...jathaBadges].filter(b => scopeBadges.has(b))
       const jathaPresent = jathaInScope.filter(b => localPresentSet.has(b))
-
       setJathaStats({ total: jathaInScope.length, present: jathaPresent.length })
 
     } catch (err) {
@@ -384,7 +369,7 @@ export default function DashboardPage() {
 
     setLoading(false)
     setRefreshing(false)
-  }, [today, canViewAllCentres, userCentre])
+  }, [selectedDate, canViewAllCentres, userCentre])
 
   useEffect(() => { fetchDashboard() }, [fetchDashboard])
 
@@ -432,7 +417,7 @@ export default function DashboardPage() {
     const csv = csvRows.map(r => r.join(',')).join('\n')
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = `dashboard_${today}.csv`
+    a.download = `dashboard_${selectedDate}.csv`
     a.click()
   }
 
@@ -450,7 +435,17 @@ export default function DashboardPage() {
               </button>
             </div>
           </div>
-        <div className="header-date"><Calendar size={14} />{formatDateIndian(today)} {userCentre && !canViewAllCentres && `- ${userCentre}`}</div>
+        <div className="header-date">
+          <Calendar size={14} />
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={e => setSelectedDate(e.target.value)}
+            style={{ border: 'none', background: 'transparent', fontSize: 'inherit', fontWeight: 600, color: 'inherit', outline: 'none', cursor: 'pointer' }}
+            max={new Date().toISOString().split('T')[0]}
+          />
+          {userCentre && !canViewAllCentres && `- ${userCentre}`}
+        </div>
       </div>
 
       {/* Main Stats */}
@@ -480,6 +475,8 @@ export default function DashboardPage() {
               data={centre}
               presentSet={presentSet}
               insideSet={insideSet}
+              sessionMap={sessionMap}
+              guestMap={guestMap}
               defaultOpen={false}
             />
           ))}

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { ROLES, ROLE_LABELS, ROLE_COLORS } from '../lib/supabase'
 import { User, BadgeCheck, Building, Shield, LogOut, Clock } from 'lucide-react'
+import { logAction } from '../lib/logger'
 
 export default function ProfilePage() {
   const { profile, signOut } = useAuth()
@@ -10,6 +11,7 @@ export default function ProfilePage() {
   const handleSignOut = async () => {
     setLoading(true)
     await signOut()
+    logAction(profile?.badge_number, profile?.name, 'LOGOUT', { email: profile?.email })
   }
 
   const roleInfo = {
