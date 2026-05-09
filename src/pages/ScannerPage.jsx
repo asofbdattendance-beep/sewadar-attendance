@@ -41,6 +41,7 @@ export default function ScannerPage({ isOnline }) {
   const lastScanRef = useRef({ badge: null, time: 0 })
   const manualSearchTimeout = useRef(null)
   const popupOpenRef = useRef(false)
+  const scopeLoadedRef = useRef(false)
   const [geoCheckDone, setGeoCheckDone] = useState(false)
   const [geoBlocked, setGeoBlocked] = useState(false)
   const [geoDistance, setGeoDistance] = useState(null)
@@ -67,8 +68,8 @@ export default function ScannerPage({ isOnline }) {
   // Geofencing: Check location on page load
   useEffect(() => {
     const checkGeoLocation = async () => {
-      const isASO = profile?.role === 'aso' || profile?.role === 'super_admin'
-      
+      const isASO = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
+
       // ASO is exempt from geofencing
       if (isASO) {
         setGeoCheckDone(true)
@@ -83,7 +84,7 @@ export default function ScannerPage({ isOnline }) {
         .eq('name', profile.centre)
         .single()
 
-      if (!centreData?.geo_enabled || !centreData?.latitude) {
+      if (!centreData?.geo_enabled || !centreData?.latitude || !centreData?.longitude) {
         setGeoCheckDone(true)
         setGeoLoading(false)
         return
@@ -137,14 +138,20 @@ export default function ScannerPage({ isOnline }) {
 
   useEffect(() => {
     if (profile?.centre) {
-      supabase.from('centres').select('name').eq('parent_centre', profile.centre).then(({ data }) => {
-        setChildCentres(data?.map(c => c.name) || [])
-      })
-      supabase.from('special_departments').select('department_name').then(({ data }) => {
-        const depts = data?.map(d => d.department_name?.trim().toUpperCase()) || []
-        console.log('Special depts from DB:', JSON.stringify(depts))
+      Promise.all([
+        supabase.from('centres').select('name').eq('parent_centre', profile.centre),
+        supabase.from('special_departments').select('department_name')
+      ]).then(([centresResult, deptsResult]) => {
+        setChildCentres(centresResult.data?.map(c => c.name) || [])
+        const depts = deptsResult.data?.map(d => d.department_name?.trim().toUpperCase()) || []
         setSpecialDepts(depts)
+        scopeLoadedRef.current = true
+      }).catch(err => {
+        console.error('Failed to load scope data:', err)
+        scopeLoadedRef.current = true
       })
+    } else {
+      scopeLoadedRef.current = true
     }
   }, [profile?.centre])
 
@@ -152,7 +159,7 @@ export default function ScannerPage({ isOnline }) {
     if (!profile?.centre) return true
     const scope = [profile?.centre, ...childCentres]
     if (sewadarCentre && scope.includes(sewadarCentre)) return true
-    if (!specialDepts.length) return true
+    if (scopeLoadedRef.current && !specialDepts.length) return true
     if (department) {
       const deptUpper = department.trim().toUpperCase()
       if (specialDepts.includes(deptUpper)) return true
@@ -181,115 +188,119 @@ const handleScan = useCallback(async (badge) => {
     lastScanRef.current = { badge, time: now }
     console.log('Updated lastScanRef:', lastScanRef.current)
     
-    if (childCentres.length === 0 && specialDepts.length === 0) {
-      setPopupState({ type: 'loading', message: 'Loading scope data...' })
+    if (!scopeLoadedRef.current) {
+      console.log('Blocked: scope data not loaded yet')
+      setProcessing(false)
       return
     }
     setProcessing(true)
 
     console.log('Fetching sewadar:', badge)
 
-    let found = null
-    if (isOnline) {
-      const { data } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
-      found = data
-    }
+    try {
+      let found = null
+      if (isOnline) {
+        const { data } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
+        found = data
+      }
 
-    if (!found) {
-      setPopupState({ type: 'not_found', badge })
-      popupOpenRef.current = true
-      setProcessing(false)
-      return
-    }
-    
-    if (!isInScope(found.centre, found.department)) {
-      setPopupState({ type: 'not_in_scope', sewadar: found })
-      popupOpenRef.current = true
-      setProcessing(false)
-      return
-    }
+      if (!found) {
+        setPopupState({ type: 'not_found', badge })
+        popupOpenRef.current = true
+        setProcessing(false)
+        return
+      }
 
-    // Geofencing: Check if user is within centre radius
-    const isASO = profile?.role === 'aso' || profile?.role === 'super_admin'
-    if (!isASO && profile?.centre) {
-      const { data: centreData } = await supabase
-        .from('centres')
-        .select('latitude, longitude, geo_radius, geo_enabled')
-        .eq('name', profile.centre)
-        .single()
-      
-      if (centreData?.geo_enabled && centreData?.latitude && centreData?.longitude) {
-        try {
-          const position = await new Promise((resolve, reject) => {
-            if (!navigator.geolocation) {
-              reject(new Error('Geolocation not supported'))
+      if (!isInScope(found.centre, found.department)) {
+        setPopupState({ type: 'not_in_scope', sewadar: found })
+        popupOpenRef.current = true
+        setProcessing(false)
+        return
+      }
+
+      // Geofencing: Check if user is within centre radius
+      const isASO = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
+      if (!isASO && profile?.centre) {
+        const { data: centreData } = await supabase
+          .from('centres')
+          .select('latitude, longitude, geo_radius, geo_enabled')
+          .eq('name', profile.centre)
+          .single()
+
+        if (centreData?.geo_enabled && centreData?.latitude && centreData?.longitude) {
+          try {
+            const position = await new Promise((resolve, reject) => {
+              if (!navigator.geolocation) {
+                reject(new Error('Geolocation not supported'))
+                return
+              }
+              navigator.geolocation.getCurrentPosition(resolve, reject, {
+                enableHighAccuracy: true,
+                timeout: 5000,
+                maximumAge: 30000
+              })
+            })
+
+            const userLat = position.coords.latitude
+            const userLon = position.coords.longitude
+            const distance = getDistanceFromLatLonInMeters(userLat, userLon, centreData.latitude, centreData.longitude)
+            const radius = centreData.geo_radius || 200
+
+            console.log(`Geo check: ${distance.toFixed(0)}m from centre (max ${radius}m)`)
+
+            if (distance > radius) {
+              setPopupState({
+                type: 'out_of_range',
+                sewadar: found,
+                distance: Math.round(distance),
+                radius: radius,
+                centre: profile.centre
+              })
+              popupOpenRef.current = true
+              setProcessing(false)
               return
             }
-            navigator.geolocation.getCurrentPosition(resolve, reject, {
-              enableHighAccuracy: true,
-              timeout: 5000,
-              maximumAge: 30000
-            })
-          })
-          
-          const userLat = position.coords.latitude
-          const userLon = position.coords.longitude
-          const distance = getDistanceFromLatLonInMeters(userLat, userLon, centreData.latitude, centreData.longitude)
-          const radius = centreData.geo_radius || 200
-          
-          console.log(`Geo check: ${distance.toFixed(0)}m from centre (max ${radius}m)`)
-          
-          if (distance > radius) {
-            setPopupState({ 
-              type: 'out_of_range', 
-              sewadar: found, 
-              distance: Math.round(distance),
-              radius: radius,
-              centre: profile.centre
-            })
-            popupOpenRef.current = true
-            setProcessing(false)
-            return
+          } catch (geoError) {
+            console.warn('Geo check failed:', geoError.message)
           }
-        } catch (geoError) {
-          console.warn('Geo check failed:', geoError.message)
-          // Allow scan if location check fails (graceful degradation)
         }
       }
-    }
 
-    let openSession = null
-    if (isOnline) {
-      const { data } = await supabase.rpc('get_open_session', { p_badge: badge })
-      openSession = data && data.badge_number ? data : null
-    }
-
-    const dutyType = getDutyType()
-    const today = new Date()
-    const todayStr = today.toISOString().split('T')[0]
-    const currentTime = today.toTimeString().slice(0, 5)
-
-    console.log('openSession:', openSession)
-
-    if (openSession) {
-      // Stop the scanner when showing popup
-      if (scannerRef.current) scannerRef.current.stop()
-      popupOpenRef.current = true
-      
-      const inDate = new Date(openSession.in_date + 'T12:00:00')
-      const hoursSinceIn = (today - inDate) / (1000 * 60 * 60)
-
-      if (hoursSinceIn > 12) {
-        setPopupState({ type: 'forgot_out', sewadar: found, openSession, dutyType })
-      } else {
-        setPopupState({ type: 'out', sewadar: found, openSession })
+      let openSession = null
+      if (isOnline) {
+        const { data } = await supabase.rpc('get_open_session', { p_badge: badge })
+        openSession = data && data.badge_number ? data : null
       }
-    } else {
-      // Stop the scanner when showing popup
-      if (scannerRef.current) scannerRef.current.stop()
+
+      const dutyType = getDutyType()
+      const today = new Date()
+      const todayStr = today.toISOString().split('T')[0]
+      const currentTime = today.toTimeString().slice(0, 5)
+
+      console.log('openSession:', openSession)
+
+      if (openSession) {
+        if (scannerRef.current) scannerRef.current.stop()
+        popupOpenRef.current = true
+
+        const inDate = new Date(openSession.in_date + 'T12:00:00')
+        const hoursSinceIn = (today - inDate) / (1000 * 60 * 60)
+
+        if (hoursSinceIn > 12) {
+          setPopupState({ type: 'forgot_out', sewadar: found, openSession, dutyType })
+        } else {
+          setPopupState({ type: 'out', sewadar: found, openSession })
+        }
+      } else {
+        if (scannerRef.current) scannerRef.current.stop()
+        popupOpenRef.current = true
+
+        setPopupState({ type: 'in', sewadar: found, dutyType, inDate: todayStr, inTime: currentTime })
+      }
+    } catch (err) {
+      console.error('Scan error:', err)
+      setPopupState({ type: 'not_found', badge })
       popupOpenRef.current = true
-      
-      setPopupState({ type: 'in', sewadar: found, dutyType, inDate: todayStr, inTime: currentTime })
     }
 
     setProcessing(false)
@@ -297,30 +308,28 @@ const handleScan = useCallback(async (badge) => {
 
   const markIN = async (customTime = null) => {
     if (!popupState?.sewadar || !profile) return
-    
+
     const sewadar = popupState.sewadar
     const now = new Date()
     const inDate = customTime?.date || now.toISOString().split('T')[0]
     const inTime = customTime?.time || now.toTimeString().slice(0, 5)
-    
+
     if (navigator.vibrate) navigator.vibrate([40])
-    setPopupState({ type: 'success', action: 'IN', sewadar, time: formatTime12Hour(inTime) })
 
     if (isOnline) {
-      const record = {
-        badge_number: sewadar.badge_number,
-        sewadar_name: sewadar.sewadar_name,
-        centre: profile?.centre || sewadar.centre || 'UNKNOWN',
-        duty_type: getDutyType(),
-        status: SESSION_STATUS.OPEN,
-        in_date: inDate,
-        in_time: inTime,
-        in_scanner_badge: profile?.badge_number,
-        in_scanner_name: profile?.name,
-        in_scanner_centre: profile?.centre || sewadar.centre || 'UNKNOWN',
-      }
-
       try {
+        const record = {
+          badge_number: sewadar.badge_number,
+          sewadar_name: sewadar.sewadar_name,
+          centre: profile?.centre || sewadar.centre || 'UNKNOWN',
+          duty_type: getDutyType(),
+          status: SESSION_STATUS.OPEN,
+          in_date: inDate,
+          in_time: inTime,
+          in_scanner_badge: profile?.badge_number,
+          in_scanner_name: profile?.name,
+          in_scanner_centre: profile?.centre || sewadar.centre || 'UNKNOWN',
+        }
         const { data, error } = await supabase.from('attendance_sessions').insert(record).select().single()
         if (error) {
           if (error.code === '23505') {
@@ -331,19 +340,22 @@ const handleScan = useCallback(async (badge) => {
             }
           }
           console.error('Failed to insert session:', error)
+          return
         }
-        if (!error) {
-          await logAction(profile?.badge_number, profile?.name, 'SCAN_IN', {
-            badge: sewadar.badge_number,
-            name: sewadar.sewadar_name,
-            centre: profile?.centre,
-            duty: getDutyType()
-          })
-        }
+        await logAction(profile?.badge_number, profile?.name, 'SCAN_IN', {
+          badge: sewadar.badge_number,
+          name: sewadar.sewadar_name,
+          centre: profile?.centre,
+          duty: getDutyType()
+        })
+        setPopupState({ type: 'success', action: 'IN', sewadar, time: formatTime12Hour(inTime) })
         fetchRecentScans()
       } catch (err) {
         console.error('Failed to insert session:', err)
+        return
       }
+    } else {
+      setPopupState({ type: 'success', action: 'IN', sewadar, time: formatTime12Hour(inTime) })
     }
 
     setTimeout(closePopup, 1500)
@@ -359,37 +371,44 @@ const handleScan = useCallback(async (badge) => {
 
     if (navigator.vibrate) navigator.vibrate([40, 30, 40])
 
-    setPopupState({ type: 'success', action: 'OUT', sewadar: popupState.sewadar, time: formatTime12Hour(outTime) })
-    
     if (isOnline) {
-      await supabase.rpc('close_session', {
-        p_session_id: sessionId,
-        p_out_date: outDate,
-        p_out_time: outTime,
-        p_out_scanner_badge: profile?.badge_number,
-        p_out_scanner_name: profile?.name,
-        p_out_scanner_centre: profile?.centre || popupState?.sewadar?.centre || 'UNKNOWN'
-      })
-      await logAction(profile?.badge_number, profile?.name, 'SCAN_OUT', {
-        badge: popupState?.sewadar?.badge_number,
-        name: popupState?.sewadar?.sewadar_name,
-        session_id: sessionId
-      })
-      fetchRecentScans()
+      try {
+        const { error } = await supabase.rpc('close_session', {
+          p_session_id: sessionId,
+          p_out_date: outDate,
+          p_out_time: outTime,
+          p_out_scanner_badge: profile?.badge_number,
+          p_out_scanner_name: profile?.name,
+          p_out_scanner_centre: profile?.centre || popupState?.sewadar?.centre || 'UNKNOWN'
+        })
+        if (error) {
+          console.error('Failed to close session:', error)
+          return
+        }
+        await logAction(profile?.badge_number, profile?.name, 'SCAN_OUT', {
+          badge: popupState?.sewadar?.badge_number,
+          name: popupState?.sewadar?.sewadar_name,
+          session_id: sessionId
+        })
+        setPopupState({ type: 'success', action: 'OUT', sewadar: popupState.sewadar, time: formatTime12Hour(outTime) })
+        fetchRecentScans()
+      } catch (err) {
+        console.error('Failed to close session:', err)
+        return
+      }
+    } else {
+      setPopupState({ type: 'success', action: 'OUT', sewadar: popupState.sewadar, time: formatTime12Hour(outTime) })
     }
-    
+
     setTimeout(closePopup, 1500)
   }
 
   const closePopup = () => {
-    console.log('closePopup called, triggering auto-refresh')
     setPopupState(null)
     setForgotOutData(null)
     lastScanRef.current = { badge: null, time: 0 }
     popupOpenRef.current = false
-    
-    // Full page refresh to reset scanner completely
-    window.location.reload()
+    if (scannerRef.current) scannerRef.current.restart()
   }
 
   const closeManualEntry = () => {

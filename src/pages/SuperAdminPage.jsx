@@ -78,7 +78,7 @@ function PermissionToggle({ permissions, onChange }) {
   )
 }
 
-function FormFields({ table, formData, setFormData, centres, isUsersTable, roleLabelMap }) {
+function FormFields({ table, formData, setFormData, centres, isUsersTable, roleLabelMap, editing }) {
   return (
     <div className="form-fields-wrapper">
       {table.columns.map(col => (
@@ -191,6 +191,7 @@ function FormFields({ table, formData, setFormData, centres, isUsersTable, roleL
               value={formData[col] || ''}
               onChange={e => setFormData({ ...formData, [col]: e.target.value })}
               required={col === 'name' || col === 'department_name' || col === 'centre_name' || col === 'department'}
+              disabled={editing && ['name', 'badge_number', 'centre', 'email'].includes(col)}
             />
           )}
         </div>
@@ -220,8 +221,8 @@ export default function SuperAdminPage() {
   const sewadarSearchTimeout = useRef(null)
 
   const currentTable = TABLES.find(t => t.id === activeTable)
-  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'super_admin'
-  const canAccessPanel = isSuperAdmin || profile?.role === 'aso'
+  const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
+  const canAccessPanel = isSuperAdmin || profile?.role === ROLES.ASO
   const canWrite = isSuperAdmin
 
   useEffect(() => {
@@ -348,13 +349,17 @@ export default function SuperAdminPage() {
     }
   }
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (e) => {
+    if (e) e.preventDefault()
     if (!canWrite) { toast.error('You do not have write access'); return }
     try {
       const payload = { ...formData }
       
       // For users table - don't send role if it's empty, handle permissions
       if (activeTable === 'users') {
+        if (modal.mode === 'add') {
+          payload.temp_password = generatedPassword || generatePassword(formData.centre, formData.badge_number)
+        }
         if (!payload.role) delete payload.role
         // Auto-sync permissions from role_masters
         if (payload.role) {
@@ -441,6 +446,32 @@ export default function SuperAdminPage() {
       if (activeTable === 'users' && modal.mode === 'add') {
         logAction(profile?.badge_number, profile?.name, 'USER_CREATED', { name: formData.name, email: formData.email, badge: formData.badge_number, role: formData.role, centre: formData.centre })
         const pwd = generatedPassword || generatePassword(formData.centre, formData.badge_number)
+
+        try {
+          const { error: fnError } = await supabase.functions.invoke('create-auth-user', {
+            headers: { 'X-Internal-Secret': 'my-random-secret-here' },
+            body: {
+              email: formData.email,
+              password: pwd,
+              user_metadata: {
+                badge_number: formData.badge_number,
+                name: formData.name,
+                role: formData.role,
+                centre: formData.centre
+              }
+            }
+          })
+          if (fnError) {
+            console.error('Auth user creation failed:', fnError)
+            toast.warning('Auth account could not be created. The user may not be able to log in.')
+          } else {
+            toast.success('Auth account created')
+          }
+        } catch (fnErr) {
+          console.error('Auth function call failed:', fnErr)
+          toast.warning('Auth account could not be created. The user may not be able to log in.')
+        }
+
         setSuccessData({
           name: formData.name,
           email: formData.email,
@@ -730,6 +761,7 @@ export default function SuperAdminPage() {
               </div>
             ) : (
               <div className="user-add-form">
+                <form onSubmit={handleSubmit}>
                 <div className="selected-sewadar-chip" style={{ marginBottom: 16 }}>
                   <UserPlus size={16} />
                   <span className="name">{selectedSewadar.sewadar_name}</span>
@@ -737,7 +769,7 @@ export default function SuperAdminPage() {
                   <span className="centre">{selectedSewadar.centre}</span>
                   <button className="btn-icon" onClick={() => { setSelectedSewadar(null); setSewadarSearch(''); setSewadarResults([]); }} title="Change"><X size={14} /></button>
                 </div>
-                <FormFields table={currentTable} formData={formData} setFormData={setFormData} centres={centres} isUsersTable={activeTable === 'users'} roleLabelMap={roleLabelMap} />
+                <FormFields table={currentTable} formData={formData} setFormData={setFormData} centres={centres} isUsersTable={activeTable === 'users'} roleLabelMap={roleLabelMap} editing={false} />
                 <div className="password-auto">
                   <label>Auto-generated Password</label>
                   <div className="password-display">
@@ -750,26 +782,27 @@ export default function SuperAdminPage() {
                   </div>
                   <div className="password-hint">Format: first 3 letters of centre (caps) + last 4 digits of badge number</div>
                 </div>
-              </div>
-            )}
-            {selectedSewadar && (
-              <div className="modal-actions">
-                <button className="btn-ghost" onClick={() => { setModal({ open: false, mode: 'add', data: null }); setSelectedSewadar(null); setSewadarSearch(''); setSewadarResults([]); }}>Cancel</button>
-                <button className="btn-primary" onClick={handleSubmit}>
-                  <UserPlus size={16} /> Create User
-                </button>
+                <div className="modal-actions">
+                  <button type="button" className="btn-ghost" onClick={() => { setModal({ open: false, mode: 'add', data: null }); setSelectedSewadar(null); setSewadarSearch(''); setSewadarResults([]); }}>Cancel</button>
+                  <button type="submit" className="btn-primary">
+                    <UserPlus size={16} /> Create User
+                  </button>
+                </div>
+                </form>
               </div>
             )}
           </>
         ) : (
           <>
-            <FormFields table={currentTable} formData={formData} setFormData={setFormData} centres={centres} isUsersTable={activeTable === 'users'} roleLabelMap={roleLabelMap} />
-            <div className="modal-actions">
-              <button className="btn-ghost" onClick={() => setModal({ open: false, mode: 'add', data: null })}>Cancel</button>
-              <button className="btn-primary" onClick={handleSubmit}>
-                <Save size={16} /> Save
-              </button>
-            </div>
+            <form onSubmit={handleSubmit}>
+              <FormFields table={currentTable} formData={formData} setFormData={setFormData} centres={centres} isUsersTable={activeTable === 'users'} roleLabelMap={roleLabelMap} editing={modal.mode === 'edit' && activeTable === 'users'} />
+              <div className="modal-actions">
+                <button type="button" className="btn-ghost" onClick={() => setModal({ open: false, mode: 'add', data: null })}>Cancel</button>
+                <button type="submit" className="btn-primary">
+                  <Save size={16} /> Save
+                </button>
+              </div>
+            </form>
           </>
         )}
       </Modal>

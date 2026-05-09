@@ -25,6 +25,7 @@ export default function JathaEntryPage() {
   const [submitting, setSubmitting] = useState(false)
   const [submitResult, setSubmitResult] = useState(null)
   const [warnings, setWarnings] = useState([])
+  const [fetchError, setFetchError] = useState('')
 
   const [sewadars, setSewadars] = useState([])
   const [searchTerm, setSearchTerm] = useState('')
@@ -49,9 +50,8 @@ export default function JathaEntryPage() {
     setSubmitResult(null)
     setWarnings([])
     setLastCreatedIds([])
+    setFetchError('')
   }
-
-  const [lastCreatedIds, setLastCreatedIds] = useState([])
 
   const checkDateValidations = () => {
     const today = new Date()
@@ -209,15 +209,24 @@ export default function JathaEntryPage() {
 
   const fetchJathas = async () => {
     setLoading(true)
-    const { data } = await supabase
+    setFetchError('')
+    setShowJathaDropdown(false)
+    const { data, error } = await supabase
       .from('jatha_master')
       .select('*')
       .eq('jatha_type', jathaType)
       .eq('is_active', true)
       .order('centre_name')
       .order('department')
-    setJathas(data || [])
+    if (error) {
+      console.error('Failed to load jathas:', error)
+      setFetchError(error.message || 'Failed to load jathas')
+      setJathas([])
+    } else {
+      setJathas(data || [])
+    }
     setLoading(false)
+    setShowJathaDropdown(true)
   }
 
   const searchSewadars = async (query) => {
@@ -501,6 +510,8 @@ export default function JathaEntryPage() {
               <div className="search-results-gate jatha-dropdown">
                 {loading ? (
                   <div className="loading-text">Loading...</div>
+                ) : fetchError ? (
+                  <div className="no-results" style={{ color: 'var(--red)' }}>{fetchError}</div>
                 ) : Object.keys(groupedJathas).length > 0 ? (
                   Object.entries(groupedJathas).map(([centre, items]) => (
                     <div key={centre}>

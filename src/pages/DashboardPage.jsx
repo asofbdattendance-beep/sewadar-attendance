@@ -181,11 +181,11 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
   
-  const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'aso'
+  const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
   const userCentre = profile?.centre
 
   // Only super_admin can view ALL centres. admin/centre_user see their own + children
-  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'aso'
+  const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
 
   const [stats, setStats] = useState({
     totalBadges: 0,
@@ -214,7 +214,7 @@ export default function DashboardPage() {
     const pageSize = 1000
     while (true) {
       const from = page * pageSize
-      const { data: batch } = await supabase.from('sewadars').select('*').range(from, from + pageSize - 1)
+      const { data: batch } = await supabase.from('sewadars').select('badge_number, sewadar_name, centre, department, badge_status, gender').range(from, from + pageSize - 1)
       if (!batch || batch.length === 0) break
       all.push(...batch)
       if (batch.length < pageSize) break

@@ -2931,3 +2931,49 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .skeleton { background:linear-gradient(90deg, var(--bg) 25%, var(--bg-secondary) 50%, var(--bg) 75%); background-size:200% 100%; animation:shimmer 1.5s infinite; }
 @keyframes shimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
 
+/* Pagination */
+.pagination {
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  padding:16px 0; margin-top:8px;
+}
+.pagination-btn {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:8px 14px; border:1.5px solid var(--border); border-radius:8px;
+  background:white; color:var(--text-secondary); font-size:13px; font-weight:600;
+  font-family:'Inter',sans-serif; cursor:pointer; transition:all 0.15s;
+}
+.pagination-btn:hover:not(:disabled) { border-color:var(--excel-green); color:var(--excel-green); background:var(--green-bg); }
+.pagination-btn:disabled { opacity:0.4; cursor:default; }
+.pagination-pages { display:flex; align-items:center; gap:4px; }
+.pagination-page {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:32px; height:32px; border:none; border-radius:6px;
+  background:transparent; color:var(--text-secondary); font-size:13px; font-weight:600;
+  font-family:'Inter',sans-serif; cursor:pointer; transition:all 0.15s;
+}
+.pagination-page:hover { background:var(--bg); color:var(--text-primary); }
+.pagination-page.active { background:var(--excel-green); color:white; }
+
+/* Quick Filters */
+.quick-filters {
+  display:flex; gap:6px; flex-wrap:wrap; padding:0 0 12px 0;
+  border-bottom:1px solid var(--border); margin-bottom:12px;
+}
+.quick-filters .chip {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:6px 12px; border-radius:20px; border:1.5px solid var(--border);
+  background:white; font-size:11px; font-weight:600; cursor:pointer; transition:all 0.15s;
+  color:var(--text-secondary);
+}
+.quick-filters .chip:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.quick-filters .chip.active { background:var(--excel-green); border-color:var(--excel-green); color:white; }
+.quick-filters .chip.active .chip-count { color:rgba(255,255,255,0.8); }
+.chip-count {
+  font-size:10px; font-weight:700; color:var(--text-muted); margin-left:2px;
+}
+.chip-dot {
+  display:inline-block; width:8px; height:8px; border-radius:50%;
+}
+.chip-dot.open { background:#3b82f6; }
+.chip-dot.guest { background:#9333ea; }
+

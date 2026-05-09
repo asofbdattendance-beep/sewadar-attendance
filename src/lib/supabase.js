@@ -105,6 +105,6 @@ export function formatDateIndian(dateStr) {
 }
 
 export const GENDER = {
-  MALE: 'M',
-  FEMALE: 'F'
+  MALE: 'Male',
+  FEMALE: 'Female'
 }

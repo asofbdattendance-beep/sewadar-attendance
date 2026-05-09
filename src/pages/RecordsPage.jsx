@@ -3,7 +3,7 @@ import { supabase, ROLES, formatTime12Hour, formatDateIndian } from '../lib/supa
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import { logAction } from '../lib/logger'
-import { Search, Download, Filter, Calendar, Clock, Scan, Timer, Edit3, DoorOpen, RefreshCw, Truck, MapPin, Briefcase, ArrowRight, LayoutGrid, Table2, Trash2 } from 'lucide-react'
+import { Search, Download, Filter, Calendar, Clock, Scan, Timer, Edit3, DoorOpen, RefreshCw, Truck, MapPin, Briefcase, ArrowRight, LayoutGrid, Table2, Trash2, ChevronLeft, ChevronRight } from 'lucide-react'
 
 function SkeletonCard() {
   return (
@@ -51,7 +51,7 @@ function getJathaTypeLabel(type) {
 }
 
 function JathaCard({ session, onDelete }) {
-  const isSuperAdmin = session.role === 'super_admin'
+  const isSuperAdmin = session.role === ROLES.SUPER_ADMIN
   return (
     <div className="jatha-record-card">
       <div className="jatha-record-header">
@@ -262,11 +262,12 @@ function JathaTable({ records, onDelete }) {
 export default function RecordsPage() {
   const { profile } = useAuth()
   const toast = useToast()
-  const canWrite = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'super_admin'
+  const canWrite = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ADMIN || profile?.role === ROLES.CENTRE_USER
   const [activeTab, setActiveTab] = useState('gate')
   const [gateRecords, setGateRecords] = useState([])
   const [jathaRecords, setJathaRecords] = useState([])
   const [loading, setLoading] = useState(true)
+  const [quickFilter, setQuickFilter] = useState('all')
   const [refreshing, setRefreshing] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [showFilters, setShowFilters] = useState(false)
@@ -276,11 +277,13 @@ export default function RecordsPage() {
   const [viewMode, setViewMode] = useState('auto')
   const [centresList, setCentresList] = useState([])
   const [centreFilter, setCentreFilter] = useState('')
-  const searchTimeout = useRef(null)
+  const [page, setPage] = useState(1)
+  const PAGE_SIZE = 50
   const pullStartY = useRef(0)
+  const realtimeDebounceRef = useRef(null)
 
   useEffect(() => {
-    if (profile?.role === 'super_admin' || profile?.role === 'aso') {
+    if (profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO) {
       supabase.from('centres').select('name').order('name').then(({ data }) => setCentresList(data || []))
     } else if (profile?.centre) {
       supabase.from('centres').select('name, parent_centre').then(({ data }) => {
@@ -290,15 +293,6 @@ export default function RecordsPage() {
       })
     }
   }, [profile?.role, profile?.centre])
-  useEffect(() => {
-    const channel = supabase
-      .channel('attendance_changes')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance_sessions' }, () => fetchRecords())
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'jatha_attendance' }, () => fetchRecords())
-      .subscribe()
-
-    return () => { supabase.removeChannel(channel) }
-  }, [])
 
   const isMobile = () => window.innerWidth < 768
 
@@ -317,7 +311,7 @@ export default function RecordsPage() {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
 
-    const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === 'super_admin' || profile?.role === 'aso'
+    const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
     const targetCentre = centreFilter || (isASO ? null : profile?.centre)
 
     let sessions = []
@@ -360,8 +354,8 @@ export default function RecordsPage() {
       if (centreSewadars && centreSewadars.length > 0) {
         const centreBadges = centreSewadars.map(s => s.badge_number)
         const badgeBatches = []
-        for (let i = 0; i < centreBadges.length; i += 100) {
-          badgeBatches.push(centreBadges.slice(i, i + 100))
+        for (let i = 0; i < centreBadges.length; i += 1000) {
+          badgeBatches.push(centreBadges.slice(i, i + 1000))
         }
 
         let outboundSessions = []
@@ -396,8 +390,8 @@ export default function RecordsPage() {
     if (sessions.length > 0) {
       const badgeNumbers = [...new Set(sessions.map(s => s.badge_number))]
       const homeCentreMap = {}
-      for (let i = 0; i < badgeNumbers.length; i += 100) {
-        const batch = badgeNumbers.slice(i, i + 100)
+      for (let i = 0; i < badgeNumbers.length; i += 1000) {
+        const batch = badgeNumbers.slice(i, i + 1000)
         const { data: sewadars } = await supabase
           .from('sewadars')
           .select('badge_number, centre')
@@ -448,11 +442,11 @@ export default function RecordsPage() {
         jatha_department: j.jatha_master?.department
       }))
 
-      if (profile?.role === 'admin' && profile?.centre) {
-        jathaFiltered = jathaFiltered.filter(r => r.centre === profile.centre)
-      }
-
-      if (centreFilter) {
+      // For non-super-admin users, jatha_attendance RLS already restricts
+      // by sewadar's home centre. centreFilter applies to DESTINATION centre
+      // (jatha_master.centre_name), so only apply it for super_admin or
+      // when the user explicitly selects a destination centre.
+      if (centreFilter && (profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO)) {
         jathaFiltered = jathaFiltered.filter(r => r.centre === centreFilter)
       }
 
@@ -470,7 +464,27 @@ export default function RecordsPage() {
     setRefreshing(false)
   }, [dateFrom, dateTo, dutyFilter, profile?.centre, profile?.role, searchTerm, centreFilter])
 
+  const fetchRecordsRef = useRef(fetchRecords)
+  fetchRecordsRef.current = fetchRecords
+
+  useEffect(() => { setPage(1) }, [dateFrom, dateTo, dutyFilter, centreFilter, searchTerm, quickFilter])
   useEffect(() => { fetchRecords() }, [fetchRecords])
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('attendance_changes')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance_sessions' }, () => {
+        if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current)
+        realtimeDebounceRef.current = setTimeout(() => fetchRecordsRef.current(), 500)
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'jatha_attendance' }, () => {
+        if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current)
+        realtimeDebounceRef.current = setTimeout(() => fetchRecordsRef.current(), 500)
+      })
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [])
 
   const handleTouchStart = (e) => {
     if (window.scrollY === 0) pullStartY.current = e.touches[0].clientY
@@ -514,11 +528,29 @@ export default function RecordsPage() {
     a.click()
   }
 
-  const currentRecords = activeTab === 'gate' ? gateRecords : jathaRecords
+  let filteredRecords = activeTab === 'gate' ? gateRecords : jathaRecords
+
+  if (activeTab === 'gate' && quickFilter !== 'all') {
+    if (quickFilter === 'open') {
+      filteredRecords = filteredRecords.filter(r => r.status === 'OPEN')
+    } else if (quickFilter === 'guests') {
+      filteredRecords = filteredRecords.filter(r => r.is_cross_scan === true)
+    } else if (quickFilter === 'manual') {
+      filteredRecords = filteredRecords.filter(r => r.is_manual === true && !r.is_gate_entry)
+    } else if (quickFilter === 'gate_entry') {
+      filteredRecords = filteredRecords.filter(r => r.is_gate_entry === true)
+    }
+  }
+
+  const currentRecords = filteredRecords
   const openCount = gateRecords.filter(r => r.status === 'OPEN').length
   const closedCount = gateRecords.filter(r => r.status === 'CLOSED').length
+  const guestCount = gateRecords.filter(r => r.is_cross_scan === true).length
   const showTable = viewMode === 'table' || (viewMode === 'auto' && !isMobile())
   const showCards = viewMode === 'cards' || (viewMode === 'auto' && isMobile())
+  const totalPages = Math.ceil(currentRecords.length / PAGE_SIZE) || 1
+  const safePage = Math.min(page, totalPages)
+  const paginatedRecords = currentRecords.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
 
   return (
     <div className="page-full pb-nav" onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
@@ -545,7 +577,7 @@ export default function RecordsPage() {
         <div className="search-box-v2">
           <Search size={15} />
           <input type="text" placeholder="Search name or badge..." value={searchTerm}
-            onChange={e => { setSearchTerm(e.target.value); if (searchTimeout.current) clearTimeout(searchTimeout.current); searchTimeout.current = setTimeout(() => fetchRecords(), 300) }} />
+            onChange={e => setSearchTerm(e.target.value)} />
         </div>
         <button className={`btn-icon ${showFilters ? 'active' : ''}`} onClick={() => setShowFilters(!showFilters)}>
           <Filter size={16} />
@@ -595,6 +627,26 @@ export default function RecordsPage() {
         </div>
       )}
 
+      {activeTab === 'gate' && (
+        <div className="quick-filters">
+          <button className={`chip ${quickFilter === 'all' ? 'active' : ''}`} onClick={() => setQuickFilter('all')}>
+            All <span className="chip-count">{gateRecords.length}</span>
+          </button>
+          <button className={`chip ${quickFilter === 'open' ? 'active' : ''}`} onClick={() => setQuickFilter('open')}>
+            <span className="chip-dot open" /> In <span className="chip-count">{openCount}</span>
+          </button>
+          <button className={`chip ${quickFilter === 'guests' ? 'active' : ''}`} onClick={() => setQuickFilter('guests')}>
+            <span className="chip-dot guest" /> Guests <span className="chip-count">{guestCount}</span>
+          </button>
+          <button className={`chip ${quickFilter === 'manual' ? 'active' : ''}`} onClick={() => setQuickFilter('manual')}>
+            Manual
+          </button>
+          <button className={`chip ${quickFilter === 'gate_entry' ? 'active' : ''}`} onClick={() => setQuickFilter('gate_entry')}>
+            Gate Entry
+          </button>
+        </div>
+      )}
+
       {refreshing && <div className="pull-refresh"><RefreshCw size={16} className="spin" /><span>Refreshing...</span></div>}
 
       {loading ? (
@@ -608,13 +660,30 @@ export default function RecordsPage() {
         ) : (
           <div className="cards-grid">{[1, 2, 3, 4].map(i => <SkeletonCard key={i} />)}</div>
         )
-      ) : currentRecords.length === 0 ? (
+      ) : paginatedRecords.length === 0 ? (
         <div className="empty-state"><Calendar size={48} /><p>No {activeTab === 'gate' ? 'sessions' : 'jatha records'} found</p></div>
       ) : showTable ? (
-        activeTab === 'gate' ? <SessionTable records={currentRecords} onDelete={canWrite ? handleDelete : null} /> : <JathaTable records={currentRecords} onDelete={canWrite ? handleDelete : null} />
+        activeTab === 'gate' ? <SessionTable records={paginatedRecords} onDelete={canWrite ? handleDelete : null} /> : <JathaTable records={paginatedRecords} onDelete={canWrite ? handleDelete : null} />
       ) : (
         <div className="cards-grid">
-          {currentRecords.map(r => activeTab === 'gate' ? <SessionCard key={r.id} session={r} onDelete={canWrite ? handleDelete : null} /> : <JathaCard key={r.id} session={r} onDelete={canWrite ? handleDelete : null} />)}
+          {paginatedRecords.map(r => activeTab === 'gate' ? <SessionCard key={r.id} session={r} onDelete={canWrite ? handleDelete : null} /> : <JathaCard key={r.id} session={r} onDelete={canWrite ? handleDelete : null} />)}
+        </div>
+      )}
+      {totalPages > 1 && (
+        <div className="pagination">
+          <button className="pagination-btn" disabled={safePage <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>
+            <ChevronLeft size={16} /> Prev
+          </button>
+          <div className="pagination-pages">
+            {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+              <button key={p} className={`pagination-page ${p === safePage ? 'active' : ''}`} onClick={() => setPage(p)}>
+                {p}
+              </button>
+            ))}
+          </div>
+          <button className="pagination-btn" disabled={safePage >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>
+            Next <ChevronRight size={16} />
+          </button>
         </div>
       )}
     </div>
