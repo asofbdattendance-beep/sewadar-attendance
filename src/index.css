@@ -409,6 +409,8 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .records-table tbody tr:hover { background:var(--bg); }
 .records-table tbody tr.row-cross-scan { background:rgba(168,85,247,0.04); }
 .records-table tbody tr.row-cross-scan:hover { background:rgba(168,85,247,0.08); }
+.records-table tbody tr.row-guest { background:rgba(168,85,247,0.04); }
+.records-table tbody tr.row-guest:hover { background:rgba(168,85,247,0.08); }
 .records-table .cell-badge { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--gold); white-space:nowrap; }
 .records-table .cell-name { font-weight:600; color:var(--text-primary); }
 .records-table .cell-centre { font-size:12px; color:var(--text-secondary); }
@@ -417,6 +419,12 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   display:inline-flex; align-items:center; gap:2px;
   padding:2px 6px; border-radius:4px; font-size:9px; font-weight:700;
   background:rgba(168,85,247,0.12); color:#9333ea; white-space:nowrap;
+}
+.guest-centre-tag {
+  display:inline-flex; align-items:center; gap:2px;
+  padding:2px 6px; border-radius:4px; font-size:9px; font-weight:800;
+  background:rgba(147,51,234,0.12); color:#7c3aed; white-space:nowrap;
+  text-transform:uppercase; letter-spacing:0.03em;
 }
 .records-table .cell-destination { font-weight:500; color:var(--text-primary); white-space:nowrap; }
 .records-table .cell-type { white-space:nowrap; }
@@ -506,12 +514,18 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   transition:all 0.15s;
 }
 .session-card:hover { box-shadow:0 4px 16px rgba(0,0,0,0.08); transform:translateY(-1px); }
-.session-card-cross {
+.session-card-guest {
   border-left:3px solid #9333ea;
-  background:linear-gradient(90deg, rgba(168,85,247,0.03) 0%, white 40%);
+  background:linear-gradient(90deg, rgba(168,85,247,0.06) 0%, white 40%);
 }
-.cross-info { opacity:0.8; }
-.cross-info .info-value { font-size:11px; color:#9333ea; }
+.guest-from { opacity:1; }
+.guest-from .info-label { color:#9333ea; font-weight:800; }
+.guest-centre-chip {
+  display:inline-flex; align-items:center; gap:4px;
+  background:rgba(147,51,234,0.12); color:#7c3aed;
+  font-size:11px; font-weight:700; padding:3px 10px; border-radius:6px;
+  text-transform:uppercase; letter-spacing:0.03em;
+}
 
 .session-card-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px; }
 .session-name { font-size:16px; font-weight:700; color:var(--text-primary); }
@@ -531,10 +545,11 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   padding:4px 8px; border-radius:6px; font-size:9px; font-weight:700;
   background:rgba(59,130,246,0.15); color:#2563eb; letter-spacing:0.03em;
 }
-.cross-scan-badge {
+.guest-badge {
   display:inline-flex; align-items:center; gap:3px;
-  padding:4px 8px; border-radius:6px; font-size:9px; font-weight:700;
-  background:rgba(168,85,247,0.15); color:#9333ea; letter-spacing:0.03em;
+  padding:4px 8px; border-radius:6px; font-size:9px; font-weight:800;
+  background:rgba(147,51,234,0.15); color:#7c3aed; letter-spacing:0.03em;
+  text-transform:uppercase;
 }
 
 .session-badge { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--gold); margin-bottom:12px; }

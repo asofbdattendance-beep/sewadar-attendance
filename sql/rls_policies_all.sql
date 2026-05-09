@@ -56,6 +56,22 @@ BEGIN
 END;
 $$;
 
+-- SECURITY DEFINER: Look up sewadar's home centre by badge number
+-- Bypasses RLS so any authenticated user can detect cross-scans
+CREATE OR REPLACE FUNCTION public.get_sewadar_centres(p_badge_numbers TEXT[])
+RETURNS TABLE(badge_number TEXT, centre TEXT)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT s.badge_number, s.centre
+  FROM public.sewadars s
+  WHERE s.badge_number = ANY(p_badge_numbers);
+END;
+$$;
+
 -- ============================================================
 -- TABLE: centres
 -- ============================================================
@@ -142,9 +158,16 @@ DROP POLICY IF EXISTS sessions_insert ON public.attendance_sessions;
 DROP POLICY IF EXISTS sessions_update ON public.attendance_sessions;
 DROP POLICY IF EXISTS sessions_delete ON public.attendance_sessions;
 
+DROP POLICY IF EXISTS sessions_read ON public.attendance_sessions;
 CREATE POLICY sessions_read ON public.attendance_sessions
   FOR SELECT TO authenticated
-  USING (centre IN (SELECT public.get_user_accessible_centres()));
+  USING (
+    centre IN (SELECT public.get_user_accessible_centres())
+    OR badge_number IN (
+      SELECT badge_number FROM public.sewadars
+      WHERE centre IN (SELECT public.get_user_accessible_centres())
+    )
+  );
 
 CREATE POLICY sessions_insert ON public.attendance_sessions
   FOR INSERT TO authenticated

@@ -123,11 +123,11 @@ function SessionCard({ session, onDelete }) {
   const duration = calculateDuration(session.in_date, session.in_time, session.out_date, session.out_time)
   
   return (
-    <div className={`session-card ${isCrossScan ? 'session-card-cross' : ''}`}>
+    <div className={`session-card ${isCrossScan ? 'session-card-guest' : ''}`}>
       <div className="session-card-header">
         <div className="session-name">{session.sewadar_name || 'Unknown'}</div>
         <div className="session-badges">
-          {isCrossScan && <span className="cross-scan-badge"><MapPin size={9} />Cross-Scan</span>}
+          {isCrossScan && <span className="guest-badge"><MapPin size={10} />Guest</span>}
           {isGateEntry && <span className="gate-badge"><DoorOpen size={9} />Gate</span>}
           {!isGateEntry && isManual && <span className="manual-badge"><Edit3 size={9} />Manual</span>}
           <span className={`status-badge ${isOpen ? 'status-open' : 'status-closed'}`}>{isOpen ? 'IN' : 'OUT'}</span>
@@ -140,9 +140,9 @@ function SessionCard({ session, onDelete }) {
           <span className="info-value">{isCrossScan ? session.scan_centre : (session.centre || 'Unknown')}</span>
         </div>
         {isCrossScan && (
-          <div className="session-info cross-info">
-            <span className="info-label">Home Centre</span>
-            <span className="info-value">{session.centre}</span>
+          <div className="session-info guest-from">
+            <span className="info-label">From</span>
+            <span className="guest-centre-chip">{session.centre}</span>
           </div>
         )}
         <div className="session-info"><span className="info-label">Duty</span><span className={`duty-badge ${session.duty_type}`}>{session.duty_type || 'N/A'}</span></div>
@@ -200,14 +200,15 @@ function SessionTable({ records, onDelete }) {
             const duration = calculateDuration(r.in_date, r.in_time, r.out_date, r.out_time)
             const sameDate = r.in_date === r.out_date && r.out_date
             return (
-              <tr key={r.id || idx} className={isCrossScan ? 'row-cross-scan' : ''}>
+              <tr key={r.id || idx} className={isCrossScan ? 'row-guest' : ''}>
                 <td><span className={`status-pill ${isOpen ? 'status-pill-open' : 'status-pill-closed'}`}>{isOpen ? 'IN' : 'OUT'}</span></td>
                 <td className="cell-badge">{r.badge_number || 'N/A'}</td>
                 <td className="cell-name">{r.sewadar_name || 'Unknown'}</td>
                 <td className="cell-centre">
                   <div className="centre-cell-content">
-                    {r.centre || '-'}
-                    {isCrossScan && <span className="cross-badge">Scanned at {r.scan_centre}</span>}
+                    {isCrossScan ? (
+                      <><span className="guest-centre-tag">From {r.centre}</span> at {r.scan_centre}</>
+                    ) : (r.centre || '-')}
                   </div>
                 </td>
                 <td><span className={`duty-badge-sm ${r.duty_type}`}>{r.duty_type || 'N/A'}</span></td>
@@ -390,15 +391,11 @@ export default function RecordsPage() {
     if (sessions.length > 0) {
       const badgeNumbers = [...new Set(sessions.map(s => s.badge_number))]
       const homeCentreMap = {}
-      for (let i = 0; i < badgeNumbers.length; i += 1000) {
-        const batch = badgeNumbers.slice(i, i + 1000)
-        const { data: sewadars } = await supabase
-          .from('sewadars')
-          .select('badge_number, centre')
-          .in('badge_number', batch)
-        for (const s of (sewadars || [])) {
-          homeCentreMap[s.badge_number] = s.centre
-        }
+      // Use SECURITY DEFINER RPC to bypass RLS (needed for Centre Admin etc.
+      // to look up sewadars from OTHER centres)
+      const { data: sewadars } = await supabase.rpc('get_sewadar_centres', { p_badge_numbers: badgeNumbers })
+      for (const s of (sewadars || [])) {
+        homeCentreMap[s.badge_number] = s.centre
       }
 
       sessions = sessions.map(s => {
