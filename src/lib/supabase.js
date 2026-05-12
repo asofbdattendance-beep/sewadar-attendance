@@ -108,3 +108,10 @@ export const GENDER = {
   MALE: 'Male',
   FEMALE: 'Female'
 }
+
+// Returns YYYY-MM-DD in LOCAL timezone (avoids UTC date from toISOString)
+export function getLocalDate(date = new Date()) {
+  return date.getFullYear() + '-' +
+    String(date.getMonth() + 1).padStart(2, '0') + '-' +
+    String(date.getDate()).padStart(2, '0')
+}

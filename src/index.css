@@ -426,6 +426,15 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   background:rgba(147,51,234,0.12); color:#7c3aed; white-space:nowrap;
   text-transform:uppercase; letter-spacing:0.03em;
 }
+.guest-tag {
+  display:inline-flex; align-items:center;
+  padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700;
+  background:rgba(147,51,234,0.12); color:#7c3aed;
+}
+.success-guest {
+  font-size:11px; font-weight:700; color:#7c3aed;
+  margin-top:2px;
+}
 .records-table .cell-destination { font-weight:500; color:var(--text-primary); white-space:nowrap; }
 .records-table .cell-type { white-space:nowrap; }
 .records-table .type-pill { padding:3px 8px; border-radius:10px; font-size:9px; font-weight:700; text-transform:uppercase; white-space:nowrap; display:inline-block; }
@@ -551,6 +560,11 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   background:rgba(147,51,234,0.15); color:#7c3aed; letter-spacing:0.03em;
   text-transform:uppercase;
 }
+.guest-badge-gate {
+  display:inline-flex; align-items:center; gap:2px;
+  padding:1px 6px; border-radius:4px; font-size:10px; font-weight:700;
+  background:rgba(147,51,234,0.12); color:#7c3aed;
+}
 
 .session-badge { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--gold); margin-bottom:12px; }
 
@@ -593,6 +607,14 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   margin-bottom:10px;
 }
 .duration-badge svg { flex-shrink:0; }
+.duration-badge.invalid { background:rgba(239,68,68,0.1); color:#dc2626; }
+.duration-invalid { color:#dc2626; font-weight:600; font-size:11px; }
+
+.error-badge {
+  display:inline-flex; align-items:center; gap:3px;
+  padding:3px 7px; border-radius:6px; font-size:9px; font-weight:800;
+  background:rgba(239,68,68,0.12); color:#dc2626; text-transform:uppercase;
+}
 
 .scanner-info { 
   background:var(--bg); border-radius:8px; padding:10px 12px; margin-bottom:10px;
@@ -2991,4 +3013,7 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 }
 .chip-dot.open { background:#3b82f6; }
 .chip-dot.guest { background:#9333ea; }
+.chip-dot.beas { background:#0284c7; }
+.chip-dot.major { background:#7c3aed; }
+.chip-dot.home { background:#16a34a; }
 

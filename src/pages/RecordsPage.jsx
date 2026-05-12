@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { supabase, ROLES, formatTime12Hour, formatDateIndian } from '../lib/supabase'
+import { supabase, ROLES, formatTime12Hour, formatDateIndian, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import { logAction } from '../lib/logger'
-import { Search, Download, Filter, Calendar, Clock, Scan, Timer, Edit3, DoorOpen, RefreshCw, Truck, MapPin, Briefcase, ArrowRight, LayoutGrid, Table2, Trash2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Search, Download, Filter, Calendar, Clock, Scan, Timer, Edit3, DoorOpen, RefreshCw, Truck, MapPin, Briefcase, ArrowRight, LayoutGrid, Table2, Trash2, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
 
 function SkeletonCard() {
   return (
@@ -37,12 +37,17 @@ function calculateDuration(inDate, inTime, outDate, outTime) {
   const outDateTime = new Date(`${outDate}T${String(outH).padStart(2,'0')}:${String(outM).padStart(2,'0')}:00`)
   if (isNaN(inDateTime.getTime()) || isNaN(outDateTime.getTime())) return null
   const diffMs = outDateTime - inDateTime
-  if (diffMs < 0) return null
+  if (diffMs < 0) return 'invalid'
   const hours = Math.floor(diffMs / (1000 * 60 * 60))
   const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
   if (hours === 0) return `${minutes}m`
   if (minutes === 0) return `${hours}h`
   return `${hours}h ${minutes}m`
+}
+
+function isTimeInvalid(record) {
+  const d = calculateDuration(record.in_date, record.in_time, record.out_date, record.out_time)
+  return d === 'invalid'
 }
 
 function getJathaTypeLabel(type) {
@@ -64,6 +69,13 @@ function JathaCard({ session, onDelete }) {
       </div>
       <div className="jatha-record-body">
         <div className="jatha-destination-dept">
+          <div className="jatha-detail">
+            <MapPin size={14} />
+            <div>
+              <span className="jatha-detail-label">Home Centre</span>
+              <span className="jatha-detail-value">{session.sewadar_centre || 'Unknown'}</span>
+            </div>
+          </div>
           <div className="jatha-detail">
             <MapPin size={14} />
             <div>
@@ -121,6 +133,7 @@ function SessionCard({ session, onDelete }) {
   const isCrossScan = session.is_cross_scan === true
   const sameDate = session.in_date === session.out_date && session.out_date
   const duration = calculateDuration(session.in_date, session.in_time, session.out_date, session.out_time)
+  const timeInvalid = duration === 'invalid'
   
   return (
     <div className={`session-card ${isCrossScan ? 'session-card-guest' : ''}`}>
@@ -130,6 +143,7 @@ function SessionCard({ session, onDelete }) {
           {isCrossScan && <span className="guest-badge"><MapPin size={10} />Guest</span>}
           {isGateEntry && <span className="gate-badge"><DoorOpen size={9} />Gate</span>}
           {!isGateEntry && isManual && <span className="manual-badge"><Edit3 size={9} />Manual</span>}
+          {timeInvalid && <span className="error-badge"><AlertTriangle size={9} />Invalid</span>}
           <span className={`status-badge ${isOpen ? 'status-open' : 'status-closed'}`}>{isOpen ? 'IN' : 'OUT'}</span>
         </div>
       </div>
@@ -146,6 +160,7 @@ function SessionCard({ session, onDelete }) {
           </div>
         )}
         <div className="session-info"><span className="info-label">Duty</span><span className={`duty-badge ${session.duty_type}`}>{session.duty_type || 'N/A'}</span></div>
+        <div className="session-info"><span className="info-label">Dept</span><span className="info-value">{session.sewadar_dept || '-'}</span></div>
       </div>
       <div className="session-time-row">
         <div className="time-box">
@@ -165,7 +180,8 @@ function SessionCard({ session, onDelete }) {
           </div>
         )}
       </div>
-      {duration && <div className="duration-badge"><Timer size={12} /><span>{duration}</span></div>}
+      {duration && duration !== 'invalid' && <div className="duration-badge"><Timer size={12} /><span>{duration}</span></div>}
+      {timeInvalid && <div className="duration-badge invalid"><AlertTriangle size={12} /><span>Invalid times</span></div>}
       <div className="scanner-info">
         <div className="scanner-row"><Scan size={11} /><span>IN by:</span><span className="scanner-name">{session.in_scanner_name || 'Unknown'}</span><span className="scanner-badge">{session.in_scanner_badge || 'N/A'}</span></div>
         {session.out_scanner_badge && <div className="scanner-row"><Scan size={11} /><span>OUT by:</span><span className="scanner-name">{session.out_scanner_name || 'Unknown'}</span><span className="scanner-badge">{session.out_scanner_badge}</span></div>}
@@ -188,7 +204,7 @@ function SessionTable({ records, onDelete }) {
       <table className="records-table">
         <thead>
           <tr>
-            <th>Status</th><th>Badge</th><th>Name</th><th>Centre</th><th>Type</th><th>Duty</th><th>IN Date</th><th>IN Time</th><th>OUT Date</th><th>OUT Time</th><th>Duration</th><th>IN By</th><th>OUT By</th><th style={{width:50}}></th>
+            <th>Status</th><th>Badge</th><th>Name</th><th>Centre</th><th>Dept</th><th>Type</th><th>Duty</th><th>IN Date</th><th>IN Time</th><th>OUT Date</th><th>OUT Time</th><th>Duration</th><th>IN By</th><th>OUT By</th><th style={{width:50}}></th>
           </tr>
         </thead>
         <tbody>
@@ -208,16 +224,17 @@ function SessionTable({ records, onDelete }) {
                   <div className="centre-cell-content">
                     {isCrossScan ? (
                       <><span className="guest-centre-tag">From {r.centre}</span> at {r.scan_centre}</>
-                    ) : (r.centre || '-')}
-                  </div>
-                </td>
-                <td><span className={`duty-badge-sm ${r.duty_type}`}>{r.duty_type || 'N/A'}</span></td>
+                      ) : (r.centre || '-')}
+                    </div>
+                  </td>
+                  <td className="cell-dept">{r.sewadar_dept || '-'}</td>
+                  <td><span className={`duty-badge-sm ${r.duty_type}`}>{r.duty_type || 'N/A'}</span></td>
                 <td><span className="entry-type-pill">{isGateEntry ? 'GATE' : isManual ? 'MANUAL' : 'SCAN'}</span></td>
                 <td className="cell-date">{r.in_date ? formatDateIndian(r.in_date) : '-'}</td>
                 <td className="cell-time">{r.in_time ? formatTime12Hour(r.in_time) : '-'}</td>
                 <td className="cell-date">{r.out_date ? formatDateIndian(r.out_date) : (isOpen ? '-' : '-')}</td>
                 <td className="cell-time">{isOpen ? '-' : (r.out_time ? formatTime12Hour(r.out_time) : '-')}</td>
-                <td className="cell-duration">{duration || (isOpen ? 'In progress' : '-')}</td>
+                <td className="cell-duration">{duration === 'invalid' ? <span className="duration-invalid">Invalid</span> : (duration || (isOpen ? 'In progress' : '-'))}</td>
                 <td className="cell-scanner">{r.in_scanner_name || '-'}</td>
                 <td className="cell-scanner">{r.out_scanner_name || '-'}</td>
                 <td>{onDelete && <button className="btn-icon btn-delete" onClick={() => onDelete('attendance_sessions', r.id)} title="Delete"><Trash2 size={13} /></button>}</td>
@@ -236,7 +253,7 @@ function JathaTable({ records, onDelete }) {
       <table className="records-table">
         <thead>
           <tr>
-            <th>Badge</th><th>Name</th><th>Destination</th><th>Type</th><th>Department</th><th>From Date</th><th>To Date</th><th>Remarks</th><th>Entered By</th><th style={{width:50}}></th>
+            <th>Badge</th><th>Name</th><th>Sewadar Centre</th><th>Destination</th><th>Type</th><th>Department</th><th>From Date</th><th>To Date</th><th>Remarks</th><th>Entered By</th><th style={{width:50}}></th>
           </tr>
         </thead>
         <tbody>
@@ -244,6 +261,7 @@ function JathaTable({ records, onDelete }) {
             <tr key={r.id || idx}>
               <td className="cell-badge">{r.badge_number || 'N/A'}</td>
               <td className="cell-name">{r.sewadar_name || 'Unknown'}</td>
+              <td className="cell-centre">{r.sewadar_centre || '-'}</td>
               <td className="cell-centre">{r.centre || '-'}</td>
               <td><span className={`type-pill ${r.jatha_type}`}>{getJathaTypeLabel(r.jatha_type)}</span></td>
               <td className="cell-centre">{r.jatha_department || '-'}</td>
@@ -269,11 +287,12 @@ export default function RecordsPage() {
   const [jathaRecords, setJathaRecords] = useState([])
   const [loading, setLoading] = useState(true)
   const [quickFilter, setQuickFilter] = useState('all')
+  const [jathaQuickFilter, setJathaQuickFilter] = useState('all')
   const [refreshing, setRefreshing] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [showFilters, setShowFilters] = useState(false)
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().split('T')[0])
-  const [dateTo, setDateTo] = useState(new Date().toISOString().split('T')[0])
+  const [dateFrom, setDateFrom] = useState(getLocalDate())
+  const [dateTo, setDateTo] = useState(getLocalDate())
   const [dutyFilter, setDutyFilter] = useState('')
   const [viewMode, setViewMode] = useState('auto')
   const [centresList, setCentresList] = useState([])
@@ -301,6 +320,22 @@ export default function RecordsPage() {
     const label = table === 'attendance_sessions' ? 'attendance' : 'jatha'
     if (!window.confirm(`Delete this ${label} record?`)) return
     const { data: deletedRecord } = await supabase.from(table).select('*').eq('id', id).single()
+
+    if (!deletedRecord) { toast.error('Record not found'); return }
+
+    // Non-super_admin cannot delete records from previous months
+    if (profile?.role !== ROLES.SUPER_ADMIN) {
+      const recordDate = table === 'attendance_sessions' ? deletedRecord.in_date : deletedRecord.from_date
+      if (recordDate) {
+        const recordMonth = new Date(recordDate + 'T12:00:00')
+        const now = new Date()
+        if (recordMonth.getFullYear() < now.getFullYear() || (recordMonth.getFullYear() === now.getFullYear() && recordMonth.getMonth() < now.getMonth())) {
+          toast.error('Cannot delete entries from previous months')
+          return
+        }
+      }
+    }
+
     const { error } = await supabase.from(table).delete().eq('id', id)
     if (error) { toast.error(error.message); return }
     toast.success(`${label} record deleted`)
@@ -324,7 +359,7 @@ export default function RecordsPage() {
         .gte('in_date', dateFrom)
         .lte('in_date', dateTo)
         .order('in_time', { ascending: false })
-        .limit(500)
+        .limit(10000)
       if (targetCentre) q = q.eq('centre', targetCentre)
       const { data } = await q
       sessions = data || []
@@ -335,7 +370,7 @@ export default function RecordsPage() {
         .gte('in_date', dateFrom)
         .lte('in_date', dateTo)
         .order('in_time', { ascending: false })
-        .limit(500)
+        .limit(10000)
 
       if (profile?.role === ROLES.SC_SP_USER) {
         q = q.eq('in_scanner_centre', targetCentre)
@@ -366,7 +401,7 @@ export default function RecordsPage() {
             .gte('in_date', dateFrom)
             .lte('in_date', dateTo)
             .in('badge_number', batch)
-            .limit(500)
+            .limit(10000)
           if (profile?.role === ROLES.SC_SP_USER) {
             // SC_SP_USER only sees sessions scanned by their centre
           } else {
@@ -391,19 +426,16 @@ export default function RecordsPage() {
     if (sessions.length > 0) {
       const badgeNumbers = [...new Set(sessions.map(s => s.badge_number))]
       const homeCentreMap = {}
-      // Use SECURITY DEFINER RPC to bypass RLS (needed for Centre Admin etc.
-      // to look up sewadars from OTHER centres)
-      const { data: sewadars } = await supabase.rpc('get_sewadar_centres', { p_badge_numbers: badgeNumbers })
+      const deptMap = {}
+      const { data: sewadars } = await supabase.rpc('get_sewadar_details', { p_badge_numbers: badgeNumbers })
       for (const s of (sewadars || [])) {
         homeCentreMap[s.badge_number] = s.centre
+        deptMap[s.badge_number] = s.department
       }
 
       sessions = sessions.map(s => {
         const homeCentre = homeCentreMap[s.badge_number]
-        if (homeCentre && homeCentre !== s.centre) {
-          return { ...s, is_cross_scan: true, scan_centre: s.centre, centre: homeCentre }
-        }
-        return s
+        return { ...s, sewadar_dept: deptMap[s.badge_number] || null, ...(homeCentre && homeCentre !== s.centre ? { is_cross_scan: true, scan_centre: s.centre, centre: homeCentre } : {}) }
       })
     }
 
@@ -426,7 +458,19 @@ export default function RecordsPage() {
         .gte('from_date', dateFrom)
         .lte('from_date', dateTo)
         .order('entered_at', { ascending: false })
-        .limit(500)
+        .limit(10000)
+
+      // Look up sewadar home centres for jatha records
+      const jathaBadges = [...new Set((jathaData || []).map(j => j.badge_number).filter(Boolean))]
+      const sewadarCentreMap = {}
+      const jathaDeptMap = {}
+      if (jathaBadges.length > 0) {
+        const { data: jathaSewadars } = await supabase.rpc('get_sewadar_details', { p_badge_numbers: jathaBadges })
+        for (const s of (jathaSewadars || [])) {
+          sewadarCentreMap[s.badge_number] = s.centre
+          jathaDeptMap[s.badge_number] = s.department
+        }
+      }
 
       let jathaFiltered = (jathaData || []).map(j => ({
         ...j,
@@ -435,6 +479,8 @@ export default function RecordsPage() {
         in_date: j.from_date,
         out_date: j.to_date,
         centre: j.jatha_master?.centre_name,
+        sewadar_centre: sewadarCentreMap[j.badge_number] || 'Unknown',
+        sewadar_dept: jathaDeptMap[j.badge_number] || null,
         jatha_type: j.jatha_master?.jatha_type,
         jatha_department: j.jatha_master?.department
       }))
@@ -452,6 +498,10 @@ export default function RecordsPage() {
         jathaFiltered = jathaFiltered.filter(r => r.badge_number?.includes(term) || r.sewadar_name?.toUpperCase().includes(term))
       }
 
+      if (jathaQuickFilter !== 'all') {
+        jathaFiltered = jathaFiltered.filter(r => r.jatha_type === jathaQuickFilter)
+      }
+
       setJathaRecords(jathaFiltered)
     } else {
       setJathaRecords([])
@@ -459,12 +509,12 @@ export default function RecordsPage() {
 
     setLoading(false)
     setRefreshing(false)
-  }, [dateFrom, dateTo, dutyFilter, profile?.centre, profile?.role, searchTerm, centreFilter])
+  }, [dateFrom, dateTo, dutyFilter, profile?.centre, profile?.role, searchTerm, centreFilter, jathaQuickFilter])
 
   const fetchRecordsRef = useRef(fetchRecords)
   fetchRecordsRef.current = fetchRecords
 
-  useEffect(() => { setPage(1) }, [dateFrom, dateTo, dutyFilter, centreFilter, searchTerm, quickFilter])
+  useEffect(() => { setPage(1) }, [dateFrom, dateTo, dutyFilter, centreFilter, searchTerm, quickFilter, jathaQuickFilter])
   useEffect(() => { fetchRecords() }, [fetchRecords])
 
   useEffect(() => {
@@ -510,9 +560,9 @@ export default function RecordsPage() {
         r.in_scanner_name || 'Admin', r.out_scanner_name || ''
       ])
     } else {
-      headers = ['Badge', 'Name', 'Destination', 'Type', 'Department', 'From Date', 'To Date', 'Remarks', 'Entered By']
+      headers = ['Badge', 'Name', 'Sewadar Centre', 'Destination', 'Type', 'Department', 'From Date', 'To Date', 'Remarks', 'Entered By']
       rows = records.map(r => [
-        r.badge_number, `"${r.sewadar_name}"`, r.centre || '',
+        r.badge_number, `"${r.sewadar_name}"`, r.sewadar_centre || '', r.centre || '',
         getJathaTypeLabel(r.jatha_type), r.jatha_department || '',
         r.in_date, r.out_date, r.remarks || '', r.entered_by_name || ''
       ])
@@ -543,6 +593,9 @@ export default function RecordsPage() {
   const openCount = gateRecords.filter(r => r.status === 'OPEN').length
   const closedCount = gateRecords.filter(r => r.status === 'CLOSED').length
   const guestCount = gateRecords.filter(r => r.is_cross_scan === true).length
+  const jathaBeasCount = jathaRecords.filter(r => r.jatha_type === 'beas').length
+  const jathaMajorCount = jathaRecords.filter(r => r.jatha_type === 'major_centre').length
+  const jathaHomeCount = jathaRecords.filter(r => r.jatha_type === 'jatha_home').length
   const showTable = viewMode === 'table' || (viewMode === 'auto' && !isMobile())
   const showCards = viewMode === 'cards' || (viewMode === 'auto' && isMobile())
   const totalPages = Math.ceil(currentRecords.length / PAGE_SIZE) || 1
@@ -640,6 +693,22 @@ export default function RecordsPage() {
           </button>
           <button className={`chip ${quickFilter === 'gate_entry' ? 'active' : ''}`} onClick={() => setQuickFilter('gate_entry')}>
             Gate Entry
+          </button>
+        </div>
+      )}
+      {activeTab === 'jatha' && (
+        <div className="quick-filters">
+          <button className={`chip ${jathaQuickFilter === 'all' ? 'active' : ''}`} onClick={() => setJathaQuickFilter('all')}>
+            All <span className="chip-count">{jathaRecords.length}</span>
+          </button>
+          <button className={`chip ${jathaQuickFilter === 'beas' ? 'active' : ''}`} onClick={() => setJathaQuickFilter('beas')}>
+            <span className="chip-dot beas" /> BEAS <span className="chip-count">{jathaBeasCount}</span>
+          </button>
+          <button className={`chip ${jathaQuickFilter === 'major_centre' ? 'active' : ''}`} onClick={() => setJathaQuickFilter('major_centre')}>
+            <span className="chip-dot major" /> Major Centre <span className="chip-count">{jathaMajorCount}</span>
+          </button>
+          <button className={`chip ${jathaQuickFilter === 'jatha_home' ? 'active' : ''}`} onClick={() => setJathaQuickFilter('jatha_home')}>
+            <span className="chip-dot home" /> Jatha Home <span className="chip-count">{jathaHomeCount}</span>
           </button>
         </div>
       )}

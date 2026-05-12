@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { supabase, ROLES, formatDateIndian, formatTime12Hour } from '../lib/supabase'
+import { supabase, ROLES, formatDateIndian, formatTime12Hour, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { 
   ChevronDown, Calendar, Download, FileSpreadsheet, FileText, 
@@ -205,7 +205,7 @@ export default function ReportsPage() {
   const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
   const userCentre = profile?.centre
   
-  const today = new Date().toISOString().split('T')[0]
+  const today = getLocalDate()
   
   const [activeCategory, setActiveCategory] = useState('gate')
   const [activeReport, setActiveReport] = useState('present')
@@ -242,8 +242,8 @@ export default function ReportsPage() {
     const endOfWeek = new Date(startOfWeek)
     endOfWeek.setDate(startOfWeek.getDate() + 6)
     return {
-      from: startOfWeek.toISOString().split('T')[0],
-      to: endOfWeek.toISOString().split('T')[0]
+      from: getLocalDate(startOfWeek),
+      to: getLocalDate(endOfWeek)
     }
   }
 
@@ -593,7 +593,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   // Jatha Attendance: jatha entries based on filter
   const fetchJathaAttendance = async (canViewAllCentres, userCentre, filterType) => {
     const filter = filterType || jathaFilter
-    const todayStr = new Date().toISOString().split('T')[0]
+    const todayStr = getLocalDate()
     
     let query = supabase
       .from('jatha_attendance')

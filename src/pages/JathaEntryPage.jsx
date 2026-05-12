@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { supabase, ROLES, formatDateIndian } from '../lib/supabase'
+import { supabase, ROLES, formatDateIndian, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { logAction } from '../lib/logger'
 import { useToast } from '../components/Toast'
@@ -56,7 +56,7 @@ export default function JathaEntryPage() {
   const checkDateValidations = () => {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
-    const todayStr = today.toISOString().split('T')[0]
+    const todayStr = getLocalDate(today)
     const from = new Date(fromDate)
     const to = new Date(toDate)
 
@@ -408,7 +408,7 @@ export default function JathaEntryPage() {
               <input
                 type="date"
                 value={fromDate}
-                max={new Date().toISOString().split('T')[0]}
+                max={getLocalDate()}
                 onChange={e => { setFromDate(e.target.value); setWarnings([]) }}
               />
             </div>
@@ -418,7 +418,7 @@ export default function JathaEntryPage() {
                 type="date"
                 value={toDate}
                 min={fromDate}
-                max={new Date().toISOString().split('T')[0]}
+                max={getLocalDate()}
                 onChange={e => { setToDate(e.target.value); setWarnings([]) }}
               />
             </div>
