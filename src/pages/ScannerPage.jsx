@@ -219,7 +219,8 @@ const handleScan = useCallback(async (badge) => {
         return
       }
 
-      // Geofencing: Check if user is within centre radius
+      // Check if user is within their centre's geo-fence radius
+      // SKIP for ASO/Super Admin — they can scan from anywhere
       const isASO = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
       if (!isASO && profile?.centre) {
         const { data: centreData } = await supabase
@@ -286,6 +287,9 @@ const handleScan = useCallback(async (badge) => {
 
         const inDate = new Date(openSession.in_date + 'T12:00:00')
         const hoursSinceIn = (today - inDate) / (1000 * 60 * 60)
+
+        // If OPEN session is >12 hours old, assume sewadar forgot to mark OUT
+        // Show forgot_out prompt instead of normal OUT
 
         if (hoursSinceIn > 12) {
           setPopupState({ type: 'forgot_out', sewadar: found, openSession, dutyType })

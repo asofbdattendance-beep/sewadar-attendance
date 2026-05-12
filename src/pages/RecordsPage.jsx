@@ -421,8 +421,9 @@ export default function RecordsPage() {
       }
     }
 
-    // Step 2: Detect cross-scans for ALL roles
-    // Compare each session's centre vs the sewadar's home centre
+    // Step 2: Detect cross-scans (sewadar scanned at a different centre than their home)
+    // Uses SECURITY DEFINER RPC to bypass RLS, so any role can look up any sewadar's home centre
+    // When homeCentre != scanCentre: tag as cross_scan, store scan centre, show home centre
     if (sessions.length > 0) {
       const badgeNumbers = [...new Set(sessions.map(s => s.badge_number))]
       const homeCentreMap = {}

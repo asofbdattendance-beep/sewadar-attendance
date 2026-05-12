@@ -322,7 +322,8 @@ export default function DashboardPage() {
       }
       sortAZ(rootCentres)
 
-      // Department stats (single pass through sewadars)
+      // Exclude ELDERLY badge sewadars from all "total" counts (eligible = total - elderly)
+      // ELDERLY can still mark attendance so they're included in present/inside counts
       const deptMap = {}
       let malePresentCount = 0, femalePresentCount = 0
       let maleInsideCount = 0, femaleInsideCount = 0
