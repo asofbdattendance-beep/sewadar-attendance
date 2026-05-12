@@ -1,808 +1,402 @@
-# SEWADAR ATTENDANCE SYSTEM v2
-## Complete Project Documentation
+# Sewadar Attendance System — Complete Documentation
 
 > **Version:** 2.2  
 > **Created:** April 2026  
-> **Last Updated:** May 10, 2026  
-> **Supabase Project:** https://lnznhbwgkusgdcmvgznf.supabase.co
+> **Last Updated:** May 2026  
+> **Supabase Project:** https://lnznhbwgkusgdcmvgznf.supabase.co  
+> **Frontend:** React + Vite  
+> **Backend:** Supabase (PostgreSQL + Auth)
 
 ---
 
 ## Table of Contents
 
-1. [System Overview](#1-system-overview)
-2. [Completed Features](#2-completed-features)
-3. [Data Model](#3-data-model)
-4. [Attendance Logic](#4-attendance-logic)
-5. [Centre Hierarchy](#5-centre-hierarchy)
-6. [Database Schema](#6-database-schema)
-7. [API Reference](#7-api-reference)
-8. [App Structure](#8-app-structure)
-9. [User Roles](#9-user-roles)
-10. [Bug Report](#10-bug-report)
-11. [Known Issues](#11-known-issues)
-12. [Test Users](#12-test-users)
+1. [Beginner Guide](#1-beginner-guide)
+2. [Developer Setup](#2-developer-setup)
+3. [Architecture](#3-architecture)
+4. [Database](#4-database)
+5. [Attendance Logic](#5-attendance-logic)
+6. [Security Model](#6-security-model)
+7. [User Roles](#7-user-roles)
+8. [Troubleshooting](#8-troubleshooting)
+9. [Test Users](#9-test-users)
 
 ---
 
-## 1. System Overview
+## 1. Beginner Guide
 
-### 1.1 What is this system?
+### 1.1 What is this app?
 
-A **mobile-first attendance tracking system** for **41 Satsang Points** across Haryana, UP, and Delhi. Sewadars (volunteers) mark their attendance by scanning their barcode ID cards.
+A mobile-friendly web app for tracking attendance of **sewadars (volunteers)** across **41 satsang centres** in Haryana, UP, and Delhi. Each sewadar has a printed **barcode badge**. They scan it at their centre to mark attendance (IN/OUT).
 
-### 1.2 Key Features
+The system automatically:
+- Records when someone arrives (IN) and leaves (OUT) — like a punch clock
+- Detects who scanned at a **different centre** than their home (shown as "Guest")
+- Shows real-time dashboards for centre admins
+- Generates reports for ASO (Area Superintendent)
 
-| Feature | Description |
-|---------|-------------|
-| **Barcode Scanning** | Sewadar scans badge → System records attendance |
-| **Session Ladder** | IN → OUT → IN → OUT (no orphan records) |
-| **Auto Duty Detection** | Sunday/Wednesday = SATSCAN, Other days = DAILY |
-| **Smart OUT Detection** | Detects forgotten OUT scans (>12 hours = prompt) |
-| **Manual Entry** | Fallback for offline/unable to scan |
-| **Gate Entry** | Bulk attendance with overlap validation |
-| **Centre Hierarchy** | 18 parent centres + 24 satsang points |
-| **Movement Rules** | Sewadar can work within their centre + sub-centres |
+### 1.2 Quick Start
 
-### 1.3 The Big Picture
+**For Centre Admins / Users:**
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      SATSANG POINTS                              │
-│                                                                  │
-│   ┌──────────────┐        ┌──────────────┐                      │
-│   │   GURGAON    │        │  SECTOR-15-A │                      │
-│   │   (Parent)   │        │   (Parent)   │                      │
-│   └──────┬───────┘        └──────┬───────┘                      │
-│          │                       │                               │
-│    ┌─────┼─────┐          ┌─────┼─────┐                         │
-│    │     │     │          │     │     │                          │
-│    ▼     ▼     ▼          ▼     ▼     ▼                          │
-│  KASAN  PATAUDI  BADHA    DHATIR  GREATER  (Satsang Points)     │
-│  BILASPUR  BUDHERA  ...   FARIDABAD                            │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. **Login** — Open the app URL, enter your email and password
+2. **Scan** — Tap the **Scan** tab, point camera at a sewadar's barcode badge. The scanner will show IN or OUT based on their current status
+3. **Manual Entry** — If barcode doesn't scan, tap the search icon in Scanner to find a sewadar by name/badge number
+4. **Gate Entry** — Tap **Entry** tab to mark multiple sewadars at once (useful at gate during satsang)
+5. **Records** — Tap **Records** tab to see attendance. Use filters (date range, centre, duty type) to narrow down. Switch between Card and Table view
+6. **Dashboard** — See live stats: total eligible sewadars, present count, currently inside, centre-wise breakdown
+7. **Jatha Records** — Use the Jatha tab in Records page to see sewadars assigned to outstation duty
 
----
+**Important Notes:**
+- You can only scan sewadars from your own centre + sub-centres (except special departments like ADMINISTRATION, PATHI, OFFICE — they can scan anywhere)
+- Records from **previous months** cannot be deleted (only Super Admin can)
+- If someone forgot to mark OUT, the scanner will detect it after 12 hours and prompt you
+- When a sewadar from another centre is scanned, a purple **"Guest from X"** tag appears
 
-## 2. Completed Features
+### 1.3 User Roles & What You Can Do
 
-### ✅ Phase 1: Project Setup
-- [x] Vite + React project initialized
-- [x] HTTPS configured with self-signed certificates (for camera access on mobile)
-- [x] Supabase client configured
-- [x] Auth context with login/logout
-
-### ✅ Phase 2: Scanner Page
-- [x] Barcode scanning with camera
-- [x] IN/OUT logic with session validation
-- [x] Prevent duplicate IN (check for OPEN sessions)
-- [x] Prevent orphan records (OUT requires matching IN)
-- [x] Forgot OUT detection (>12 hours)
-- [x] Manual entry fallback
-- [x] Scanner operator tracking
-- [x] Real-time updates via Supabase Realtime
-
-### ✅ Phase 3: Records Page
-- [x] Session-based card display
-- [x] Duration calculation
-- [x] Entry type badges (Scanner/Manual/Gate)
-- [x] Date range filtering
-- [x] Duty type filtering
-- [x] Search by badge/name
-- [x] Export functionality
-
-### ✅ Phase 4: Profile Page
-- [x] User info display
-- [x] Sign out functionality
-- [x] Centre restriction notice for SC_SP_USER
-
-### ✅ Phase 5: Gate Entry Page
-- [x] Sewadar search and selection
-- [x] Multiple attendance entries per submission
-- [x] IN/OUT date and time fields
-- [x] **Form overlap validation** (entries can't overlap each other)
-- [x] **Database overlap validation** (entries can't overlap existing sessions)
-- [x] **OPEN session detection** (warns if person is already inside)
-- [x] Duty type auto-detection (DAILY vs NIGHT)
-- [x] Refresh button to re-fetch existing sessions
-- [x] Visual feedback (badges, warnings, success states)
+| Role | Can Scan | Can Add Entries | Can Delete | Can See All Centres | Can Manage Users |
+|------|----------|----------------|------------|-------------------|-----------------|
+| SUPER ADMIN | ✓ | ✓ | ✓ (any record) | ✓ | ✓ |
+| ASO | Read-only | ✗ | ✗ | ✓ | ✗ |
+| Admin / Centre User | ✓ | ✓ | ✓ (current month only, own centre) | Own centre + children | ✗ |
+| SC/SP User | ✓ | ✗ | ✗ | Own centre + children | ✗ |
 
 ---
 
-## 3. Data Model
+## 2. Developer Setup
 
-### 3.1 CENTRES Table
+### 2.1 Prerequisites
 
-**Purpose:** Stores all 42 centres (18 parents + 24 satsang points)
+- Node.js 18+
+- A Supabase project (free tier works)
+- Git
 
-| Field | Type | Description |
-|-------|------|-------------|
-| id | BIGSERIAL | Primary key |
-| name | TEXT | Centre/Satsang Point name (UNIQUE) |
-| parent_centre | TEXT | FK to parent centre (NULL for parents) |
-| is_active | BOOLEAN | Whether active |
-| created_at | TIMESTAMPTZ | Creation timestamp |
+### 2.2 Installation
+
+```bash
+git clone <repo-url>
+cd sewadar-attendance
+npm install
+```
+
+### 2.3 Environment Variables
+
+Create a `.env` file:
+
+```
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+```
+
+Both values are in your Supabase Dashboard → **Project Settings → API**.
+
+### 2.4 Database Setup
+
+Run these SQL files in **Supabase SQL Editor** in order:
+
+1. `sql/rls_policies_all.sql` — Creates all tables' RLS policies + all helper functions. This is the **canonical RLS file** — source of truth for all security policies
+2. `supabase/setup_user_auth.sql` — Sets up auth users (if starting fresh)
+
+### 2.5 Running Locally
+
+```bash
+npm run dev
+```
+
+The app runs at `https://localhost:5173` (requires HTTPS for camera access).
+
+### 2.6 Building for Production
+
+```bash
+npm run build   # Outputs to /dist/
+npm run preview # Preview the build locally
+```
+
+### 2.7 Deploying to Vercel
+
+The `vercel.json` config is already set up. Connect your repo to Vercel:
+- Framework: Vite
+- Build command: `npm run build`
+- Output directory: `dist`
+- Add environment variables `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`
 
 ---
 
-### 3.2 SPECIAL_DEPARTMENTS Table
-
-**Purpose:** Departments that can work anywhere
-
-| Department |
-|------------|
-| ADMINISTRATION |
-| PATHI |
-| SATSANG KARTA |
-| BAAL SATSANG KARTA |
-| OFFICE |
-| AREA SECRETARY OFFICE |
-| MAINTENANCE |
-
----
-
-### 3.3 SEWADARS Table
-
-**Purpose:** Master data of all sewadars
-
-| Field | Type | Notes |
-|-------|------|-------|
-| id | BIGSERIAL | Primary key |
-| badge_number | TEXT | UNIQUE - e.g., FB5988LA0017 |
-| sewadar_name | TEXT | e.g., OMBATI |
-| father_husband_name | TEXT | e.g., VED PRAKASH |
-| gender | TEXT | Male / Female |
-| badge_status | TEXT | OPEN / PERMANENT |
-| centre | TEXT | Centre OR Satsang Point name |
-| department | TEXT | e.g., SECURITY |
-| is_initiated | BOOLEAN | TRUE / FALSE |
-| age | INTEGER | e.g., 61 |
-| print_status | TEXT | Informational only |
-| form_status | TEXT | Informational only |
-| created_at | TIMESTAMPTZ | Auto |
-
----
-
-### 3.4 ATTENDANCE_SESSIONS Table
-
-**Purpose:** One row = One complete IN→OUT session
-
-| Field | Type | Notes |
-|-------|------|-------|
-| id | BIGSERIAL | Primary key |
-| badge_number | TEXT | FK to sewadars |
-| sewadar_name | TEXT | Denormalized |
-| centre | TEXT | Where attendance marked |
-| duty_type | TEXT | SATSCAN / DAILY / NIGHT / JATHA |
-| status | TEXT | OPEN / CLOSED |
-| in_date | DATE | |
-| in_time | TIME | |
-| in_scanner_badge | TEXT | Scanner operator's badge (IN) |
-| in_scanner_name | TEXT | Scanner operator's name (IN) |
-| in_scanner_centre | TEXT | Scanner operator's centre (IN) |
-| out_date | DATE | NULL until closed |
-| out_time | TIME | NULL until closed |
-| out_scanner_badge | TEXT | Scanner operator's badge (OUT) |
-| out_scanner_name | TEXT | Scanner operator's name (OUT) |
-| out_scanner_centre | TEXT | Scanner operator's centre (OUT) |
-| is_manual | BOOLEAN | TRUE for manual entry |
-| is_gate_entry | BOOLEAN | TRUE for gate entry |
-| entered_by_badge | TEXT | Who entered manually |
-| entered_by_name | TEXT | |
-| created_at | TIMESTAMPTZ | |
-| updated_at | TIMESTAMPTZ | |
-
----
-
-### 3.5 USERS Table
-
-**Purpose:** App login users
-
-| Field | Type | Notes |
-|-------|------|-------|
-| id | BIGSERIAL | Primary key |
-| auth_id | UUID | Supabase Auth reference |
-| email | TEXT | UNIQUE - login email |
-| name | TEXT | Full name |
-| badge_number | TEXT | Their sewadar badge |
-| role | TEXT | aso / centre_user / sc_sp_user |
-| centre | TEXT | Their assigned centre |
-| is_active | BOOLEAN | |
-| created_at | TIMESTAMPTZ | |
-
----
-
-### 3.6 LOGS Table
-
-**Purpose:** Audit trail
-
-| Field | Type | Notes |
-|-------|------|-------|
-| id | BIGSERIAL | Primary key |
-| user_badge | TEXT | Who performed action |
-| action | TEXT | e.g., SCAN_IN, SCAN_OUT |
-| details | TEXT | Details of the action |
-| timestamp | TIMESTAMPTZ | |
-
----
-
-## 4. Attendance Logic
-
-### 4.1 Session Ladder Rules
-
-```
-Rule 1: Every OUT requires a matching IN
-Rule 2: Sessions alternate IN → OUT → IN → OUT
-Rule 3: Multiple sessions allowed per day
-Rule 4: Cross-day sessions = Night Duty
-```
-
-### 4.2 Scanner Flow
-
-```
-ON BADGE SCAN:
-│
-├─ 1. LOOKUP BADGE
-│     → Find sewadar by badge_number
-│     → If not found → "Badge Not Registered"
-│
-├─ 2. CHECK OPEN SESSIONS
-│     → Find sessions where badge = X AND status = 'OPEN'
-│     → Order by in_time DESC
-│
-├─ 3. DETERMINE ACTION
-│     │
-│     ├─ NO OPEN SESSION
-│     │   → Show popup with sewadar info
-│     │   → Show GREEN "IN" button
-│     │   → Create session: status='OPEN'
-│     │
-│     └─ OPEN SESSION EXISTS
-│         │
-│         ├─ IN was TODAY
-│         │   → Show RED "OUT" button
-│         │   → Close session with current time
-│         │
-│         └─ IN was BEFORE TODAY (>12 hours ago)
-│             → "Previous session still open"
-│             → Ask: "When did you leave?"
-│             → Close old session
-│             → Then show "IN" button
-│
-└─ 4. RECORD SCANNER
-      → Log scanner's badge as in_scanner_badge / out_scanner_badge
-```
-
-### 4.3 Smart OUT Detection (The "Forgot to Scan" Problem)
-
-**Scenario:** Sewadar forgets to scan OUT on Wednesday. They come back Sunday and scan.
-
-**With Smart Detection (>12 hours rule):**
-```
-1. Sewadar scans badge on Sunday
-2. System finds OPEN session from Wednesday (3+ days old)
-3. System calculates: hours_since_in > 12
-4. System shows: "Previous session still open"
-5. System asks: "When did you leave?"
-6. Sewadar enters: Saturday 6:00 PM
-7. System closes Wednesday session with Saturday 6:00 PM
-8. System shows: "Session Closed. Now you can start new session"
-9. System shows IN button for new session
-```
-
-### 4.4 Duty Type Auto-Detection
-
-| Day | Number | Duty Type | Input Method |
-|-----|--------|-----------|--------------|
-| Sunday | 0 | SATSCAN | Scanner |
-| Monday | 1 | DAILY | Manual |
-| Tuesday | 2 | DAILY | Manual |
-| Wednesday | 3 | SATSCAN | Scanner |
-| Thursday | 4 | DAILY | Manual |
-| Friday | 5 | DAILY | Manual |
-| Saturday | 6 | DAILY | Manual |
-
-### 4.5 Gate Entry Validation Rules
-
-```
-GATE ENTRY OVERLAP RULES:
-
-1. Form Overlaps
-   - Multiple entries in the same form cannot overlap
-   - Each entry IN must be after previous OUT
-
-2. Database Overlaps (CLOSED sessions)
-   - New entry cannot overlap with any CLOSED session
-   - Check: newIN < existingOUT AND newOUT > existingIN
-
-3. Database Overlaps (OPEN sessions)
-   - New entry cannot overlap with OPEN session
-   - If existing session has no OUT, person is "inside since IN"
-   - Any entry ending after they entered = conflict
-
-4. Entry Type Detection
-   - Same day IN/OUT = DAILY
-   - Different day IN/OUT = NIGHT
-```
-
----
-
-## 5. Centre Hierarchy
-
-### 5.1 Complete Centre List (42 entries)
-
-| Parent Centre | Satsang Points |
-|---------------|----------------|
-| ANKHEER | — |
-| BALLABGARH | MACHHGAR |
-| DLF CITY GURGAON | ABHEYPUR, NUH, PUNAHANA, SOHNA |
-| FIROZPUR JHIRKA | — |
-| TAORU | — |
-| GURGAON | BADHA SIKENDERPUR, BILASPUR, BUDHERA, DUNDAHERA, FARUKH NAGAR, JATAULA, KASAN, PATAUDI |
-| MOHANA | FATEHPUR BILLOCH |
-| ZAIBABAD KHERLI | — |
-| NANGLA GUJRAN | — |
-| NIT - 2 | — |
-| PALWAL | BAHIN, HASANPUR, HATHIN, MANDKOLA, NAYAGAON, SIHA |
-| BAROLI | — |
-| HODAL | — |
-| RAJENDRA PARK | — |
-| SECTOR-15-A | DHATIR, GREATER FARIDABAD |
-| PRITHLA | — |
-| SURAJ KUND | — |
-| TIGAON | NACHAULI |
-
-### 5.2 Movement Rules
-
-```
-Sewadar's Centre = GURGAON
-
-Can mark attendance at:
-├── GURGAON (their centre)
-├── BADHA SIKENDERPUR (child of GURGAON)
-├── BILASPUR (child of GURGAON)
-├── BUDHERA (child of GURGAON)
-├── DUNDAHERA (child of GURGAON)
-├── FARUKH NAGAR (child of GURGAON)
-├── JATAULA (child of GURGAON)
-├── KASAN (child of GURGAON)
-└── PATAUDI (child of GURGAON)
-
-CANNOT mark attendance at:
-├── SECTOR-15-A (different parent)
-├── ANKHEER (different parent)
-├── PALWAL (different parent)
-└── ...etc
-```
-
-**Exception:** Special departments can work ANYWHERE
-
----
-
-## 6. Database Schema
-
-### 6.1 Key Tables
-
-```sql
--- 4. ATTENDANCE SESSIONS
-CREATE TABLE attendance_sessions (
-  id BIGSERIAL PRIMARY KEY,
-  badge_number TEXT NOT NULL REFERENCES sewadars(badge_number),
-  sewadar_name TEXT NOT NULL,
-  centre TEXT NOT NULL,
-  duty_type TEXT NOT NULL CHECK (duty_type IN ('SATSCAN', 'DAILY', 'NIGHT', 'JATHA')),
-  status TEXT DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLOSED')),
-  in_date DATE NOT NULL,
-  in_time TIME NOT NULL,
-  in_scanner_badge TEXT,
-  in_scanner_name TEXT,
-  in_scanner_centre TEXT,
-  out_date DATE,
-  out_time TIME,
-  out_scanner_badge TEXT,
-  out_scanner_name TEXT,
-  out_scanner_centre TEXT,
-  is_manual BOOLEAN DEFAULT false,
-  is_gate_entry BOOLEAN DEFAULT false,
-  entered_by_badge TEXT,
-  entered_by_name TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Indexes
-CREATE INDEX idx_sessions_badge ON attendance_sessions(badge_number);
-CREATE INDEX idx_sessions_date ON attendance_sessions(in_date);
-CREATE INDEX idx_sessions_status ON attendance_sessions(status);
-CREATE INDEX idx_sessions_open ON attendance_sessions(badge_number, status) WHERE status = 'OPEN';
-
--- Realtime
-ALTER PUBLICATION supabase_realtime ADD TABLE attendance_sessions;
-```
-
-### 6.2 Row Level Security
-
-The canonical RLS policies are maintained in `sql/rls_policies_all.sql`.
-Run that file in the Supabase SQL Editor to recreate ALL policies.
-
-**Key design decisions:**
-
-| Role | Read | Write (Insert/Update/Delete) |
-|------|------|------------------------------|
-| `super_admin` | All data | Full access to all tables |
-| `aso` | All data (read-only) | No write access |
-| `admin` / `centre_user` | Own centre + children | Can modify data for own centre's sewadars |
-| `sc_sp_user` | Own centre + children | No write access to records |
-
-**Helper functions used by policies:**
-- `get_user_role()` — returns the current user's role from `users` table
-- `get_user_accessible_centres()` — returns own centre + children (recursive CTE), or ALL centres for `super_admin`/`aso`
-- `get_sewadar_centres(p_badge_numbers TEXT[])` — SECURITY DEFINER, returns `(badge_number, centre)` for given badges; bypasses RLS for cross-scan detection
-- `get_sewadar_by_badge(p_badge TEXT)` — SECURITY DEFINER, returns full sewadar record by badge; bypasses RLS so Scanner can look up out-of-centre sewadars
-- `search_sewadars_all(p_term TEXT)` — SECURITY DEFINER, searches sewadars by name/badge across ALL centres; bypasses RLS for Gate Entry "Allow other centres"
-
-**Delete access:**
-- `attendance_sessions`: `admin`/`centre_user` can delete sessions where `centre IN get_user_accessible_centres()`
-- `jatha_attendance`: `admin`/`centre_user` can delete records for sewadars from their accessible centres
-- Jatha master, centres, users, etc.: only `super_admin` can delete
-
----
-
-## 7. API Reference
-
-### 7.1 Get Open Session
-
-```sql
-CREATE OR REPLACE FUNCTION get_open_session(p_badge TEXT)
-RETURNS attendance_sessions AS $$
-  SELECT * FROM attendance_sessions
-  WHERE badge_number = p_badge AND status = 'OPEN'
-  ORDER BY in_time DESC
-  LIMIT 1;
-$$ LANGUAGE SQL SECURITY DEFINER;
-```
-
-### 7.2 Get Sewadar By Badge (RLS Bypass)
-
-```sql
-CREATE OR REPLACE FUNCTION public.get_sewadar_by_badge(p_badge TEXT)
-RETURNS SETOF public.sewadars
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = ''
-AS $$
-BEGIN
-  RETURN QUERY
-  SELECT * FROM public.sewadars s
-  WHERE s.badge_number = p_badge;
-END;
-$$;
-```
-
-Used by `ScannerPage.jsx` to look up any sewadar by badge, bypassing RLS so out-of-centre special department sewadars can be scanned.
-
-### 7.3 Search Sewadars All Centres (RLS Bypass)
-
-```sql
-CREATE OR REPLACE FUNCTION public.search_sewadars_all(p_term TEXT)
-RETURNS SETOF public.sewadars
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = ''
-AS $$
-BEGIN
-  RETURN QUERY
-  SELECT * FROM public.sewadars s
-  WHERE s.badge_number ILIKE '%' || p_term || '%'
-     OR s.sewadar_name ILIKE '%' || p_term || '%'
-  LIMIT 20;
-END;
-$$;
-```
-
-Used by `AttendanceEntryPage.jsx` Gate Entry form when "Allow other centres" checkbox is checked. Also used by `ScannerPage.jsx` manual entry for non-SC_SP_USER roles.
-
-### 7.4 Get Valid Centres for User
-
-```sql
-CREATE OR REPLACE FUNCTION get_user_centres(p_user_centre TEXT)
-RETURNS TABLE(name TEXT) AS $$
-  WITH user_info AS (
-    SELECT name, parent_centre FROM centres WHERE name = p_user_centre
-  )
-  SELECT DISTINCT c.name FROM centres c
-  WHERE 
-    c.name = p_user_centre
-    OR c.parent_centre = p_user_centre
-    OR (SELECT parent_centre FROM user_info) IS NOT NULL 
-       AND c.name = (SELECT parent_centre FROM user_info)
-    OR (SELECT parent_centre FROM user_info) IS NOT NULL 
-       AND c.parent_centre = (SELECT parent_centre FROM user_info)
-$$ LANGUAGE SQL SECURITY DEFINER;
-```
-
----
-
-## 8. App Structure
+## 3. Architecture
+
+### 3.1 Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend Framework | React 18 |
+| Build Tool | Vite 5 |
+| Routing | react-router-dom 6 |
+| Icons | lucide-react |
+| Backend | Supabase (PostgreSQL + Auth + REST API) |
+| Barcode Scanner | `@undecaf/barcode-detector-polyfill` (shape-based detection, no network needed) |
+| Hosting | Vercel (or any static host) |
+
+### 3.2 Frontend Structure
 
 ```
 src/
-├── main.jsx
-├── App.jsx                      # Router + Layout + Bottom Nav
-├── index.css                    # All styles (theme, components)
+├── main.jsx                          # Entry point, renders App
+├── App.jsx                           # Router, auth gate, bottom navigation
+├── index.css                         # All styles (~2230 lines, organized by component)
 │
 ├── context/
-│   └── AuthContext.jsx          # Auth state (login, logout, profile)
+│   └── AuthContext.jsx               # Auth state (login, logout, profile, permissions)
 │
 ├── lib/
-│   └── supabase.js              # Client + constants + helpers
+│   ├── supabase.js                   # Supabase client, ROLES constants, helpers (formatDate, getLocalDate, etc.)
+│   └── logger.js                     # Audit logging (INSERT into logs table)
 │
 ├── components/
+│   ├── Toast.jsx                     # Toast notification system
 │   └── scanner/
-│       └── BarcodeScanner.jsx   # Camera barcode scanning
+│       └── BarcodeScanner.jsx        # Camera + barcode detection engine
 │
 └── pages/
-    ├── LoginPage.jsx            # Login with credentials
-    ├── ScannerPage.jsx          # Main scanner + manual entry
-    ├── RecordsPage.jsx          # View session records
-    ├── ProfilePage.jsx          # User profile + sign out
-    └── GateEntryPage.jsx        # Bulk attendance entry
+    ├── LoginPage.jsx                 # Email/password login
+    ├── ScannerPage.jsx               # Main scanner: barcode scan + manual entry + forgot-Out
+    ├── RecordsPage.jsx               # Attendance records: gate + jatha, filters, card/table view
+    ├── DashboardPage.jsx             # Live stats: eligible count, present, centre tree, gender split
+    ├── ProfilePage.jsx               # User profile, logout
+    ├── AttendanceEntryPage.jsx       # Gate Entry (bulk) + Jatha Entry (outstation duty)
+    ├── ReportsPage.jsx               # Export reports, attendance summaries
+    └── SuperAdminPage.jsx            # Super Admin: manage centres, users, jatha_master, special departments
 ```
 
-### 8.1 Navigation
+### 3.3 Route Map
 
-Bottom navigation with 4 tabs:
-1. **Scanner** - Barcode scanning + manual entry
-2. **Records** - View attendance records
-3. **Gate Entry** - Bulk attendance
-4. **Profile** - User info + logout
+| URL | Page | Navigation |
+|-----|------|-----------|
+| `/` | Dashboard | Bottom nav tab |
+| `/scan` | Scanner | Bottom nav tab |
+| `/records` | Records | Bottom nav tab |
+| `/entry` | Attendance Entry | Bottom nav tab |
+| `/profile` | Profile | Bottom nav tab |
+| `/reports` | Reports | Header nav or Profile dropdown |
+| `/superadmin` | Super Admin | Profile dropdown (super_admin only) |
+| `/login` | Login | Redirect when not authenticated |
+| `*` | Redirect to / | Fallback |
+
+### 3.4 How a Scan Works (Data Flow)
+
+```
+1. User opens Scanner page -> camera activates
+2. Camera detects barcode -> extracts badge_number
+3. Frontend calls supabase.rpc('get_sewadar_by_badge', { p_badge })
+   -> Returns sewadar record (bypasses RLS via SECURITY DEFINER)
+4. Frontend checks isInScope():
+   - Is sewadar's centre in user's accessible centres?
+   - OR is sewadar's department a special department (ADMINISTRATION, PATHI, etc.)?
+5. If out of scope -> show "Not in Scope" error
+6. Geofencing check (for non-ASO users): is user within their centre's geo-radius?
+7. If geofence violated -> show warning but allow override
+8. Frontend calls supabase.rpc('get_open_session', { p_badge })
+   -> If OPEN session exists -> show OUT button
+   -> If no OPEN session -> show IN button
+   -> If OPEN session is >12 hours old -> show FORGOT OUT prompt
+9. User taps IN/OUT/Forgot Out
+10. For IN: INSERT new attendance_session row
+11. For OUT: supabase.rpc('close_session', ...) updates the row
+12. Realtime subscription refreshes Records/Dashboard
+```
 
 ---
 
-## 9. User Roles
+## 4. Database
 
-### 9.1 Role Definitions
+### 4.1 Tables
 
-| Role | Code | Description |
-|------|------|-------------|
-| Area Secretary | `aso` | Super Admin - full access |
-| Centre User | `centre_user` | Centre-level admin |
-| Scanner | `sc_sp_user` | Scanner operator |
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `centres` | All 41 satsang centres | `name`, `parent_centre`, `latitude`, `longitude`, `geo_radius`, `geo_enabled` |
+| `sewadars` | All registered volunteers (~14,000) | `badge_number` (PK), `sewadar_name`, `centre`, `department`, `badge_status` (PERMANENT/OPEN/ELDERLY), `gender` |
+| `attendance_sessions` | Every IN/OUT scan record | `badge_number`, `status` (OPEN/CLOSED), `in_date`, `in_time`, `out_date`, `out_time`, `centre`, `duty_type`, `is_manual`, `is_gate_entry` |
+| `users` | App login accounts | `email`, `role`, `centre`, `permissions` (JSON), `badge_number`, `name` |
+| `jatha_master` | Outstation duty templates | `jatha_type` (beas/major_centre/jatha_home), `centre_name`, `department` |
+| `jatha_attendance` | Sewadars assigned to jathas | `badge_number`, `jatha_id`, `from_date`, `to_date` |
+| `special_departments` | Depts allowed to scan at any centre | `name` (ADMINISTRATION, PATHI, OFFICE, etc.) |
+| `logs` | Audit trail for important actions | `action`, `details` (JSON), `created_at` |
+| `role_masters` | Role configuration | `role_name`, `permissions` (JSON) |
 
-### 9.2 Permissions Matrix
+### 4.2 Centre Hierarchy
 
-| Action | ASO | Centre User | Scanner |
-|--------|-----|------------|---------|
-| Scan badges | ✅ | ✅ | ✅ |
-| View own centre records | ✅ | ✅ | ✅ |
-| View all records | ✅ | ✅ | ❌ |
-| Mark manual attendance | ✅ | ✅ | ❌ |
-| Gate entry | ✅ | ✅ | ❌ |
-| Edit attendance | ✅ | ✅ | ❌ |
-| Manage sewadars | ✅ | ❌ | ❌ |
-| Manage users | ✅ | ❌ | ❌ |
-| Manage centres | ✅ | ❌ | ❌ |
-| View logs | ✅ | ❌ | ❌ |
+Centres are organized in a **parent-child tree**:
+- **18 parent centres** (e.g., SECTOR-15-A, SURAJ KUND, ANKHEER)
+- **24 sub-centres / satsang points** (each has a `parent_centre` pointing to a parent)
 
----
+A user assigned to a parent centre can see data for that centre AND all its children.
+A user assigned to a sub-centre can only see their own centre.
 
-## 10. Bug Report
+### 4.3 Row Level Security (RLS)
 
-> **Scan Date:** April 16, 2026  
-> **Analyst:** Deep Code Analysis
+**Key Design Principle:** Every table has RLS enabled. Policies use **helper functions** to determine access. The canonical RLS file is `sql/rls_policies_all.sql`.
 
-### Summary
+**Helper Functions:**
 
-| Category | Critical | High | Medium | Low | Total |
-|----------|----------|------|--------|-----|-------|
-| Logic Bugs | 0 | 3 | 1 | 0 | 4 |
-| State Management | 0 | 2 | 2 | 1 | 5 |
-| UI Bugs | 0 | 0 | 2 | 3 | 5 |
-| Security Bugs | 1 | 2 | 2 | 0 | 5 |
-| Data Integrity | 0 | 3 | 4 | 0 | 7 |
-| Error Handling | 1 | 3 | 1 | 0 | 5 |
-| Mobile/Responsive | 0 | 2 | 3 | 2 | 7 |
-| **TOTAL** | **1** | **15** | **15** | **6** | **37** |
+| Function | Type | Purpose |
+|----------|------|---------|
+| `get_user_role()` | SECURITY DEFINER | Returns the current user's role from `users` table |
+| `get_user_accessible_centres()` | SECURITY DEFINER | Returns own centre + children via recursive CTE. For super_admin/aso -> returns ALL centres |
+| `get_sewadar_centres(p_badge_numbers TEXT[])` | SECURITY DEFINER | Returns (badge_number, centre) for given badges -- bypasses RLS for cross-scan detection |
+| `get_sewadar_details(p_badge_numbers TEXT[])` | SECURITY DEFINER | Returns (badge_number, centre, department) -- used by Records page to show department/centre |
+| `get_sewadar_by_badge(p_badge TEXT)` | SECURITY DEFINER | Returns full sewadar record by badge -- bypasses RLS so Scanner can look up ANY sewadar |
+| `search_sewadars_all(p_term TEXT)` | SECURITY DEFINER | Searches ALL sewadars by name/badge -- bypasses RLS for Gate Entry "Allow other centres" |
+| `get_open_session(p_badge TEXT)` | SECURITY DEFINER | Returns the current OPEN session for a badge -- bypasses RLS so any centre can check |
 
----
+**Why SECURITY DEFINER?**
+Normal RLS policies restrict what rows a user can SELECT/INSERT/UPDATE/DELETE. But sometimes the app needs to read data OUTSIDE the user's scope (e.g., a Centre Admin needs to detect that a sewadar from another centre scanned at their centre). SECURITY DEFINER functions run with the **privileges of the function owner** (super_admin), bypassing the caller's RLS restrictions.
 
-### 10.1 CRITICAL Bugs
+**Policy Summary:**
 
-#### C1: Hardcoded Test Credentials in Production
-**File:** `LoginPage.jsx`
-**Issue:** Test credentials visible in production build
-```javascript
-<div>Email: <span>admin@sewadar.app</span></div>
-<div>Pass: <span>Admin@123</span>
-```
-**Fix:** Remove from production or use environment-based rendering
+| Table | Action | Who Can |
+|-------|--------|---------|
+| `sewadars` | SELECT | Own centre + children |
+| `sewadars` | INSERT/UPDATE/DELETE | super_admin OR admin/centre_user for their centre |
+| `attendance_sessions` | SELECT | Sessions at own centre + children OR sessions of sewadars from own centre/children |
+| `attendance_sessions` | INSERT | All auth users (with centre in accessible centres) |
+| `attendance_sessions` | UPDATE/DELETE | super_admin OR admin/centre_user for their centre |
+| `jatha_master` | SELECT | All authenticated users |
+| `jatha_master` | INSERT/UPDATE/DELETE | super_admin only |
+| `jatha_attendance` | SELECT | Records where sewadar's centre is in accessible centres |
+| `jatha_attendance` | INSERT/UPDATE/DELETE | super_admin OR admin/centre_user for their sewadars |
+| `centres` | SELECT | All auth users |
+| `centres` | INSERT/UPDATE/DELETE | super_admin only |
+| `users` | SELECT | All auth users |
+| `users` | INSERT/UPDATE/DELETE | super_admin only |
+| `logs` | SELECT | super_admin and aso only |
+| `logs` | INSERT | All auth users |
 
----
+### 4.4 Badge Status Values
 
-### 10.2 HIGH Priority Bugs
+| Status | Meaning | Counts in Dashboard Eligible Total? |
+|--------|---------|-------------------------------------|
+| PERMANENT | Regular permanent sewadar | Yes |
+| OPEN | Open/temporary sewadar | Yes |
+| ELDERLY | Elderly sewadar (can still scan) | No -- excluded from eligible count |
 
-#### H1: Time Format Parsing Bug
-**File:** `ScannerPage.jsx`
-**Issue:** `toLocaleTimeString('en-IN', { hour12: true })` produces "02:30 PM" but storage expects "14:30"
-```javascript
-const currentTime = today.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
-```
-**Fix:** Use 24-hour format for storage, convert to 12-hour for display only
+### 4.5 Gender Values
 
-#### H2: Forgot OUT Creates Orphan Session
-**File:** `ScannerPage.jsx`
-**Issue:** After closing "forgot OUT" session, creates new OPEN session
-```javascript
-if (forgotDate) {
-  await supabase.from('attendance_sessions').update(updateData).eq('id', popupState.openSession.id)
-  await supabase.from('attendance_sessions').insert({
-    status: SESSION_STATUS.OPEN, // Creates potentially orphan record
-  })
-}
-```
-**Fix:** Either don't auto-create new session, or auto-close at midnight
-
-#### H3: Duplicate IN Prevention Not Atomic
-**File:** `ScannerPage.jsx`
-**Issue:** Check-then-insert is not atomic. Two rapid scans could create duplicates
-```javascript
-if (manualOpenSession) {
-  setManualHasSession(true)
-  return
-}
-// ... insert happens AFTER check
-```
-**Fix:** Add unique constraint at DB level or use upsert with conflict resolution
-
-#### H4: Missing useEffect Dependency - Race Condition
-**File:** `ScannerPage.jsx`
-**Issue:** `handleScan` uses `popupState` but doesn't include it in dependencies
-```javascript
-const handleScan = useCallback(async (badge) => {
-  // Uses popupState but not in dependencies
-}, [isOnline, profile]) // Missing: popupState
-```
-**Fix:** Add `popupState` to dependency array or use ref
-
-#### H5: Stale Closure in AuthContext
-**File:** `AuthContext.jsx`
-**Issue:** If `fetchProfile` called multiple times quickly, stale data possible
-```javascript
-async function fetchProfile(userId) {
-  const { data } = await supabase.from('users').select('*').eq('auth_id', userId).single()
-  setProfile(data) // Race condition possible
-}
-```
-**Fix:** Add abort controller or use latest user ID ref
+Both formats accepted for CSV import: `Male`/`Female` (app standard) and `MALE`/`FEMALE` (CSV import).
 
 ---
 
-### 10.3 MEDIUM Priority Bugs
+## 5. Attendance Logic
 
-#### M1: RecordsPage - useEffect Missing Dependencies
-**File:** `RecordsPage.jsx`
-**Issue:** `fetchRecords` references `searchTerm` not in dependencies
-```javascript
-useEffect(() => { fetchRecords() }, [dateFrom, dateTo, dutyFilter])
-// fetchRecords uses searchTerm but it's not a dependency
-```
-**Fix:** Add searchTerm to dependency array or use useCallback
+### 5.1 Session Ladder (IN -> OUT -> IN)
 
-#### M2: Missing Cleanup - Realtime Subscription
-**File:** `ScannerPage.jsx`
-**Issue:** If `fetchRecentScans` changes reference, subscription uses stale function
-```javascript
-useEffect(() => {
-  const channel = supabase.channel('scanner-scans')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance_sessions' }, fetchRecentScans)
-    .subscribe()
-}, [profile?.centre])
-```
-**Fix:** Use useCallback for fetchRecentScans with proper dependencies
+Each sewadar's attendance follows: IN (OPEN) -> OUT (CLOSED) -> IN (OPEN) -> OUT (CLOSED)
 
-#### M3: SQL Injection via .or() Filter
-**File:** `ScannerPage.jsx`, `GateEntryPage.jsx`
-**Issue:** Template literals with user input in Supabase .or() filter
-```javascript
-.or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
-```
-**Fix:** Sanitize input or use parameterized queries properly
+Rule: If sewadar has **no OPEN session** -> show IN button. If they **have an OPEN session** -> show OUT button. This prevents orphan sessions.
 
-#### M4: No Authorization on RPC
-**File:** `ScannerPage.jsx`
-**Issue:** Any authenticated user can query any badge's open session
-```javascript
-const { data } = await supabase.rpc('get_open_session', { p_badge: badge })
-```
-**Fix:** Ensure RLS policies on RPC or add application-level authorization
+### 5.2 Cross-Scan Detection (Guests)
 
-#### M5: Orphan Records - No Transaction Safety
-**File:** `GateEntryPage.jsx`
-**Issue:** If submission partially fails, records could be left inconsistent
-```javascript
-const { error: insertError } = await supabase.from('attendance_sessions').insert(records)
-```
-**Fix:** Use Supabase transaction or check inserted data before showing success
+When a sewadar scans at a different centre than their home:
+1. Session stored with the **scan centre**
+2. After fetching, system looks up home centre via `get_sewadar_details` RPC
+3. If home centre != scan centre: tag as `is_cross_scan`, show "From X at Y" with purple Guest badge
 
-#### M6: Gate Entry - Overlap Detection Incomplete
-**File:** `GateEntryPage.jsx`
-**Issue:** Doesn't prevent overlaps with sessions created in forgot_out flow
-**Fix:** Cross-page session validation or unified session management
+### 5.3 Forgot-Out Detection
+
+If an OPEN session is **>12 hours old**, scanner shows a "Forgot Out" prompt. The user can enter the actual departure time.
+
+### 5.4 Gate Entry (Bulk Attendance)
+
+Search -> select -> set times -> validate (OUT >= IN, same-date OUT > IN) -> submit batch.
+
+"Allow other centres" checkbox uses `search_sewadars_all` RPC to bypass centre restriction.
+
+### 5.5 Jatha Entry (Outstation Duty)
+
+Select destination -> add sewadars -> set date range -> validate (max 10 days, no overlaps) -> submit.
+
+### 5.6 Duty Types
+
+SATSCAN (Sun/Wed), DAILY (other days), NIGHT, WATCH_AND_WARD, JATHA.
+
+Auto-detected: `isSatsangDay()` -> SATSCAN, otherwise DAILY.
+
+### 5.7 Session Duration
+
+Calculated as OUT datetime - IN datetime. If negative -> shows "Invalid" in red.
 
 ---
 
-### 10.4 LOW Priority Bugs
+## 6. Security Model
 
-#### L1: GateEntryPage - State Mutation Risk
-**File:** `GateEntryPage.jsx`
-**Issue:** Uses stale `validationErrors` in setter
-```javascript
-setValidationErrors({ ...validationErrors, [id]: entryErrors })
-```
-**Fix:** Use functional update: `setValidationErrors(prev => ({...prev, [id]: entryErrors}))`
+### 6.1 How RLS + SECURITY DEFINER Work Together
 
-#### L2: RecordsPage Search Triggers on Every Keystroke
-**File:** `RecordsPage.jsx`
-**Issue:** Fetches on every keystroke - excessive API calls
-```javascript
-onChange={e => { setSearchTerm(e.target.value); fetchRecords() }}
-```
-**Fix:** Debounce search
+**Layer 1: RLS** -- Applied to every query. Restricts rows based on role + centre.
 
-#### L3: Camera Permission - No Retry Option
-**File:** `BarcodeScanner.jsx`
-**Issue:** If user denies permission, no way to retry
-```javascript
-setErrorMsg(err.name === 'NotAllowedError' ? 'Camera permission denied...' : ...)
-```
-**Fix:** Add link to camera settings
+**Layer 2: SECURITY DEFINER Functions** -- Narrow escape hatches for specific operations (lookup, search, session management). Run as function owner (super_admin).
 
-#### L4: Empty Session Card - No Data Validation
-**File:** `RecordsPage.jsx`
-**Issue:** If session has null values, card displays empty/undefined
-**Fix:** Add nullish coalescing: `{session.badge_number || 'Unknown'}`
+### 6.2 Permission System
+
+Each user has a `permissions` JSON column. Super admin bypasses all checks.
 
 ---
 
-## 11. Known Issues
+## 7. User Roles
 
-1. **Time Display** - All times stored in 24-hour format, displayed in 12-hour format
-2. **No Offline Mode** - Requires internet connection (offline queue not implemented)
-3. **No Photo Capture** - Can't attach photo to manual entries
-4. **No Batch Operations** - Can't delete multiple records at once
-5. **Session Timeout** - No session timeout handling (requires page refresh)
+| Role | Level | Description |
+|------|-------|-------------|
+| super_admin | System-wide | Full access. Manage users, centres, delete any record |
+| aso | Read-only | View all data, no modifications |
+| admin | Centre-level | Full centre ops. Delete current-month records only |
+| centre_user | Centre-level | Same as admin |
+| sc_sp_user | Centre-level | Scan + view only. No add/delete |
 
 ---
 
-## 12. Test Users
+## 8. Troubleshooting
+
+### 8.1 Common Errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| "No rows returned" scanning | Badge not found or RLS blocking | Run sql/rls_policies_all.sql to deploy helper functions |
+| "Cannot delete previous month" | Record from prior month, user not super_admin | Only super_admin can delete old records |
+| Duration "Invalid" | OUT before IN on same date | Fix the data entry |
+| "Allow other centres" no results | search_sewadars_all RPC not deployed | Run sql/rls_policies_all.sql |
+| Gate Entry validation fails | OUT <= IN on same date | Correct the times |
+
+### 8.2 Known Issues
+
+1. **Offline mode**: No scan queueing. Internet required.
+2. **No photo capture**: Sewadar photos not implemented.
+3. **No batch operations**: Cannot delete/export multiple records at once.
+4. **No session timeout**: No auto-logout after inactivity.
+
+### 8.3 CSS Notes
+
+All styles in `src/index.css` (~2230 lines). Organized by component section with comment headers. Dead NR module styles (`.nr-*`, `.jathedar-*`, `.schedule-card`, `.role-*`) were removed in cleanup.
+
+---
+
+## 9. Test Users
 
 | Email | Password | Role | Centre |
 |-------|----------|------|--------|
-| admin@sewadar.app | Admin@123 | ASO | SECTOR-15-A |
+| admin@sewadar.app | Admin@123 | SUPER ADMIN | All centres |
+| meena.sehgalsk@sewadar.app | Centre@123 | CENTRE_USER | SURAJ KUND |
+| sachin.ahujasa@sewadar.app | Centre@123 | CENTRE_USER | SECTOR-15-A |
 
 ---
 
-## Appendix: CSS Classes Reference
+## Appendix: Recent Changes
 
-### Entry Type Badges
-```css
-.scanner-badge { background: var(--excel-green); color: white; }
-.manual-badge { background: #f97316; color: white; }
-.gate-badge { background: #8b5cf6; color: white; }
-```
-
-### Validation States
-```css
-.entry-error { border: 2px solid var(--red); }
-.overlap-warning { background: #fee2e2; border-left: 3px solid var(--red); }
-.db-overlap-warning { background: #fef3c7; border-left: 3px solid #f59e0b; }
-.entry-preview.success { background: #dcfce7; border-left: 3px solid var(--excel-green); }
-```
-
----
-
-**Document Version:** 2.1  
-**Last Updated:** April 16, 2026  
-**Status:** Feature Complete - Bug Fixes Needed
+| Date | Change | Details |
+|------|--------|---------|
+| May 2026 | Cross-centre scanning | RPC functions for RLS bypass (get_sewadar_by_badge, search_sewadars_all) |
+| May 2026 | Guest detection | All roles can detect cross-scans |
+| May 2026 | Jatha enhancements | Sewadar centre + department columns, jatha-type filter pills |
+| May 2026 | Timezone fix | getLocalDate() replaces UTC date from toISOString() |
+| May 2026 | Elderly badge support | Excluded from dashboard eligible count, can still scan |
+| May 2026 | Delete restriction | Non-super_admin blocked from deleting previous-month records |
+| May 2026 | Time validation | OUT must be after IN, shows "Invalid" in red |
+| May 2026 | Records limit | 500 -> 10,000 |
+| May 2026 | Dead code cleanup | Deleted orphaned JathaEntryPage.jsx, purged ~789 lines dead NR CSS |
