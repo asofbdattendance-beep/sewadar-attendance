@@ -72,6 +72,54 @@ BEGIN
 END;
 $$;
 
+-- SECURITY DEFINER: Look up sewadar's home centre + department by badge numbers
+-- Bypasses RLS so Records page can show home centre and department for all records
+CREATE OR REPLACE FUNCTION public.get_sewadar_details(p_badge_numbers TEXT[])
+RETURNS TABLE(badge_number TEXT, centre TEXT, department TEXT)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT s.badge_number, s.centre, s.department
+  FROM public.sewadars s
+  WHERE s.badge_number = ANY(p_badge_numbers);
+END;
+$$;
+
+-- SECURITY DEFINER: Get full sewadar record by badge number
+-- Bypasses RLS so any authenticated user can scan out-of-centre sewadars
+CREATE OR REPLACE FUNCTION public.get_sewadar_by_badge(p_badge TEXT)
+RETURNS SETOF public.sewadars
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT * FROM public.sewadars s
+  WHERE s.badge_number = p_badge;
+END;
+$$;
+
+-- SECURITY DEFINER: Search sewadars across ALL centres by name or badge
+-- Bypasses RLS for cross-centre search (Gate Entry "Allow other centres")
+CREATE OR REPLACE FUNCTION public.search_sewadars_all(p_term TEXT)
+RETURNS SETOF public.sewadars
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT * FROM public.sewadars s
+  WHERE s.badge_number ILIKE '%' || p_term || '%'
+     OR s.sewadar_name ILIKE '%' || p_term || '%'
+  LIMIT 20;
+END;
+$$;
+
 -- ============================================================
 -- TABLE: centres
 -- ============================================================
@@ -208,6 +256,16 @@ CREATE POLICY sessions_delete ON public.attendance_sessions
 -- ============================================================
 ALTER TABLE public.sewadars ENABLE ROW LEVEL SECURITY;
 
+-- Allow ELDERLY badge status for imports
+ALTER TABLE public.sewadars DROP CONSTRAINT IF EXISTS sewadars_badge_status_check;
+ALTER TABLE public.sewadars ADD CONSTRAINT sewadars_badge_status_check
+  CHECK (badge_status = ANY (ARRAY['PERMANENT'::text, 'OPEN'::text, 'ELDERLY'::text]));
+
+-- Allow both cases for gender (Male/Female and MALE/FEMALE)
+ALTER TABLE public.sewadars DROP CONSTRAINT IF EXISTS sewadars_gender_check;
+ALTER TABLE public.sewadars ADD CONSTRAINT sewadars_gender_check
+  CHECK (gender = ANY (ARRAY['Male'::text, 'Female'::text, 'MALE'::text, 'FEMALE'::text]));
+
 DROP POLICY IF EXISTS sewadars_read ON public.sewadars;
 DROP POLICY IF EXISTS sewadars_write ON public.sewadars;
 
@@ -295,6 +353,16 @@ CREATE POLICY logs_read ON public.logs
 CREATE POLICY logs_insert ON public.logs
   FOR INSERT TO authenticated WITH CHECK (true);
 
+-- ============================================================
+-- HOW TO DEPLOY
+-- ============================================================
+-- 1. Run the entire file in Supabase SQL Editor
+-- 2. This recreates all helper functions AND all RLS policies
+-- 3. Existing data is preserved (DDL only affects policies/functions)
+-- 4. New functions added in v2.2:
+--    - get_sewadar_by_badge(p_badge): bypass RLS for scanner badge lookup
+--    - search_sewadars_all(p_term): bypass RLS for cross-centre search
+--
 -- ============================================================
 -- VERIFICATION
 -- ============================================================

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { supabase, ROLES, formatDateIndian } from '../lib/supabase'
+import { supabase, ROLES, formatDateIndian, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { RefreshCw, Users, UserCheck, UserPlus, ChevronDown, ChevronUp, Building, Calendar, Shield, MapPin, ChevronRight, Download } from 'lucide-react'
 
@@ -179,7 +179,7 @@ export default function DashboardPage() {
   const { profile } = useAuth()
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
+  const [selectedDate, setSelectedDate] = useState(getLocalDate())
   
   const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
   const userCentre = profile?.centre
@@ -192,7 +192,9 @@ export default function DashboardPage() {
     presentToday: 0,
     currentlyInside: 0,
     permanentBadges: 0,
-    openBadges: 0
+    openBadges: 0,
+    eligibleTotal: 0,
+    elderlyCount: 0
   })
 
   const [deptStats, setDeptStats] = useState([])
@@ -231,7 +233,7 @@ export default function DashboardPage() {
       const centreFilter = (!canViewAllCentres && userCentre) ? userCentre : null
 
       // Run all independent queries in PARALLEL
-      const [centresRes, totalRes, permRes, openRes, maleRes, femaleRes, sessionsRes, openSessionsRes, jathaRes, sewadars] = await Promise.all([
+      const [centresRes, totalRes, permRes, openRes, elderlyRes, maleRes, femaleRes, sessionsRes, openSessionsRes, jathaRes, sewadars] = await Promise.all([
         supabase.from('centres').select('name, parent_centre').order('name'),
         centreFilter
           ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('centre', centreFilter)
@@ -242,6 +244,9 @@ export default function DashboardPage() {
         centreFilter
           ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'OPEN').eq('centre', centreFilter)
           : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'OPEN'),
+        centreFilter
+          ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'ELDERLY').eq('centre', centreFilter)
+          : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('badge_status', 'ELDERLY'),
         centreFilter
           ? supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Male').eq('centre', centreFilter)
           : supabase.from('sewadars').select('*', { count: 'exact', head: true }).eq('gender', 'Male'),
@@ -258,6 +263,8 @@ export default function DashboardPage() {
       const totalBadges = totalRes.count || 0
       const permanentBadges = permRes.count || 0
       const openBadgesCount = openRes.count || 0
+      const elderlyCount = elderlyRes.count || 0
+      const eligibleTotal = totalBadges - elderlyCount
       const maleTotal = maleRes.count || 0
       const femaleTotal = femaleRes.count || 0
       const todaySessions = sessionsRes.data || []
@@ -299,7 +306,7 @@ export default function DashboardPage() {
         const centre = centreMap[s.centre]
         if (centre) {
           centre.sewadars.push(s)
-          centre.total++
+          if (s.badge_status !== 'ELDERLY') centre.total++
           const dept = s.department || 'UNKNOWN'
           if (!centre.departments[dept]) centre.departments[dept] = { sewadars: [] }
           centre.departments[dept].sewadars.push(s)
@@ -321,31 +328,42 @@ export default function DashboardPage() {
       let maleInsideCount = 0, femaleInsideCount = 0
       let malePermanentCount = 0, femalePermanentCount = 0
       let maleOpenCount = 0, femaleOpenCount = 0
+      let maleEligibleCount = 0, femaleEligibleCount = 0
 
       for (const s of sewadars) {
         const dept = s.department || 'UNKNOWN'
-        if (!deptMap[dept]) deptMap[dept] = { total: 0, present: 0, inside: 0, permanent: 0, open: 0 }
-        deptMap[dept].total++
-        if (s.badge_status === 'PERMANENT') deptMap[dept].permanent++
-        else deptMap[dept].open++
+        if (!deptMap[dept]) deptMap[dept] = { total: 0, present: 0, inside: 0, permanent: 0, open: 0, elderly: 0 }
+        if (s.badge_status === 'ELDERLY') {
+          deptMap[dept].elderly++
+        } else {
+          deptMap[dept].total++
+          if (s.badge_status === 'PERMANENT') deptMap[dept].permanent++
+          else deptMap[dept].open++
+        }
         if (localPresentSet.has(s.badge_number)) deptMap[dept].present++
         if (localInsideSet.has(s.badge_number)) deptMap[dept].inside++
 
         const gender = s.gender?.toUpperCase() || ''
         if (gender === 'MALE') {
+          if (s.badge_status !== 'ELDERLY') {
+            maleEligibleCount++
+            if (s.badge_status === 'PERMANENT') malePermanentCount++
+            else maleOpenCount++
+          }
           if (localPresentSet.has(s.badge_number)) malePresentCount++
           if (localInsideSet.has(s.badge_number)) maleInsideCount++
-          if (s.badge_status === 'PERMANENT') malePermanentCount++
-          else maleOpenCount++
         } else {
+          if (s.badge_status !== 'ELDERLY') {
+            femaleEligibleCount++
+            if (s.badge_status === 'PERMANENT') femalePermanentCount++
+            else femaleOpenCount++
+          }
           if (localPresentSet.has(s.badge_number)) femalePresentCount++
           if (localInsideSet.has(s.badge_number)) femaleInsideCount++
-          if (s.badge_status === 'PERMANENT') femalePermanentCount++
-          else femaleOpenCount++
         }
       }
 
-      setStats({ totalBadges, presentToday: presentInScope.length, currentlyInside: insideInScope.length, permanentBadges, openBadges: openBadgesCount })
+      setStats({ totalBadges, presentToday: presentInScope.length, currentlyInside: insideInScope.length, permanentBadges, openBadges: openBadgesCount, eligibleTotal, elderlyCount })
       setPresentSet(localPresentSet)
       setInsideSet(localInsideSet)
       setSessionMap(sMap)
@@ -353,8 +371,8 @@ export default function DashboardPage() {
       setCentreTree(rootCentres)
       setDeptStats(Object.entries(deptMap).sort((a, b) => b[1].total - a[1].total))
       setGenderStats({
-        male: { total: maleTotal, present: malePresentCount, inside: maleInsideCount, permanent: malePermanentCount, open: maleOpenCount },
-        female: { total: femaleTotal, present: femalePresentCount, inside: femaleInsideCount, permanent: femalePermanentCount, open: femaleOpenCount }
+        male: { total: maleEligibleCount, present: malePresentCount, inside: maleInsideCount, permanent: malePermanentCount, open: maleOpenCount },
+        female: { total: femaleEligibleCount, present: femalePresentCount, inside: femaleInsideCount, permanent: femalePermanentCount, open: femaleOpenCount }
       })
 
       // Jatha stats
@@ -373,7 +391,7 @@ export default function DashboardPage() {
 
   useEffect(() => { fetchDashboard() }, [fetchDashboard])
 
-  const totalPercent = stats.totalBadges > 0 ? Math.round(stats.presentToday / stats.totalBadges * 100) : 0
+  const totalPercent = stats.eligibleTotal > 0 ? Math.round(stats.presentToday / stats.eligibleTotal * 100) : 0
   const presentPercent = stats.presentToday > 0 ? Math.round(stats.currentlyInside / stats.presentToday * 100) : 0
 
   const exportDashboard = () => {
@@ -442,7 +460,7 @@ export default function DashboardPage() {
             value={selectedDate}
             onChange={e => setSelectedDate(e.target.value)}
             style={{ border: 'none', background: 'transparent', fontSize: 'inherit', fontWeight: 600, color: 'inherit', outline: 'none', cursor: 'pointer' }}
-            max={new Date().toISOString().split('T')[0]}
+            max={getLocalDate()}
           />
           {userCentre && !canViewAllCentres && `- ${userCentre}`}
         </div>
@@ -450,7 +468,7 @@ export default function DashboardPage() {
 
       {/* Main Stats */}
       <div className="dash-stats-grid">
-        <StatCard icon={Users} label="Total Badges" value={stats.totalBadges} color="blue" loading={loading} />
+        <StatCard icon={Users} label="Total Eligible" value={stats.eligibleTotal} subValue={`${stats.elderlyCount} elderly excluded`} color="blue" loading={loading} />
         <StatCard icon={UserCheck} label="Present Today" value={stats.presentToday} subValue={`${totalPercent}%`} color="green" loading={loading} />
         <StatCard icon={UserPlus} label="Currently Inside" value={stats.currentlyInside} subValue={`${presentPercent}% of present`} color="orange" loading={loading} />
         {jathaStats.total > 0 && (

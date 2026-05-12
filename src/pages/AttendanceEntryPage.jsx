@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { supabase, ROLES, SESSION_STATUS, formatDateIndian } from '../lib/supabase'
+import { supabase, ROLES, SESSION_STATUS, formatDateIndian, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { logAction } from '../lib/logger'
 import { useToast } from '../components/Toast'
@@ -51,7 +51,7 @@ function GateEntryForm({ onSuccess }) {
   }
 
   const addEntry = () => {
-    const today = new Date().toISOString().split('T')[0]
+    const today = getLocalDate()
     setEntries([...entries, {
       id: Date.now(),
       inDate: today,
@@ -99,6 +99,9 @@ function GateEntryForm({ onSuccess }) {
     if (!entry.outDate || !entry.outTime) errors.push('OUT date/time required')
     if (entry.inDate && entry.outDate && entry.outDate < entry.inDate) {
       errors.push('OUT must be after IN')
+    }
+    if (entry.inDate && entry.outDate && entry.inDate === entry.outDate && entry.inTime && entry.outTime && entry.outTime <= entry.inTime) {
+      errors.push('OUT time must be after IN time on same date')
     }
     if (entry.inDate && entry.outDate && entry.inTime && entry.outTime) {
       const inDt = new Date(`${entry.inDate}T${entry.inTime}`)
@@ -204,8 +207,7 @@ function GateEntryForm({ onSuccess }) {
       const childNames = (childData || []).map(c => c.name)
       
       if (childNames.length > 0) {
-        const parentCentre = profile.centre
-        const parentSewadars = await supabase.from('sewadars').select('*').eq('centre', parentCentre).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(10)
+        const parentSewadars = await supabase.from('sewadars').select('*').eq('centre', profile.centre).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(10)
         
         const childSewadars = await supabase.from('sewadars').select('*').in('centre', childNames).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(10)
         
@@ -221,9 +223,8 @@ function GateEntryForm({ onSuccess }) {
       }
     }
 
-    console.log('Searching ALL centres (no restriction)')
-    const { data } = await supabase.from('sewadars').select('*').or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
-    console.log('all results:', data?.length)
+    console.log('Searching ALL centres (allowOtherCentres=true, using RPC)')
+    const { data } = await supabase.rpc('search_sewadars_all', { p_term: term })
     setSearchResults(data || [])
     setSearchLoading(false)
   }
@@ -244,7 +245,7 @@ function GateEntryForm({ onSuccess }) {
     setValidationErrors({})
     setDbOverlaps({})
 
-    const today = new Date().toISOString().split('T')[0]
+    const today = getLocalDate()
     setEntries([{
       id: Date.now(),
       inDate: today,
@@ -459,6 +460,9 @@ function GateEntryForm({ onSuccess }) {
                 <span className="detail-item">
                   <MapPin size={12} /> {selectedSewadar?.centre || '-'}
                 </span>
+                {selectedSewadar?.centre && selectedSewadar.centre !== profile?.centre && (
+                  <span className="detail-item guest-badge-gate">Guest</span>
+                )}
                 <span className="detail-item">
                   <Briefcase size={12} /> {selectedSewadar?.department || '-'}
                 </span>
@@ -932,12 +936,12 @@ function JathaEntryForm({ onSuccess }) {
                   <div className="entry-grid">
                     <div className="entry-field">
                       <label>FROM DATE</label>
-                      <input type="date" value={fromDate} max={new Date().toISOString().split('T')[0]}
+                      <input type="date" value={fromDate} max={getLocalDate()}
                         onChange={e => { setFromDate(e.target.value); setWarnings([]) }} />
                     </div>
                     <div className="entry-field">
                       <label>TO DATE</label>
-                      <input type="date" value={toDate} min={fromDate} max={new Date().toISOString().split('T')[0]}
+                      <input type="date" value={toDate} min={fromDate} max={getLocalDate()}
                         onChange={e => { setToDate(e.target.value); setWarnings([]) }} />
                     </div>
                   </div>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { supabase, ROLES, DUTY_TYPES, SESSION_STATUS, getDutyType, formatTime12Hour } from '../lib/supabase'
+import { supabase, ROLES, DUTY_TYPES, SESSION_STATUS, getDutyType, formatTime12Hour, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { logAction } from '../lib/logger'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
@@ -36,6 +36,7 @@ export default function ScannerPage({ isOnline }) {
   const [manualNoSession, setManualNoSession] = useState(false)
   const [manualHasSession, setManualHasSession] = useState(false)
   const [manualForgotOutData, setManualForgotOutData] = useState(null)
+  const [manualTimeError, setManualTimeError] = useState('')
 
   const scannerRef = useRef(null)
   const lastScanRef = useRef({ badge: null, time: 0 })
@@ -53,7 +54,7 @@ export default function ScannerPage({ isOnline }) {
     let q = supabase.from('attendance_sessions')
       .select('id,badge_number,sewadar_name,status,in_date,in_time,out_time,duty_type')
       .eq('in_scanner_centre', profile.centre)
-      .gte('in_date', today.toISOString().split('T')[0])
+      .gte('in_date', getLocalDate(today))
       .order('in_time', { ascending: false })
       .limit(10)
     const { data } = await q
@@ -200,7 +201,7 @@ const handleScan = useCallback(async (badge) => {
     try {
       let found = null
       if (isOnline) {
-        const { data } = await supabase.from('sewadars').select('*').eq('badge_number', badge).maybeSingle()
+        const { data } = await supabase.rpc('get_sewadar_by_badge', { p_badge: badge }).maybeSingle()
         found = data
       }
 
@@ -274,7 +275,7 @@ const handleScan = useCallback(async (badge) => {
 
       const dutyType = getDutyType()
       const today = new Date()
-      const todayStr = today.toISOString().split('T')[0]
+      const todayStr = getLocalDate(today)
       const currentTime = today.toTimeString().slice(0, 5)
 
       console.log('openSession:', openSession)
@@ -311,7 +312,7 @@ const handleScan = useCallback(async (badge) => {
 
     const sewadar = popupState.sewadar
     const now = new Date()
-    const inDate = customTime?.date || now.toISOString().split('T')[0]
+    const inDate = customTime?.date || getLocalDate(now)
     const inTime = customTime?.time || now.toTimeString().slice(0, 5)
 
     if (navigator.vibrate) navigator.vibrate([40])
@@ -364,7 +365,7 @@ const handleScan = useCallback(async (badge) => {
   const markOUT = async (forgotDate = null, forgotTime = null) => {
     if (!popupState?.openSession || !profile) return
     const now = new Date()
-    const outDate = forgotDate || now.toISOString().split('T')[0]
+    const outDate = forgotDate || getLocalDate(now)
     const outTime = forgotTime || now.toTimeString().slice(0, 5)
 
     const sessionId = typeof popupState.openSession === 'object' ? popupState.openSession.id : popupState.openSession
@@ -422,6 +423,7 @@ const handleScan = useCallback(async (badge) => {
     setManualNoSession(false)
     setManualHasSession(false)
     setManualForgotOutData(null)
+    setManualTimeError('')
   }
 
   const searchSewadars = async (query) => {
@@ -432,18 +434,17 @@ const handleScan = useCallback(async (badge) => {
 
     setManualLoading(true)
     const term = query.replace(/[%_]/g, '').toUpperCase().slice(0, 50)
-    
-    let q = supabase.from('sewadars')
-      .select('*')
-      .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
-      .limit(20)
 
+    let data = null
     if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
       const scope = [profile.centre, ...childCentres]
-      q = q.in('centre', scope)
+      const { data: d } = await supabase.from('sewadars').select('*').in('centre', scope).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
+      data = d
+    } else {
+      const { data: d } = await supabase.rpc('search_sewadars_all', { p_term: term })
+      data = d
     }
 
-    const { data } = await q
     let filtered = data || []
     if (profile?.centre) {
       filtered = filtered.filter(s => isInScope(s.centre, s.department))
@@ -466,10 +467,11 @@ const handleScan = useCallback(async (badge) => {
     setManualNoSession(false)
     setManualHasSession(false)
     setManualForgotOutData(null)
+    setManualTimeError('')
     
     const now = new Date()
     setManualEntryTime({
-      date: now.toISOString().split('T')[0],
+      date: getLocalDate(now),
       time: now.toTimeString().slice(0, 5)
     })
     
@@ -485,7 +487,7 @@ const handleScan = useCallback(async (badge) => {
         
         if (hoursSinceIn > 12) {
           // Session is very old - show forgot_out mode
-          const nowStr = now.toISOString().split('T')[0]
+          const nowStr = getLocalDate(now)
           const nowTime = now.toTimeString().slice(0, 5)
           setManualForgotOutData({ 
             date: nowStr, 
@@ -533,8 +535,16 @@ const handleScan = useCallback(async (badge) => {
       }
     } else {
       const hasTime = (manualEntryTime.date && manualEntryTime.time) || (manualForgotOutData?.date && manualForgotOutData?.time)
-      console.log('OUT check:', { manualOpenSession: !!manualOpenSession, hasTime })
       if (!manualOpenSession || !hasTime) return
+
+      // Validate OUT time is after IN time
+      const outDate = manualForgotOutData?.date || manualEntryTime.date
+      const outTime = manualForgotOutData?.time || manualEntryTime.time
+      if (outDate && manualOpenSession.in_date && outDate === manualOpenSession.in_date && outTime && manualOpenSession.in_time && outTime <= manualOpenSession.in_time) {
+        setManualTimeError('OUT time must be after IN time')
+        return
+      }
+      setManualTimeError('')
     }
 
     const now = new Date()
@@ -755,6 +765,9 @@ const handleScan = useCallback(async (badge) => {
                 </div>
                 <div className="popup-details">
                   <div className="detail"><span>Centre</span><span>{popupState.sewadar?.centre || '-'}</span></div>
+                  {popupState.sewadar?.centre && popupState.sewadar.centre !== profile?.centre && (
+                    <div className="detail"><span>Guest</span><span className="guest-tag">From {popupState.sewadar.centre}</span></div>
+                  )}
                   <div className="detail"><span>Dept</span><span>{popupState.sewadar?.department || '—'}</span></div>
                   <div className="detail"><span>Badge Status</span><span style={{ fontWeight: 600, color: popupState.sewadar?.badge_status === 'PERMANENT' ? 'var(--green)' : 'var(--gold)' }}>{popupState.sewadar?.badge_status || 'OPEN'}</span></div>
                   <div className="detail"><span>IN Date</span><span>{popupState.inDate}</span></div>
@@ -782,6 +795,9 @@ const handleScan = useCallback(async (badge) => {
                 </div>
                 <div className="popup-details">
                   <div className="detail"><span>Centre</span><span>{popupState.sewadar?.centre || '-'}</span></div>
+                  {popupState.sewadar?.centre && popupState.sewadar.centre !== profile?.centre && (
+                    <div className="detail"><span>Guest</span><span className="guest-tag">From {popupState.sewadar.centre}</span></div>
+                  )}
                   <div className="detail"><span>Dept</span><span>{popupState.sewadar?.department || '—'}</span></div>
                   <div className="detail"><span>Badge Status</span><span style={{ fontWeight: 600, color: popupState.sewadar?.badge_status === 'PERMANENT' ? 'var(--green)' : 'var(--gold)' }}>{popupState.sewadar?.badge_status || 'OPEN'}</span></div>
                   <div className="detail"><span>IN Date</span><span>{formatDate(popupState.openSession?.in_date)}</span></div>
@@ -816,6 +832,9 @@ const handleScan = useCallback(async (badge) => {
                 </div>
                 <div className="popup-details">
                   <div className="detail"><span>Centre</span><span>{popupState.sewadar?.centre || '-'}</span></div>
+                  {popupState.sewadar?.centre && popupState.sewadar.centre !== profile?.centre && (
+                    <div className="detail"><span>Guest</span><span className="guest-tag">From {popupState.sewadar.centre}</span></div>
+                  )}
                   <div className="detail"><span>Dept</span><span>{popupState.sewadar?.department || '—'}</span></div>
                   <div className="detail"><span>Badge Status</span><span style={{ fontWeight: 600, color: popupState.sewadar?.badge_status === 'PERMANENT' ? 'var(--green)' : 'var(--gold)' }}>{popupState.sewadar?.badge_status || 'OPEN'}</span></div>
                 </div>
@@ -882,6 +901,9 @@ const handleScan = useCallback(async (badge) => {
                   {popupState.action}
                 </div>
                 <div className="success-name">{popupState.sewadar.sewadar_name}</div>
+                {popupState.sewadar?.centre && popupState.sewadar.centre !== profile?.centre && (
+                  <div className="success-guest">Guest from {popupState.sewadar.centre}</div>
+                )}
                 <div className="success-type">{popupState.time}</div>
               </div>
             )}
@@ -988,8 +1010,8 @@ const handleScan = useCallback(async (badge) => {
                       <div style={{ marginBottom: '1rem' }}>
                         <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>When did you leave?</label>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                          <input type="date" className="input" value={manualForgotOutData?.date || ''} onChange={e => setManualForgotOutData(f => ({ ...f, date: e.target.value }))} />
-                          <input type="time" className="input" value={manualForgotOutData?.time || ''} onChange={e => setManualForgotOutData(f => ({ ...f, time: e.target.value }))} />
+                          <input type="date" className="input" value={manualForgotOutData?.date || ''} onChange={e => { setManualTimeError(''); setManualForgotOutData(f => ({ ...f, date: e.target.value })) }} />
+                          <input type="time" className="input" value={manualForgotOutData?.time || ''} onChange={e => { setManualTimeError(''); setManualForgotOutData(f => ({ ...f, time: e.target.value })) }} />
                         </div>
                       </div>
                     )}
@@ -1014,6 +1036,15 @@ const handleScan = useCallback(async (badge) => {
                           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
                             IN: {manualOpenSession?.in_date} at {formatTime12Hour(manualOpenSession?.in_time)}. Mark OUT first.
                           </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {manualTimeError && (
+                      <div className="warning-box" style={{ borderColor: '#dc2626', background: 'rgba(220,38,38,0.08)' }}>
+                        <AlertTriangle size={14} color="#dc2626" />
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: 12, color: '#dc2626' }}>{manualTimeError}</div>
                         </div>
                       </div>
                     )}
@@ -1050,7 +1081,7 @@ const handleScan = useCallback(async (badge) => {
                           <input
                             type="date"
                             value={manualEntryTime.date}
-                            onChange={e => setManualEntryTime(t => ({ ...t, date: e.target.value }))}
+                            onChange={e => { setManualTimeError(''); setManualEntryTime(t => ({ ...t, date: e.target.value })) }}
                           />
                         </div>
                         <div className="time-field">
@@ -1058,7 +1089,7 @@ const handleScan = useCallback(async (badge) => {
                           <input
                             type="time"
                             value={manualEntryTime.time}
-                            onChange={e => setManualEntryTime(t => ({ ...t, time: e.target.value }))}
+                            onChange={e => { setManualTimeError(''); setManualEntryTime(t => ({ ...t, time: e.target.value })) }}
                           />
                         </div>
                       </div>

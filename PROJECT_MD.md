@@ -1,9 +1,9 @@
 # SEWADAR ATTENDANCE SYSTEM v2
 ## Complete Project Documentation
 
-> **Version:** 2.1  
+> **Version:** 2.2  
 > **Created:** April 2026  
-> **Last Updated:** April 16, 2026  
+> **Last Updated:** May 10, 2026  
 > **Supabase Project:** https://lnznhbwgkusgdcmvgznf.supabase.co
 
 ---
@@ -439,6 +439,9 @@ Run that file in the Supabase SQL Editor to recreate ALL policies.
 **Helper functions used by policies:**
 - `get_user_role()` — returns the current user's role from `users` table
 - `get_user_accessible_centres()` — returns own centre + children (recursive CTE), or ALL centres for `super_admin`/`aso`
+- `get_sewadar_centres(p_badge_numbers TEXT[])` — SECURITY DEFINER, returns `(badge_number, centre)` for given badges; bypasses RLS for cross-scan detection
+- `get_sewadar_by_badge(p_badge TEXT)` — SECURITY DEFINER, returns full sewadar record by badge; bypasses RLS so Scanner can look up out-of-centre sewadars
+- `search_sewadars_all(p_term TEXT)` — SECURITY DEFINER, searches sewadars by name/badge across ALL centres; bypasses RLS for Gate Entry "Allow other centres"
 
 **Delete access:**
 - `attendance_sessions`: `admin`/`centre_user` can delete sessions where `centre IN get_user_accessible_centres()`
@@ -461,7 +464,47 @@ RETURNS attendance_sessions AS $$
 $$ LANGUAGE SQL SECURITY DEFINER;
 ```
 
-### 7.2 Get Valid Centres for User
+### 7.2 Get Sewadar By Badge (RLS Bypass)
+
+```sql
+CREATE OR REPLACE FUNCTION public.get_sewadar_by_badge(p_badge TEXT)
+RETURNS SETOF public.sewadars
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT * FROM public.sewadars s
+  WHERE s.badge_number = p_badge;
+END;
+$$;
+```
+
+Used by `ScannerPage.jsx` to look up any sewadar by badge, bypassing RLS so out-of-centre special department sewadars can be scanned.
+
+### 7.3 Search Sewadars All Centres (RLS Bypass)
+
+```sql
+CREATE OR REPLACE FUNCTION public.search_sewadars_all(p_term TEXT)
+RETURNS SETOF public.sewadars
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT * FROM public.sewadars s
+  WHERE s.badge_number ILIKE '%' || p_term || '%'
+     OR s.sewadar_name ILIKE '%' || p_term || '%'
+  LIMIT 20;
+END;
+$$;
+```
+
+Used by `AttendanceEntryPage.jsx` Gate Entry form when "Allow other centres" checkbox is checked. Also used by `ScannerPage.jsx` manual entry for non-SC_SP_USER roles.
+
+### 7.4 Get Valid Centres for User
 
 ```sql
 CREATE OR REPLACE FUNCTION get_user_centres(p_user_centre TEXT)
