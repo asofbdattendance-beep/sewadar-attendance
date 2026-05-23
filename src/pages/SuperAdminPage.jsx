@@ -104,7 +104,7 @@ function FormFields({ table, formData, setFormData, centres, isUsersTable, roleL
                     if (data?.permissions) {
                       setFormData(prev => ({ ...prev, permissions: data.permissions }))
                     }
-                  })
+                  }).catch(() => {})
                 }
               }}
               required
@@ -242,7 +242,7 @@ export default function SuperAdminPage() {
           data.forEach(r => { map[r.role_key] = r.role_label.replace(/_/g, ' ') })
           setRoleLabelMap(map)
         }
-      })
+      }).catch(() => {})
     }
   }, [canAccessPanel])
 
@@ -287,12 +287,16 @@ export default function SuperAdminPage() {
   }
 
   // For users and role_masters tables - parse permissions from JSON to object for display
+  const safeJsonParse = (str) => {
+    try { return JSON.parse(str) } catch { return {} }
+  }
+
   const tableData = data[activeTable]?.map(row => {
     if ((activeTable === 'users' || activeTable === 'role_masters') && row.permissions) {
       return {
         ...row,
         permissions: typeof row.permissions === 'string' 
-          ? JSON.parse(row.permissions) 
+          ? safeJsonParse(row.permissions) 
           : row.permissions
       }
     }
@@ -397,26 +401,7 @@ export default function SuperAdminPage() {
         result = await supabase.from(activeTable).insert([payload]).select()
       } else {
         // For update, don't include id, created_at, auth_id, email in payload (read-only fields)
-        
-        // Try direct update using the client
         result = await supabase.from(activeTable).update(updatePayload).eq('id', formData.id)
-        
-        // If that didn't work, try via RPC (fallback)
-        if (!result.error && (!result.data || result.data === null)) {
-          // For users table specifically, try a different approach
-          if (activeTable === 'users') {
-            const rpcResult = await supabase.rpc('update_user_permissions', {
-              p_id: formData.id,
-              p_name: updatePayload.name,
-              p_badge_number: updatePayload.badge_number,
-              p_role: updatePayload.role,
-              p_centre: updatePayload.centre,
-              p_is_active: updatePayload.is_active,
-              p_permissions: updatePayload.permissions
-            })
-            result = rpcResult
-          }
-        }
       }
 
       if (result.error) {
@@ -449,7 +434,6 @@ export default function SuperAdminPage() {
 
         try {
           const { error: fnError } = await supabase.functions.invoke('create-auth-user', {
-            headers: { 'X-Internal-Secret': 'my-random-secret-here' },
             body: {
               email: formData.email,
               password: pwd,

@@ -87,8 +87,8 @@ function ExportDropdown({ onExport, loading, label = 'Export', description }) {
           <button onClick={() => { onExport('csv'); setOpen(false) }}>
             <FileSpreadsheet size={16} /> CSV
           </button>
-          <button onClick={() => { onExport('excel'); setOpen(false) }}>
-            <FileSpreadsheet size={16} /> Excel
+          <button onClick={() => { onExport('csv'); setOpen(false) }}>
+            <FileSpreadsheet size={16} /> CSV (Excel-compatible)
           </button>
           <button onClick={() => { onExport('pdf'); setOpen(false) }}>
             <FileText size={16} /> PDF
@@ -815,11 +815,9 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
     const { data: sessions } = await query
 
-    const { data: sewadars } = await supabase
+    const { count: totalSewadars } = await supabase
       .from('sewadars')
-      .select('badge_number', { count: 'exact', head: true })
-
-    const { count: totalSewadars } = sewadars || { count: 0 }
+      .select('*', { count: 'exact', head: true })
 
     const dayMap = {}
     const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -1070,8 +1068,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
     if (format === 'csv') {
       exportCSV(headers, rows)
-    } else if (format === 'excel') {
-      exportExcel(headers, rows)
     } else if (format === 'pdf') {
       exportPDF(headers, rows)
     }
@@ -1110,11 +1106,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     downloadFile(csv, `${activeReport}_${dateFrom}_${dateTo}.csv`, 'text/csv')
   }
 
-  const exportExcel = (headers, rows) => {
-    const csv = [headers.map(escapeCSV).join(','), ...rows.map(r => r.map(escapeCSV).join(','))].join('\n')
-    downloadFile(csv, `${activeReport}_${dateFrom}_${dateTo}.csv`, 'text/csv')
-  }
-
   const exportPDF = (headers, rows) => {
     const tableRows = rows.map(r => `<tr>${r.map(c => `<td>${escapeCSV(c)}</td>`).join('')}</tr>`).join('')
     const html = `<!DOCTYPE html>
@@ -1147,7 +1138,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     const blob = new Blob([html], { type: 'text/html' })
     const url = URL.createObjectURL(blob)
     const win = window.open(url, '_blank')
-    if (win) win.onload = () => win.print()
+    if (win) win.onload = () => { win.print(); setTimeout(() => URL.revokeObjectURL(url), 1000) }
+    else URL.revokeObjectURL(url)
   }
 
   const downloadFile = (content, filename, type) => {

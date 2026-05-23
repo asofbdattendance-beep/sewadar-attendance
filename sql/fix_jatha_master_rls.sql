@@ -31,8 +31,8 @@ CREATE POLICY jatha_read ON public.jatha_master
 CREATE POLICY jatha_write ON public.jatha_master
   FOR ALL
   TO authenticated
-  USING (get_user_role() = 'super_admin')
-  WITH CHECK (get_user_role() = 'super_admin');
+  USING (public.get_user_role() = 'super_admin')
+  WITH CHECK (public.get_user_role() = 'super_admin');
 
 -- Step 6: Verify policies
 SELECT schemaname, tablename, policyname, cmd, roles

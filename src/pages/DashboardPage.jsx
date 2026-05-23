@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, ROLES, formatDateIndian, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { RefreshCw, Users, UserCheck, UserPlus, ChevronDown, ChevronUp, Building, Calendar, Shield, MapPin, ChevronRight, Download } from 'lucide-react'
@@ -210,13 +210,15 @@ export default function DashboardPage() {
   const [sessionMap, setSessionMap] = useState({})
   const [guestMap, setGuestMap] = useState({})
 
-  const fetchAllSewadars = async () => {
+  const fetchAllSewadars = async (centreFilter = null) => {
     const all = []
     let page = 0
     const pageSize = 1000
     while (true) {
       const from = page * pageSize
-      const { data: batch } = await supabase.from('sewadars').select('badge_number, sewadar_name, centre, department, badge_status, gender').range(from, from + pageSize - 1)
+      let query = supabase.from('sewadars').select('badge_number, sewadar_name, centre, department, badge_status, gender')
+      if (centreFilter) query = query.eq('centre', centreFilter)
+      const { data: batch } = await query.range(from, from + pageSize - 1)
       if (!batch || batch.length === 0) break
       all.push(...batch)
       if (batch.length < pageSize) break
@@ -225,9 +227,13 @@ export default function DashboardPage() {
     return all
   }
 
+  const fetchTickRef = useRef(0)
   const fetchDashboard = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
+
+    const tick = ++fetchTickRef.current
+    const isLatest = () => tick === fetchTickRef.current
 
     try {
       const centreFilter = (!canViewAllCentres && userCentre) ? userCentre : null
@@ -256,7 +262,7 @@ export default function DashboardPage() {
         supabase.from('attendance_sessions').select('badge_number, centre, status').eq('in_date', selectedDate),
         supabase.from('attendance_sessions').select('badge_number').eq('status', 'OPEN').eq('in_date', selectedDate),
         supabase.from('jatha_attendance').select('badge_number').or(`and(from_date.lte.${selectedDate},to_date.gte.${selectedDate})`),
-        fetchAllSewadars()
+        fetchAllSewadars(centreFilter)
       ])
 
       const centresData = centresRes.data || []
@@ -270,8 +276,6 @@ export default function DashboardPage() {
       const todaySessions = sessionsRes.data || []
       const openSessions = openSessionsRes.data || []
       const jathaToday = jathaRes.data || []
-
-      setCentresList(centresData)
 
       // Build session map & sets
       const sMap = {}
@@ -364,6 +368,8 @@ export default function DashboardPage() {
         }
       }
 
+      if (!isLatest()) return
+      setCentresList(centresData)
       setStats({ totalBadges, presentToday: presentInScope.length, currentlyInside: insideInScope.length, permanentBadges, openBadges: openBadgesCount, eligibleTotal, elderlyCount })
       setPresentSet(localPresentSet)
       setInsideSet(localInsideSet)
@@ -433,11 +439,17 @@ export default function DashboardPage() {
     csvRows.push(['PERMANENT', stats.permanentBadges])
     
     // Download
-    const csv = csvRows.map(r => r.join(',')).join('\n')
+    const esc = (val) => {
+      const str = String(val ?? '')
+      return (str.includes(',') || str.includes('"') || str.includes('\n')) ? '"' + str.replace(/"/g, '""') + '"' : str
+    }
+    const csv = csvRows.map(r => r.map(esc).join(',')).join('\n')
     const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    const blobUrl = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.href = blobUrl
     a.download = `dashboard_${selectedDate}.csv`
     a.click()
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
   }
 
   return (

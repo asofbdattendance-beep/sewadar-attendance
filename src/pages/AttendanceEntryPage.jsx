@@ -35,7 +35,7 @@ function GateEntryForm({ onSuccess }) {
     if (profile?.centre) {
       supabase.from('centres').select('name').eq('parent_centre', profile.centre).then(({ data }) => {
         setChildCentres(data?.map(c => c.name) || [])
-      })
+      }).catch(() => {})
     }
   }, [profile?.centre])
 
@@ -142,19 +142,11 @@ function GateEntryForm({ onSuccess }) {
   const checkDbOverlaps = async (badgeNumber, entryId, entry) => {
     if (!entry.inDate || !entry.outDate) return
 
-    console.log('Checking DB overlaps for:', badgeNumber)
-    console.log('New entry:', entry.inDate, entry.inTime, 'to', entry.outDate, entry.outTime)
-
     const { data } = await supabase
       .from('attendance_sessions')
       .select('id, in_date, in_time, out_date, out_time, status')
       .eq('badge_number', badgeNumber)
       .or('status.eq.OPEN,status.eq.CLOSED')
-
-    console.log('Existing sessions:', data?.length)
-    if (data && data.length > 0) {
-      console.log('Session 1:', data[0])
-    }
 
     if (!data) return
 
@@ -287,28 +279,23 @@ function GateEntryForm({ onSuccess }) {
     if (hasErrors) {
       setValidationErrors(errors)
       setValidationMsg(firstError)
-      return 'Validation failed'
+      return { errors, msg: firstError }
     }
     
+    // Check DB overlaps from state
+    const overlapKeys = Object.keys(dbOverlaps)
+    if (overlapKeys.length > 0) {
+      return { errors: dbOverlaps, msg: 'Overlaps with existing sessions' }
+    }
+
     setValidationMsg('')
     return null
   }
 
   const submitEntries = async () => {
-    const error = await validateEntries()
-    if (error) {
-      return
-    }
-
-    const hasValidationErrors = validationErrors && typeof validationErrors === 'object' && Object.keys(validationErrors).some(key => Array.isArray(validationErrors[key]) && validationErrors[key].length > 0)
-    if (hasValidationErrors) {
-      toast.error('Please fix validation errors before submitting')
-      return
-    }
-
-    const hasDbOverlaps = Object.keys(dbOverlaps).length > 0
-    if (hasDbOverlaps) {
-      toast.error('Cannot submit: Overlaps with existing sessions')
+    const result = await validateEntries()
+    if (result) {
+      toast.error(result.msg || 'Please fix validation errors before submitting')
       return
     }
 

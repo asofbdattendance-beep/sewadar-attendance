@@ -35,7 +35,7 @@ export function AuthProvider({ children }) {
     try {
       const { data } = await supabase
         .from('users')
-        .select('*')
+        .select('id, role, centre, badge_number, name, email, permissions, is_active, created_at')
         .eq('auth_id', userId)
         .single()
 
@@ -90,12 +90,12 @@ export function AuthProvider({ children }) {
   async function signOut() {
     try {
       await supabase.auth.signOut()
-    } catch (err) {
-      console.error('Sign out error:', err)
-    } finally {
       setUser(null)
       setProfile(null)
       setPermissions({})
+    } catch (err) {
+      console.error('Sign out error:', err)
+      throw err
     }
   }
 

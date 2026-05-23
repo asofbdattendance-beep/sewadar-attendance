@@ -44,15 +44,15 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Other roles see own centre + children (recursive)
+  -- Other roles see own centre + children (recursive, with cycle detection)
   RETURN QUERY
   WITH RECURSIVE centre_tree AS (
     SELECT name FROM public.centres WHERE name = v_centre
     UNION ALL
     SELECT c.name FROM public.centres c
     INNER JOIN centre_tree ct ON c.parent_centre = ct.name
-  )
-  SELECT name FROM centre_tree;
+  ) CYCLE name SET is_cycle USING path
+  SELECT name FROM centre_tree WHERE NOT is_cycle;
 END;
 $$;
 
@@ -105,6 +105,9 @@ $$;
 
 -- SECURITY DEFINER: Search sewadars across ALL centres by name or badge
 -- Bypasses RLS for cross-centre search (Gate Entry "Allow other centres")
+-- Performance: create trigram index for fast ILIKE:
+--   CREATE EXTENSION IF NOT EXISTS pg_trgm;
+--   CREATE INDEX idx_sewadars_search ON public.sewadars USING gin (badge_number gin_trgm_ops, sewadar_name gin_trgm_ops);
 CREATE OR REPLACE FUNCTION public.search_sewadars_all(p_term TEXT)
 RETURNS SETOF public.sewadars
 LANGUAGE plpgsql
@@ -112,6 +115,9 @@ SECURITY DEFINER
 SET search_path = ''
 AS $$
 BEGIN
+  IF p_term IS NULL OR length(p_term) < 2 OR length(p_term) > 50 THEN
+    RETURN;
+  END IF;
   RETURN QUERY
   SELECT * FROM public.sewadars s
   WHERE s.badge_number ILIKE '%' || p_term || '%'
@@ -189,7 +195,13 @@ CREATE POLICY jatha_att_write ON public.jatha_attendance
   )
   WITH CHECK (
     public.get_user_role() = 'super_admin'
-    OR public.get_user_role() IN ('admin', 'centre_user')
+    OR (
+      public.get_user_role() IN ('admin', 'centre_user')
+      AND badge_number IN (
+        SELECT badge_number FROM public.sewadars
+        WHERE centre IN (SELECT public.get_user_accessible_centres())
+      )
+    )
   );
 
 -- ============================================================
@@ -206,7 +218,6 @@ DROP POLICY IF EXISTS sessions_insert ON public.attendance_sessions;
 DROP POLICY IF EXISTS sessions_update ON public.attendance_sessions;
 DROP POLICY IF EXISTS sessions_delete ON public.attendance_sessions;
 
-DROP POLICY IF EXISTS sessions_read ON public.attendance_sessions;
 CREATE POLICY sessions_read ON public.attendance_sessions
   FOR SELECT TO authenticated
   USING (
@@ -299,7 +310,8 @@ DROP POLICY IF EXISTS users_read ON public.users;
 DROP POLICY IF EXISTS users_write ON public.users;
 
 CREATE POLICY users_read ON public.users
-  FOR SELECT TO authenticated USING (true);
+  FOR SELECT TO authenticated
+  USING (auth_id = auth.uid() OR public.get_user_role() = 'super_admin');
 
 CREATE POLICY users_write ON public.users
   FOR ALL TO authenticated

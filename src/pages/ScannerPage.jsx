@@ -109,7 +109,7 @@ export default function ScannerPage({ isOnline }) {
         const distance = getDistanceFromLatLonInMeters(userLat, userLon, centreData.latitude, centreData.longitude)
         const radius = centreData.geo_radius || 200
 
-        console.log(`Initial geo check: ${distance.toFixed(0)}m from centre (max ${radius}m)`)
+    
 
         if (distance > radius) {
           setGeoBlocked(true)
@@ -170,33 +170,20 @@ export default function ScannerPage({ isOnline }) {
 
 const handleScan = useCallback(async (badge) => {
     const now = Date.now()
-    console.log('=== handleScan START ===', badge)
-    console.log('popupOpenRef:', popupOpenRef.current)
-    console.log('lastScanRef:', lastScanRef.current)
-    
     if (popupOpenRef.current) {
-      console.log('Blocked: popup already showing')
       return
     }
     if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) {
-      console.log('Rejected: too soon')
       return
     }
     if (!profile?.centre) {
-      console.log('Rejected: no centre')
       return
     }
-    lastScanRef.current = { badge, time: now }
-    console.log('Updated lastScanRef:', lastScanRef.current)
-    
     if (!scopeLoadedRef.current) {
-      console.log('Blocked: scope data not loaded yet')
       setProcessing(false)
       return
     }
     setProcessing(true)
-
-    console.log('Fetching sewadar:', badge)
 
     try {
       let found = null
@@ -248,8 +235,6 @@ const handleScan = useCallback(async (badge) => {
             const distance = getDistanceFromLatLonInMeters(userLat, userLon, centreData.latitude, centreData.longitude)
             const radius = centreData.geo_radius || 200
 
-            console.log(`Geo check: ${distance.toFixed(0)}m from centre (max ${radius}m)`)
-
             if (distance > radius) {
               setPopupState({
                 type: 'out_of_range',
@@ -268,6 +253,9 @@ const handleScan = useCallback(async (badge) => {
         }
       }
 
+      // All guards passed — record this scan for debounce
+      lastScanRef.current = { badge, time: now }
+
       let openSession = null
       if (isOnline) {
         const { data } = await supabase.rpc('get_open_session', { p_badge: badge })
@@ -279,14 +267,12 @@ const handleScan = useCallback(async (badge) => {
       const todayStr = getLocalDate(today)
       const currentTime = today.toTimeString().slice(0, 5)
 
-      console.log('openSession:', openSession)
-
       if (openSession) {
         if (scannerRef.current) scannerRef.current.stop()
         popupOpenRef.current = true
 
-        const inDate = new Date(openSession.in_date + 'T12:00:00')
-        const hoursSinceIn = (today - inDate) / (1000 * 60 * 60)
+        const inDateTime = new Date(openSession.in_date + 'T' + (openSession.in_time || '12:00') + ':00')
+        const hoursSinceIn = (today - inDateTime) / (1000 * 60 * 60)
 
         // If OPEN session is >12 hours old, assume sewadar forgot to mark OUT
         // Show forgot_out prompt instead of normal OUT
@@ -347,7 +333,7 @@ const handleScan = useCallback(async (badge) => {
           console.error('Failed to insert session:', error)
           return
         }
-        await logAction(profile?.badge_number, profile?.name, 'SCAN_IN', {
+        logAction(profile?.badge_number, profile?.name, 'SCAN_IN', {
           badge: sewadar.badge_number,
           name: sewadar.sewadar_name,
           centre: profile?.centre,
@@ -390,7 +376,7 @@ const handleScan = useCallback(async (badge) => {
           console.error('Failed to close session:', error)
           return
         }
-        await logAction(profile?.badge_number, profile?.name, 'SCAN_OUT', {
+        logAction(profile?.badge_number, profile?.name, 'SCAN_OUT', {
           badge: popupState?.sewadar?.badge_number,
           name: popupState?.sewadar?.sewadar_name,
           session_id: sessionId
@@ -486,8 +472,8 @@ const handleScan = useCallback(async (badge) => {
         setManualOpenSession(data)
         
         // Check if session is older than 12 hours
-        const inDate = new Date(data.in_date + 'T12:00:00')
-        const hoursSinceIn = (now - inDate) / (1000 * 60 * 60)
+        const inDateTime = new Date(data.in_date + 'T' + (data.in_time || '12:00') + ':00')
+        const hoursSinceIn = (now - inDateTime) / (1000 * 60 * 60)
         
         if (hoursSinceIn > 12) {
           // Session is very old - show forgot_out mode
@@ -519,22 +505,12 @@ const handleScan = useCallback(async (badge) => {
   }
 
   const submitManualEntry = async () => {
-    console.log('submitManualEntry called', {
-      manualSelectedSewadar: manualSelectedSewadar?.badge_number,
-      manualEntryType,
-      manualEntryTime,
-      manualForgotOutData,
-      manualOpenSession: manualOpenSession?.id
-    })
-    
     if (!manualSelectedSewadar) {
-      console.log('No sewadar selected')
       return
     }
     
     if (manualEntryType === 'in') {
       if (!manualEntryTime.date || !manualEntryTime.time) {
-        console.log('IN: missing date/time')
         return
       }
     } else {
@@ -554,7 +530,6 @@ const handleScan = useCallback(async (badge) => {
     const now = new Date()
     
     if (manualEntryType === 'in') {
-      console.log('Inserting IN session...')
       const record = {
         badge_number: manualSelectedSewadar.badge_number,
         sewadar_name: manualSelectedSewadar.sewadar_name,
@@ -583,7 +558,7 @@ const handleScan = useCallback(async (badge) => {
           console.error('Failed to insert session:', error)
         }
         if (!error) {
-          await logAction(profile?.badge_number, profile?.name, 'MANUAL_IN', {
+          logAction(profile?.badge_number, profile?.name, 'MANUAL_IN', {
             badge: manualSelectedSewadar.badge_number,
             name: manualSelectedSewadar.sewadar_name,
             centre: profile?.centre,
@@ -593,9 +568,7 @@ const handleScan = useCallback(async (badge) => {
         fetchRecentScans()
       }
     } else {
-      console.log('Processing OUT session...', { manualOpenSession })
       if (!manualOpenSession) {
-        console.log('No open session found')
         setManualNoSession(true)
         return
       }
@@ -603,10 +576,7 @@ const handleScan = useCallback(async (badge) => {
       const outDate = manualForgotOutData?.date || manualEntryTime.date
       const outTime = manualForgotOutData?.time || manualEntryTime.time
       
-      console.log('OUT date/time:', { outDate, outTime, from: manualForgotOutData ? 'forgotOutData' : 'manualEntryTime' })
-      
       if (!outDate || !outTime) {
-        console.log('Missing out date/time')
         return
       }
       
@@ -619,22 +589,10 @@ const handleScan = useCallback(async (badge) => {
         out_scanner_centre: profile?.centre || manualSelectedSewadar?.centre || 'UNKNOWN',
         updated_at: now.toISOString()
       }
-      
-      console.log('Updating session:', manualOpenSession.id, updateData)
-
       const sessionId = typeof manualOpenSession === 'object' ? manualOpenSession.id : manualOpenSession
-      console.log('Using session ID:', sessionId, 'type:', typeof sessionId, 'manualOpenSession:', manualOpenSession)
 
       if (isOnline) {
-        const { data: existing } = await supabase
-          .from('attendance_sessions')
-          .select('*')
-          .eq('id', sessionId)
-          .single()
-        console.log('Existing session before update:', existing)
-        
-        // Try using RPC to bypass RLS
-        const rpcResult = await supabase.rpc('close_session', {
+        await supabase.rpc('close_session', {
           p_session_id: sessionId,
           p_out_date: outDate,
           p_out_time: outTime,
@@ -642,20 +600,12 @@ const handleScan = useCallback(async (badge) => {
           p_out_scanner_name: profile?.name,
           p_out_scanner_centre: profile?.centre || manualSelectedSewadar?.centre || 'UNKNOWN'
         })
-        console.log('RPC result:', rpcResult)
         
-        await logAction(profile?.badge_number, profile?.name, 'MANUAL_OUT', {
+        logAction(profile?.badge_number, profile?.name, 'MANUAL_OUT', {
           badge: manualSelectedSewadar.badge_number,
           name: manualSelectedSewadar.sewadar_name,
           session_id: sessionId
         })
-
-        const { data: updated } = await supabase
-          .from('attendance_sessions')
-          .select('*')
-          .eq('id', sessionId)
-          .single()
-        console.log('Session after update:', updated)
         
         fetchRecentScans()
       }

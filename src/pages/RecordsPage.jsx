@@ -322,13 +322,13 @@ export default function RecordsPage() {
         const visible = (data || []).filter(c => c.name === profile.centre || c.parent_centre === profile.centre)
         setCentresList(visible)
         setCentreFilter(profile.centre)
-      })
+      }).catch(() => {})
     }
   }, [profile?.role, profile?.centre])
 
   const isMobile = () => window.innerWidth < 768
 
-  const handleDelete = async (table, id) => {
+  const handleDelete = useCallback(async (table, id) => {
     const label = table === 'attendance_sessions' ? 'attendance' : 'jatha'
     if (!window.confirm(`Delete this ${label} record?`)) return
     const { data: deletedRecord } = await supabase.from(table).select('*').eq('id', id).single()
@@ -352,13 +352,14 @@ export default function RecordsPage() {
     if (error) { toast.error(error.message); return }
     toast.success(`${label} record deleted`)
     logAction(profile?.badge_number, profile?.name, 'RECORD_DELETE', { table, record_id: id, type: label, deleted_record: deletedRecord || null })
-    fetchRecords()
-  }
+    fetchRecordsRef.current()
+  }, [profile, toast])
 
   const fetchRecords = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
 
+    try {
     const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
     const targetCentre = centreFilter || (isASO ? null : profile?.centre)
 
@@ -520,8 +521,13 @@ export default function RecordsPage() {
       setJathaRecords([])
     }
 
-    setLoading(false)
-    setRefreshing(false)
+    } catch (err) {
+      console.error('Failed to fetch records:', err)
+      toast?.error('Failed to load records. Check your connection.')
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
   }, [dateFrom, dateTo, dutyFilter, profile?.centre, profile?.role, searchTerm, centreFilter, jathaQuickFilter])
 
   const fetchRecordsRef = useRef(fetchRecords)
@@ -583,9 +589,11 @@ export default function RecordsPage() {
 
     const csv = [headers.join(','), ...rows.map(row => row.join(','))].join('\n')
     const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    const blobUrl = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.href = blobUrl
     a.download = `${activeTab}_records_${dateFrom}_to_${dateTo}.csv`
     a.click()
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
   }
 
   let filteredRecords = activeTab === 'gate' ? gateRecords : jathaRecords

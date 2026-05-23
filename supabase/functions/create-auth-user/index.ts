@@ -7,17 +7,66 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
+function decodeJWTPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return null
+    // Convert base64url to base64
+    let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    while (b64.length % 4) b64 += '='
+    return JSON.parse(atob(b64))
+  } catch {
+    return null
+  }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   const INTERNAL_SECRET = Deno.env.get('INTERNAL_SECRET')
-  const authHeader = req.headers.get('X-Internal-Secret')
+  if (!INTERNAL_SECRET) {
+    return new Response(JSON.stringify({ error: 'Server misconfigured' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    })
+  }
 
-  if (authHeader !== INTERNAL_SECRET) {
+  // Extract caller's JWT from Authorization header (auto-sent by supabase-js SDK)
+  const authHeader = req.headers.get('Authorization') || ''
+  const token = authHeader.replace('Bearer ', '')
+  if (!token) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    })
+  }
+
+  const payload = decodeJWTPayload(token)
+  const callerUserId = payload?.sub as string | undefined
+  if (!callerUserId) {
+    return new Response(JSON.stringify({ error: 'Invalid token' }), {
+      status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    })
+  }
+
+  // Verify caller is a super_admin using service-role client
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  )
+
+  const { data: caller, error: callerError } = await supabase
+    .from('users')
+    .select('role')
+    .eq('auth_id', callerUserId)
+    .single()
+
+  if (callerError || !caller || caller.role !== 'super_admin') {
+    return new Response(JSON.stringify({ error: 'Forbidden: super_admin access required' }), {
+      status: 403,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })
   }
@@ -30,11 +79,6 @@ serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })
   }
-
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-  )
 
   const { data, error } = await supabase.auth.admin.createUser({
     email,
@@ -57,6 +101,12 @@ serve(async (req) => {
 
   if (updateError) {
     console.error('Failed to update user with auth_id:', updateError)
+    // Roll back: delete the auth user we just created
+    await supabase.auth.admin.deleteUser(data.user.id)
+    return new Response(JSON.stringify({ error: 'Failed to link auth user to profile' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    })
   }
 
   return new Response(JSON.stringify({ user_id: data.user.id }), {
