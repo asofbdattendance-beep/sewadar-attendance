@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase, ROLES, formatDateIndian, formatTime12Hour, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { 
-  ChevronDown, Calendar, Download, FileSpreadsheet, FileText, 
+  ChevronDown, ChevronRight, ChevronUp, Calendar, Download, FileSpreadsheet, FileText, 
   Users, UserCheck, Clock, AlertTriangle, UserX, Building, MapPin, RefreshCw, Settings, CheckCircle
 } from 'lucide-react'
 
@@ -26,6 +26,14 @@ const REPORTS = {
       { id: 'jatha_active', label: 'Active Jathas', icon: Calendar },
       { id: 'jatha_historical', label: 'Past Jathas', icon: Calendar },
       { id: 'jatha_all', label: 'All Jathas', icon: Calendar },
+    ]
+  },
+  ASO: {
+    id: 'aso',
+    label: 'ASO Reports',
+    icon: Users,
+    subReports: [
+      { id: 'aso_overview', label: 'Overview', icon: Calendar },
     ]
   }
 }
@@ -60,18 +68,18 @@ function DateRangePicker({ dateFrom, dateTo, onDateFromChange, onDateToChange, s
   )
 }
 
-function ExportDropdown({ onExport, loading }) {
+function ExportDropdown({ onExport, loading, label = 'Export', description }) {
   const [open, setOpen] = useState(false)
   
   return (
     <div className="export-dropdown">
       <button 
-        className="export-btn" 
+        className={`export-btn ${description ? 'has-desc' : ''}`} 
         onClick={() => setOpen(!open)}
         disabled={loading}
       >
         <Download size={16} />
-        Export
+        <span className="export-btn-label">{label}{description && <span className="export-btn-desc">{description}</span>}</span>
         <ChevronDown size={14} />
       </button>
       {open && (
@@ -197,6 +205,108 @@ function ConfigModal({ open, onClose, title, children, onSave }) {
   )
 }
 
+function AsoTreeNode({ name, data, children, level = 0, defaultOpen = false }) {
+  const [isOpen, setIsOpen] = useState(defaultOpen || level === 0)
+  const hasChildren = children && children.length > 0
+  const indent = level * 24
+
+  return (
+    <div className="aso-tree-item">
+      <div
+        className={`aso-tree-row ${hasChildren ? 'clickable' : ''}`}
+        style={{ paddingLeft: `${12 + indent}px` }}
+        onClick={() => hasChildren && setIsOpen(!isOpen)}
+      >
+        <span className="aso-tree-toggle">
+          {hasChildren ? (
+            isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />
+          ) : (
+            <span style={{ width: 16, display: 'inline-block' }} />
+          )}
+        </span>
+        <span className="aso-tree-name">
+          {level === 0 && <MapPin size={14} />}
+          {name}
+        </span>
+        <span className="aso-stat total">{data.total}</span>
+        <span className="aso-stat permanent">{data.permanent}</span>
+        <span className="aso-stat open">{data.open}</span>
+        <span className="aso-stat elderly">{data.elderly}</span>
+      </div>
+      {isOpen && hasChildren && (
+        <div className="aso-tree-children">
+          {children.map(child => (
+            <AsoTreeNode
+              key={child.name}
+              name={child.name}
+              data={child.data}
+              children={child.children}
+              level={level + 1}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AsoOverviewTree({ centres, loading }) {
+  if (loading) {
+    return <div className="report-loading"><RefreshCw size={24} className="spin" /><p>Loading centres...</p></div>
+  }
+  if (!centres || centres.length === 0) {
+    return <div className="report-empty"><CheckCircle size={48} /><p>No centre data available</p></div>
+  }
+
+  const mergeCounts = (node) => {
+    let total = node.data.total
+    let permanent = node.data.permanent
+    let open = node.data.open
+    let elderly = node.data.elderly
+    for (const child of (node.children || [])) {
+      total += child.data.total
+      permanent += child.data.permanent
+      open += child.data.open
+      elderly += child.data.elderly
+    }
+    return { total, permanent, open, elderly }
+  }
+  const totalAll = centres.reduce((s, c) => s + mergeCounts(c).total, 0)
+  const totalPerm = centres.reduce((s, c) => s + mergeCounts(c).permanent, 0)
+  const totalOpen = centres.reduce((s, c) => s + mergeCounts(c).open, 0)
+  const totalElderly = centres.reduce((s, c) => s + mergeCounts(c).elderly, 0)
+
+  return (
+    <div className="aso-container">
+      <div className="aso-summary-row">
+        <div className="aso-summary-stat"><span className="aso-summary-value">{totalAll}</span><span className="aso-summary-label">Total</span></div>
+        <div className="aso-summary-stat"><span className="aso-summary-value">{totalPerm}</span><span className="aso-summary-label">Permanent</span></div>
+        <div className="aso-summary-stat"><span className="aso-summary-value">{totalOpen}</span><span className="aso-summary-label">Open</span></div>
+        <div className="aso-summary-stat"><span className="aso-summary-value">{totalElderly}</span><span className="aso-summary-label">Elderly</span></div>
+      </div>
+      <div className="aso-tree-legend">
+        <span>Centre</span>
+        <span className="aso-legend-num">Total</span>
+        <span className="aso-legend-num">Permanent</span>
+        <span className="aso-legend-num">Open</span>
+        <span className="aso-legend-num">Elderly</span>
+      </div>
+      <div className="aso-tree">
+        {centres.map(root => (
+          <AsoTreeNode
+            key={root.name}
+            name={root.name}
+            data={root.data}
+            children={root.children}
+            level={0}
+            defaultOpen={false}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function ReportsPage() {
   const { profile } = useAuth()
   const [loading, setLoading] = useState(false)
@@ -218,6 +328,7 @@ export default function ReportsPage() {
   const [lateThreshold, setLateThreshold] = useState(LATE_THRESHOLD_DEFAULT)
   const [showSettings, setShowSettings] = useState(false)
   const [jathaFilter, setJathaFilter] = useState('active') // active, historical, all
+  const [asoTreeData, setAsoTreeData] = useState([])
 
   const currentCategory = Object.values(REPORTS).find(c => c.id === activeCategory)
   const currentSubReports = currentCategory?.subReports || []
@@ -298,6 +409,9 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           break
         case 'centre_wise':
           await fetchCentreWise(canViewAllCentres, userCentre)
+          break
+        case 'aso_overview':
+          await fetchAsoOverview(canViewAllCentres, userCentre)
           break
         default:
           setReportData([])
@@ -839,17 +953,120 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     setReportSummary({ totalCentres: rows.length })
   }
 
-  // Export handlers
-  const handleExport = (format) => {
-    if (reportData.length === 0) return
+  // ASO Overview: Centre-wise badge breakdown
+  const fetchAsoOverview = async (canViewAllCentres, userCentre) => {
+    const [centresRes, sewadarsRes] = await Promise.all([
+      supabase.from('centres').select('name, parent_centre').order('name'),
+      supabase.from('sewadars').select('centre, badge_status')
+    ])
 
-    const headers = getReportHeaders()
-    const rows = reportData.map(row => {
-      if (Array.isArray(row)) {
-        return row.map(cell => typeof cell === 'object' ? cell.value : cell)
+    const centres = centresRes.data || []
+    const sewadars = sewadarsRes.data || []
+
+    // Build centre hierarchy
+    const centreMap = {}
+    for (const c of centres) {
+      centreMap[c.name] = { name: c.name, parent: c.parent_centre, data: { total: 0, permanent: 0, open: 0, elderly: 0 }, children: [] }
+    }
+
+    // Count badges per centre
+    for (const s of sewadars) {
+      const entry = centreMap[s.centre]
+      if (!entry) continue
+      entry.data.total++
+      if (s.badge_status === 'PERMANENT') entry.data.permanent++
+      else if (s.badge_status === 'OPEN') entry.data.open++
+      else if (s.badge_status === 'ELDERLY') entry.data.elderly++
+    }
+
+    // Build tree: root centres + children
+    const rootCentres = []
+    for (const [, entry] of Object.entries(centreMap)) {
+      if (entry.parent && centreMap[entry.parent]) {
+        centreMap[entry.parent].children.push(entry)
+      } else {
+        rootCentres.push(entry)
       }
-      return Object.values(row).map(cell => typeof cell === 'object' ? cell.value : cell)
+    }
+
+    const centreOrder = [
+      'ANKHEER', 'BALLABGARH', 'MACHHGAR', 'BAROLI',
+      'DLF CITY GURGAON', 'ABHEYPUR', 'NUH', 'PUNAHANA', 'SOHNA',
+      'FIROZPUR JHIRKA',
+      'GURGAON', 'BADHA SIKENDERPUR', 'BILASPUR', 'BUDHERA', 'DUNDAHERA',
+      'FARUKH NAGAR', 'JATAULA', 'KASAN', 'PATAUDI',
+      'HODAL', 'MOHANA', 'FATEHPUR BILLOCH',
+      'NANGLA GUJRAN', 'NIT - 2',
+      'PALWAL', 'BAHIN', 'HASANPUR', 'HATHIN', 'MANDKOLA', 'NAYAGAON', 'SIHA',
+      'PRITHLA',
+      'RAJENDRA PARK',
+      'SECTOR-15-A', 'DHATIR', 'GREATER FARIDABAD',
+      'SURAJ KUND',
+      'TAORU', 'TIGAON', 'NACHAULI',
+      'ZAIBABAD KHERLI'
+    ]
+    const orderMap = {}
+    centreOrder.forEach((name, i) => { orderMap[name.toUpperCase()] = i })
+    rootCentres.sort((a, b) => {
+      const ai = orderMap[a.name.toUpperCase()] ?? 999
+      const bi = orderMap[b.name.toUpperCase()] ?? 999
+      return ai - bi
     })
+    for (const root of rootCentres) {
+      root.children.sort((a, b) => b.data.total - a.data.total)
+    }
+
+    setReportSummary({ totalRoots: rootCentres.length, totalCentres: centres.length })
+    setAsoTreeData(rootCentres)
+  }
+
+  // Export handlers
+  const handleExport = (format, mode = 'detailed') => {
+    if (activeReport !== 'aso_overview' && reportData.length === 0) return
+
+    let headers, rows
+
+    if (activeReport === 'aso_overview') {
+      if (mode === 'summary') {
+        // Centre-wise summary: parent only, counts merged with children
+        headers = ['Centre', 'Total', 'Permanent', 'Open', 'Elderly']
+        const mergeCounts = (node) => {
+          let total = node.data.total
+          let permanent = node.data.permanent
+          let open = node.data.open
+          let elderly = node.data.elderly
+          for (const child of (node.children || [])) {
+            total += child.data.total
+            permanent += child.data.permanent
+            open += child.data.open
+            elderly += child.data.elderly
+          }
+          return { total, permanent, open, elderly }
+        }
+        rows = asoTreeData.map(n => {
+          const merged = mergeCounts(n)
+          return [n.name, merged.total, merged.permanent, merged.open, merged.elderly]
+        })
+      } else {
+        // Detailed: Centre column, Sub Centre column, counts
+        headers = getReportHeaders()
+        rows = []
+        for (const root of asoTreeData) {
+          rows.push([root.name, '', root.data.total, root.data.permanent, root.data.open, root.data.elderly])
+          for (const child of (root.children || [])) {
+            rows.push([root.name, child.name, child.data.total, child.data.permanent, child.data.open, child.data.elderly])
+          }
+        }
+      }
+    } else {
+      headers = getReportHeaders()
+      rows = reportData.map(row => {
+        if (Array.isArray(row)) {
+          return row.map(cell => typeof cell === 'object' ? cell.value : cell)
+        }
+        return Object.values(row).map(cell => typeof cell === 'object' ? cell.value : cell)
+      })
+    }
 
     if (format === 'csv') {
       exportCSV(headers, rows)
@@ -873,6 +1090,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       weekly_summary: ['Date', 'Day', 'Present', '%'],
       department_wise: ['Department', 'Total', 'Present', '%', 'PERMANENT', 'OPEN'],
       centre_wise: ['Centre', 'Total', 'Present', '%'],
+      aso_overview: ['Centre', 'Sub Centre', 'Total', 'Permanent', 'Open', 'Elderly'],
+      aso_overview_summary: ['Centre', 'Total', 'Permanent', 'Open', 'Elderly'],
     }
     return reportHeaders[activeReport] || []
   }
@@ -978,13 +1197,18 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       {/* Date Range */}
       <div className="report-filters">
         <DateRangePicker
-          dateFrom={['late_coming', 'jatha_all'].includes(activeReport) ? dateFrom : today}
-          dateTo={['late_coming', 'jatha_all'].includes(activeReport) ? dateTo : today}
-          onDateFromChange={(val) => ['late_coming', 'jatha_all'].includes(activeReport) && setDateFrom(val)}
-          onDateToChange={(val) => ['late_coming', 'jatha_all'].includes(activeReport) ? setDateTo(val) : setDateTo(val)}
-          singleDate={!['late_coming', 'jatha_all'].includes(activeReport)}
+          dateFrom={['late_coming', 'jatha_all', 'aso_overview'].includes(activeReport) ? dateFrom : today}
+          dateTo={['late_coming', 'jatha_all', 'aso_overview'].includes(activeReport) ? dateTo : today}
+          onDateFromChange={(val) => ['late_coming', 'jatha_all', 'aso_overview'].includes(activeReport) && setDateFrom(val)}
+          onDateToChange={(val) => ['late_coming', 'jatha_all', 'aso_overview'].includes(activeReport) ? setDateTo(val) : setDateTo(val)}
+          singleDate={!['late_coming', 'jatha_all', 'aso_overview'].includes(activeReport)}
         />
-        <ExportDropdown onExport={handleExport} loading={loading} />
+        <div className="export-btn-group">
+          <ExportDropdown onExport={handleExport} loading={loading} label="Export" description="Centre + Sub Centre" />
+          {activeReport === 'aso_overview' && (
+            <ExportDropdown onExport={(format) => handleExport(format, 'summary')} loading={loading} label="Summary" description="Parent centres only" />
+          )}
+        </div>
       </div>
 
       {/* Main Tabs */}
@@ -1055,6 +1279,12 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           {activeReport === 'centre_wise' && (
             <SummaryCard title="Centres" value={reportSummary.totalCentres} icon={MapPin} color="blue" />
           )}
+          {activeReport === 'aso_overview' && (
+            <>
+              <SummaryCard title="Root Centres" value={reportSummary.totalRoots} icon={Building} color="blue" />
+              <SummaryCard title="Total Centres" value={reportSummary.totalCentres} icon={MapPin} color="green" />
+            </>
+          )}
         </div>
       )}
 
@@ -1064,6 +1294,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           <RefreshCw size={24} className="spin" />
           <p>Loading report...</p>
         </div>
+      ) : activeReport === 'aso_overview' ? (
+        <AsoOverviewTree centres={asoTreeData} loading={false} />
       ) : (
         <ReportTable
           headers={getTableHeaders()}

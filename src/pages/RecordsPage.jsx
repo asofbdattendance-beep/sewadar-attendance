@@ -55,6 +55,14 @@ function getJathaTypeLabel(type) {
   return labels[type] || type
 }
 
+function jathaDays(fromDate, toDate) {
+  if (!fromDate || !toDate) return null
+  const from = new Date(fromDate + 'T12:00:00')
+  const to = new Date(toDate + 'T12:00:00')
+  if (isNaN(from.getTime()) || isNaN(to.getTime())) return null
+  return Math.floor((to - from) / (1000 * 60 * 60 * 24)) + 1
+}
+
 function JathaCard({ session, onDelete }) {
   const isSuperAdmin = session.role === ROLES.SUPER_ADMIN
   return (
@@ -102,6 +110,9 @@ function JathaCard({ session, onDelete }) {
             <span className="jatha-date-label">TO DATE</span>
             <span className="jatha-date">{formatDateIndian(session.out_date)}</span>
           </div>
+          {jathaDays(session.in_date, session.out_date) && (
+            <div className="jatha-days-badge">{jathaDays(session.in_date, session.out_date)} days</div>
+          )}
         </div>
       </div>
       <div className="jatha-record-footer">
@@ -115,7 +126,7 @@ function JathaCard({ session, onDelete }) {
             <span>Remarks: {session.remarks}</span>
           </div>
         )}
-        <div className="jatha-record-date">{formatDateIndian(session.in_date)}</div>
+        <div className="jatha-record-date">{session.entered_at ? formatDateIndian(session.entered_at.split('T')[0]) : formatDateIndian(session.in_date)}</div>
         {onDelete && (
           <button className="btn-icon btn-delete" style={{ marginLeft: 8 }} title="Delete entry" onClick={() => onDelete('jatha_attendance', session.id)}>
             <Trash2 size={14} />
@@ -253,7 +264,7 @@ function JathaTable({ records, onDelete }) {
       <table className="records-table">
         <thead>
           <tr>
-            <th>Badge</th><th>Name</th><th>Sewadar Centre</th><th>Destination</th><th>Type</th><th>Department</th><th>From Date</th><th>To Date</th><th>Remarks</th><th>Entered By</th><th style={{width:50}}></th>
+            <th>Badge</th><th>Name</th><th>Sewadar Centre</th><th>Destination</th><th>Type</th><th>Department</th><th>From Date</th><th>To Date</th><th>Days</th><th>Remarks</th><th>Entered By</th><th style={{width:50}}></th>
           </tr>
         </thead>
         <tbody>
@@ -267,6 +278,7 @@ function JathaTable({ records, onDelete }) {
               <td className="cell-centre">{r.jatha_department || '-'}</td>
               <td className="cell-date">{formatDateIndian(r.in_date)}</td>
               <td className="cell-date">{formatDateIndian(r.out_date)}</td>
+              <td className="cell-days">{jathaDays(r.in_date, r.out_date) || '-'}</td>
               <td className="cell-remarks" style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.remarks || '-'}</td>
               <td className="cell-scanner">{r.entered_by_name || '-'}</td>
               <td>{onDelete && <button className="btn-icon btn-delete" onClick={() => onDelete('jatha_attendance', r.id)} title="Delete"><Trash2 size={13} /></button>}</td>
@@ -281,7 +293,7 @@ function JathaTable({ records, onDelete }) {
 export default function RecordsPage() {
   const { profile } = useAuth()
   const toast = useToast()
-  const canWrite = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ADMIN || profile?.role === ROLES.CENTRE_USER
+  const canWrite = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ADMIN
   const [activeTab, setActiveTab] = useState('gate')
   const [gateRecords, setGateRecords] = useState([])
   const [jathaRecords, setJathaRecords] = useState([])
