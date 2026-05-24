@@ -207,6 +207,8 @@ export default function SuperAdminPage() {
   const [data, setData] = useState({})
   const [loading, setLoading] = useState({})
   const [search, setSearch] = useState('')
+  const [debouncedTableSearch, setDebouncedTableSearch] = useState('')
+  const tableSearchDebounceRef = useRef(null)
   const [modal, setModal] = useState({ open: false, mode: 'add', data: null })
   const [formData, setFormData] = useState({})
   const [centres, setCentres] = useState([])
@@ -219,6 +221,7 @@ export default function SuperAdminPage() {
   const [successData, setSuccessData] = useState(null)
   const [expandedLog, setExpandedLog] = useState(null)
   const sewadarSearchTimeout = useRef(null)
+  const sewadarSearchTickRef = useRef(0)
 
   const currentTable = TABLES.find(t => t.id === activeTable)
   const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
@@ -264,12 +267,17 @@ export default function SuperAdminPage() {
       setSewadarResults([])
       return
     }
-    const { data } = await supabase
-      .from('sewadars')
-      .select('badge_number, sewadar_name, centre, department')
-      .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
-      .limit(10)
-    setSewadarResults(data || [])
+    const tick = ++sewadarSearchTickRef.current
+    try {
+      const { data } = await supabase
+        .from('sewadars')
+        .select('badge_number, sewadar_name, centre, department')
+        .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
+        .limit(10)
+      if (tick === sewadarSearchTickRef.current) setSewadarResults(data || [])
+    } catch (err) {
+      console.error('Sewadar search error:', err)
+    }
   }
 
   const fetchData = async (tableId) => {
@@ -303,9 +311,15 @@ export default function SuperAdminPage() {
     return row
   }) || []
       
+  useEffect(() => {
+    if (tableSearchDebounceRef.current) clearTimeout(tableSearchDebounceRef.current)
+    tableSearchDebounceRef.current = setTimeout(() => setDebouncedTableSearch(search), 200)
+    return () => { if (tableSearchDebounceRef.current) clearTimeout(tableSearchDebounceRef.current) }
+  }, [search])
+
       const filteredData = tableData.filter(row => {
-    if (!search) return true
-    const searchLower = search.toLowerCase()
+    if (!debouncedTableSearch) return true
+    const searchLower = debouncedTableSearch.toLowerCase()
     return currentTable.columns.some(col => {
       const val = row[col]
       return val && String(val).toLowerCase().includes(searchLower)
@@ -486,7 +500,7 @@ export default function SuperAdminPage() {
   if (!canAccessPanel) {
     return (
       <div className="page-full" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
-        <div style={{ textAlign: 'center', color: '#9ca3af' }}>
+        <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
           <Shield size={48} style={{ marginBottom: 12, opacity: 0.5 }} />
           <p>Access denied. ASO only.</p>
         </div>
@@ -496,19 +510,15 @@ export default function SuperAdminPage() {
 
   return (
     <div className="page-full pb-nav">
-      <div className="header" style={{ background: 'white', padding: '16px', borderBottom: '1px solid #e5e7eb' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Settings size={22} style={{ color: '#6366f1' }} />
-            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>Admin Panel</h2>
+      <div className="header" style={{ background: 'white', padding: '16px', borderBottom: '1px solid var(--border)' }}>
+            <Settings size={22} style={{ color: 'var(--excel-green)' }} />
+            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>ASO Panel</h2>
           </div>
           {activeTable !== 'logs' && canWrite && (
             <button className="btn-primary" onClick={handleAdd} style={{ padding: '10px 18px', fontSize: 14 }}>
               <Plus size={16} /> Add New
             </button>
           )}
-        </div>
-      </div>
 
       <div className="superadmin-tabs" style={{ background: 'white' }}>
         {TABLES.map(table => (
@@ -574,7 +584,7 @@ export default function SuperAdminPage() {
                             {row[col] ? 'Active' : 'Inactive'}
                           </span>
                         ) : col === 'permissions' && (activeTable === 'users' || activeTable === 'role_masters') ? (
-                          <span style={{ fontSize: 12, color: '#6b7280' }}>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                             {(() => {
                               let p = row[col]
                               if (typeof p === 'string') {
@@ -601,7 +611,7 @@ export default function SuperAdminPage() {
                         ) : col === 'action' && activeTable === 'logs' ? (
                           <span className={`action-pill ${row[col]}`}>{row[col]}</span>
                         ) : col === 'timestamp' && activeTable === 'logs' ? (
-                          <span style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                             {new Date(row[col]).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
                           </span>
                         ) : col === 'user_badge' && activeTable === 'logs' ? (
@@ -685,6 +695,24 @@ export default function SuperAdminPage() {
               }}>
                 <Copy size={16} /> Copy All (WhatsApp)
               </button>
+              <button className="btn-outline" onClick={() => {
+                setShowSuccess(false)
+                setSelectedSewadar(null)
+                setSewadarSearch('')
+                setSewadarResults([])
+                setGeneratedPassword('')
+                const empty = { ...currentTable.defaults } || {}
+                currentTable.columns.forEach(col => {
+                  if (!(col in empty)) {
+                    if (col === 'is_active') empty[col] = true
+                    else if (col === 'permissions') empty[col] = {}
+                    else empty[col] = ''
+                  }
+                })
+                setFormData(empty)
+              }}>
+                <UserPlus size={16} /> Add Another
+              </button>
               <button className="btn-ghost" onClick={() => {
                 setModal({ open: false, mode: 'add', data: null })
                 setShowSuccess(false)
@@ -740,7 +768,7 @@ export default function SuperAdminPage() {
                   </div>
                 )}
                 {sewadarSearch.length >= 2 && sewadarResults.length === 0 && (
-                  <div style={{ textAlign: 'center', padding: 24, color: '#9ca3af', fontSize: 14 }}>No sewadar found</div>
+                  <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)', fontSize: 14 }}>No sewadar found</div>
                 )}
               </div>
             ) : (

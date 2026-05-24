@@ -366,14 +366,103 @@ CREATE POLICY logs_insert ON public.logs
   FOR INSERT TO authenticated WITH CHECK (true);
 
 -- ============================================================
+-- RPC: Get current OPEN session for a badge number
+-- Returns JSON (single object or null) so JS receives data as object not array
+-- SECURITY DEFINER bypasses RLS so scanner can check any badge
+-- ============================================================
+DROP FUNCTION IF EXISTS public.get_open_session(TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION public.get_open_session(p_badge TEXT)
+RETURNS JSON
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT row_to_json(s.*) AS result
+  FROM public.attendance_sessions s
+  WHERE s.badge_number = p_badge AND s.status = 'OPEN'
+  LIMIT 1;
+$$;
+
+-- ============================================================
+-- RPC: Close an open session with OUT details
+-- SECURITY DEFINER so scanner can close any session
+-- ============================================================
+DROP FUNCTION IF EXISTS public.close_session(BIGINT, DATE, TIME, TEXT, TEXT, TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION public.close_session(
+  p_session_id BIGINT,
+  p_out_date DATE,
+  p_out_time TIME,
+  p_out_scanner_badge TEXT,
+  p_out_scanner_name TEXT,
+  p_out_scanner_centre TEXT
+)
+RETURNS VOID
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  UPDATE public.attendance_sessions
+  SET
+    out_date = p_out_date,
+    out_time = p_out_time,
+    out_scanner_badge = p_out_scanner_badge,
+    out_scanner_name = p_out_scanner_name,
+    out_scanner_centre = p_out_scanner_centre,
+    status = 'CLOSED',
+    updated_at = now()
+  WHERE id = p_session_id AND status = 'OPEN';
+$$;
+
+-- ============================================================
+-- INDEXES (performance)
+-- ============================================================
+CREATE INDEX IF NOT EXISTS idx_attendance_sessions_badge ON public.attendance_sessions(badge_number);
+CREATE INDEX IF NOT EXISTS idx_attendance_sessions_in_date ON public.attendance_sessions(in_date);
+CREATE INDEX IF NOT EXISTS idx_jatha_attendance_badge ON public.jatha_attendance(badge_number);
+CREATE INDEX IF NOT EXISTS idx_sewadars_badge ON public.sewadars(badge_number);
+
+-- ============================================================
+-- FOREIGN KEY CONSTRAINTS (drop first — FKs depend on UNIQUE index)
+-- ON DELETE SET NULL preserves attendance history when sewadar is deleted
+-- ============================================================
+ALTER TABLE public.attendance_sessions
+  DROP CONSTRAINT IF EXISTS fk_attendance_sessions_badge;
+
+ALTER TABLE public.jatha_attendance
+  DROP CONSTRAINT IF EXISTS fk_jatha_attendance_badge;
+
+-- ============================================================
+-- UNIQUE CONSTRAINT on sewadars.badge_number (safe after FKs dropped)
+-- Safe: zero duplicates confirmed in live DB
+-- ============================================================
+ALTER TABLE public.sewadars DROP CONSTRAINT IF EXISTS sewadars_badge_number_unique;
+ALTER TABLE public.sewadars ADD CONSTRAINT sewadars_badge_number_unique UNIQUE (badge_number);
+
+-- ============================================================
+-- FOREIGN KEY CONSTRAINTS (recreate after UNIQUE)
+-- ============================================================
+ALTER TABLE public.attendance_sessions
+  ADD CONSTRAINT fk_attendance_sessions_badge
+  FOREIGN KEY (badge_number) REFERENCES public.sewadars(badge_number)
+  ON DELETE SET NULL;
+
+ALTER TABLE public.jatha_attendance
+  ADD CONSTRAINT fk_jatha_attendance_badge
+  FOREIGN KEY (badge_number) REFERENCES public.sewadars(badge_number)
+  ON DELETE SET NULL;
+
+-- ============================================================
 -- HOW TO DEPLOY
 -- ============================================================
 -- 1. Run the entire file in Supabase SQL Editor
--- 2. This recreates all helper functions AND all RLS policies
--- 3. Existing data is preserved (DDL only affects policies/functions)
--- 4. New functions added in v2.2:
---    - get_sewadar_by_badge(p_badge): bypass RLS for scanner badge lookup
---    - search_sewadars_all(p_term): bypass RLS for cross-centre search
+-- 2. This recreates ALL helper functions, RLS policies, indexes, and constraints
+-- 3. Existing data is preserved (DDL only affects policies/functions/schema)
+-- 4. New in v2.3:
+--    - get_open_session(p_badge): returns current OPEN session JSON
+--    - close_session(...): closes session with OUT details
+--    - Indexes on badge_number and in_date for query performance
+--    - UNIQUE constraint on sewadars.badge_number (zero duplicates confirmed)
+--    - FK constraints (attendance_sessions, jatha_attendance → sewadars)
 --
 -- ============================================================
 -- VERIFICATION

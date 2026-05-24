@@ -30,6 +30,7 @@ function GateEntryForm({ onSuccess }) {
   const [allowOtherCentres, setAllowOtherCentres] = useState(false)
   const [childCentres, setChildCentres] = useState([])
   const searchTimeout = useRef(null)
+  const gateSearchTickRef = useRef(0)
 
   useEffect(() => {
     if (profile?.centre) {
@@ -191,34 +192,29 @@ function GateEntryForm({ onSuccess }) {
       return
     }
 
+    const tick = ++gateSearchTickRef.current
     setSearchLoading(true)
     const term = query.replace(/[%_]/g, '').toUpperCase().slice(0, 50)
 
-    if (profile?.centre && !allowOtherCentres) {
-      const { data: childData } = await supabase.from('centres').select('name').eq('parent_centre', profile.centre)
-      const childNames = (childData || []).map(c => c.name)
-      
-      if (childNames.length > 0) {
-        const parentSewadars = await supabase.from('sewadars').select('*').eq('centre', profile.centre).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(10)
-        
-        const childSewadars = await supabase.from('sewadars').select('*').in('centre', childNames).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(10)
-        
-        const all = [...(parentSewadars.data || []), ...(childSewadars.data || [])]
-        setSearchResults(all)
-        setSearchLoading(false)
-        return
+    try {
+      if (profile?.centre && !allowOtherCentres) {
+        const childNames = childCentres
+        const allowed = [profile.centre, ...childNames].filter(Boolean)
+        const q = supabase.from('sewadars').select('*').in('centre', allowed).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
+        const { data } = await q
+        if (tick !== gateSearchTickRef.current) return
+        const existing = entries.map(e => e.badge_number)
+        setSearchResults((data || []).filter(s => !existing.includes(s.badge_number)))
       } else {
-        const { data } = await supabase.from('sewadars').select('*').eq('centre', profile.centre).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
+        const { data } = await supabase.rpc('search_sewadars_all', { p_term: term })
+        if (tick !== gateSearchTickRef.current) return
         setSearchResults(data || [])
-        setSearchLoading(false)
-        return
       }
+    } catch (err) {
+      console.error('Gate sewadar search error:', err)
+    } finally {
+      if (tick === gateSearchTickRef.current) setSearchLoading(false)
     }
-
-    console.log('Searching ALL centres (allowOtherCentres=true, using RPC)')
-    const { data } = await supabase.rpc('search_sewadars_all', { p_term: term })
-    setSearchResults(data || [])
-    setSearchLoading(false)
   }
 
   const handleSearchChange = (e) => {
@@ -416,7 +412,7 @@ function GateEntryForm({ onSuccess }) {
           </div>
 
           {profile && (
-            <label className="checkbox-label" style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text)' }}>
+            <label className="checkbox-label" style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-primary)' }}>
               <input type="checkbox" checked={allowOtherCentres} onChange={e => { setAllowOtherCentres(e.target.checked); setSearchTerm('') }} />
               <span>Allow other centres (not default)</span>
             </label>
@@ -549,10 +545,22 @@ function JathaEntryForm({ onSuccess }) {
   const [searchResults, setSearchResults] = useState([])
   const [searchLoading, setSearchLoading] = useState(false)
   const searchTimeout = useRef(null)
+  const searchTickRef = useRef(0)
+
+  const [jathaSearchTerm, setJathaSearchTerm] = useState('')
+  const [jathaChildCentres, setJathaChildCentres] = useState([])
 
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
   const [remarks, setRemarks] = useState('')
+
+  useEffect(() => {
+    if (profile?.centre && profile?.role !== ROLES.SUPER_ADMIN) {
+      supabase.from('centres').select('name').eq('parent_centre', profile.centre).then(({ data }) => {
+        setJathaChildCentres(data?.map(c => c.name) || [])
+      }).catch(() => {})
+    }
+  }, [profile?.centre, profile?.role])
 
   const resetForm = () => {
     setSelectedJatha(null)
@@ -560,6 +568,7 @@ function JathaEntryForm({ onSuccess }) {
     setSewadars([])
     setSearchTerm('')
     setSearchResults([])
+    setJathaSearchTerm('')
     setFromDate('')
     setToDate('')
     setSubmitResult(null)
@@ -596,26 +605,31 @@ function JathaEntryForm({ onSuccess }) {
 
   const searchSewadars = async (query) => {
     if (!query || query.length < 2) { setSearchResults([]); return }
+    const tick = ++searchTickRef.current
     setSearchLoading(true)
     const term = query.replace(/[%_]/g, '').toUpperCase().slice(0, 50)
 
-    let q = supabase.from('sewadars')
-      .select('*')
-      .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
-      .limit(10)
+    try {
+      let q = supabase.from('sewadars')
+        .select('*')
+        .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
+        .limit(20)
 
-    if (profile?.centre && profile?.role !== ROLES.SUPER_ADMIN) {
-      const { data: childData } = await supabase.from('centres').select('name').eq('parent_centre', profile.centre)
-      const childNames = childData?.map(c => c.name) || []
-      const allowed = [profile.centre, ...childNames].filter(Boolean)
-      q = q.in('centre', allowed)
+      if (profile?.centre && profile?.role !== ROLES.SUPER_ADMIN) {
+        const allowed = [profile.centre, ...jathaChildCentres].filter(Boolean)
+        q = q.in('centre', allowed)
+      }
+
+      const { data } = await q
+      if (tick !== searchTickRef.current) return
+      const existingBadges = sewadars.map(s => s.badge_number)
+      const filtered = (data || []).filter(s => !existingBadges.includes(s.badge_number))
+      setSearchResults(filtered)
+    } catch (err) {
+      console.error('Jatha sewadar search error:', err)
+    } finally {
+      if (tick === searchTickRef.current) setSearchLoading(false)
     }
-
-    const { data } = await q
-    const existingBadges = sewadars.map(s => s.badge_number)
-    const filtered = (data || []).filter(s => !existingBadges.includes(s.badge_number))
-    setSearchResults(filtered)
-    setSearchLoading(false)
   }
 
   const handleSearchChange = (e) => {
@@ -832,7 +846,7 @@ function JathaEntryForm({ onSuccess }) {
             <>
               <div className="search-box-gate" style={{ marginTop: '1rem' }}>
                 <Search size={16} />
-                <input type="text" placeholder="Search jatha..." onFocus={() => setShowJathaDropdown(true)} />
+                <input type="text" placeholder="Search jatha..." value={jathaSearchTerm} onChange={e => setJathaSearchTerm(e.target.value)} onFocus={() => setShowJathaDropdown(true)} />
                 <ChevronDown size={16} />
               </div>
 
@@ -842,18 +856,27 @@ function JathaEntryForm({ onSuccess }) {
                   <div className="search-results-gate jatha-dropdown">
                     {loading ? <div className="loading-text">Loading...</div> :
                       fetchError ? <div className="no-results" style={{ color: 'var(--red)' }}>{fetchError}</div> :
-                      Object.keys(groupedJathas).length > 0 ?
-                        Object.entries(groupedJathas).map(([centre, items]) => (
-                          <div key={centre}>
-                            <div className="jatha-centre-header">{centre}</div>
-                            {items.map(j => (
-                              <div key={j.id} className="result-item-gate jatha-item"
-                                onClick={() => { setSelectedJatha(j); setShowJathaDropdown(false) }}>
-                                <div className="result-name">{j.department}</div>
-                              </div>
-                            ))}
-                          </div>
-                        )) : <div className="no-results">No jathas found</div>
+                      (() => {
+                        const term = jathaSearchTerm.toUpperCase()
+                        const filtered = term ? jathas.filter(j => j.centre_name.toUpperCase().includes(term) || j.department.toUpperCase().includes(term)) : jathas
+                        const grouped = filtered.reduce((acc, j) => {
+                          if (!acc[j.centre_name]) acc[j.centre_name] = []
+                          acc[j.centre_name].push(j)
+                          return acc
+                        }, {})
+                        return Object.keys(grouped).length > 0 ?
+                          Object.entries(grouped).map(([centre, items]) => (
+                            <div key={centre}>
+                              <div className="jatha-centre-header">{centre}</div>
+                              {items.map(j => (
+                                <div key={j.id} className="result-item-gate jatha-item"
+                                  onClick={() => { setSelectedJatha(j); setShowJathaDropdown(false) }}>
+                                  <div className="result-name">{j.department}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )) : <div className="no-results">No jathas found</div>
+                      })()
                     }
                   </div>
                 </>

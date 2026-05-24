@@ -28,17 +28,17 @@ class ErrorBoundary extends React.Component {
           justifyContent: 'center', 
           minHeight: '100vh', 
           padding: '2rem',
-          background: '#F0F4F8',
+          background: 'var(--bg)',
           fontFamily: 'Inter, sans-serif'
         }}>
-          <h2 style={{ color: '#C62828', marginBottom: '1rem' }}>Something went wrong</h2>
-          <p style={{ color: '#546E7A', textAlign: 'center', marginBottom: '1rem' }}>
+          <h2 style={{ color: 'var(--red)', marginBottom: '1rem' }}>Something went wrong</h2>
+          <p style={{ color: 'var(--text-secondary)', textAlign: 'center', marginBottom: '1rem' }}>
             {this.state.error?.message || 'Please refresh the page'}
           </p>
           <button 
             onClick={() => window.location.reload()}
             style={{
-              background: '#217346',
+              background: 'var(--excel-green)',
               color: 'white',
               border: 'none',
               padding: '0.75rem 1.5rem',

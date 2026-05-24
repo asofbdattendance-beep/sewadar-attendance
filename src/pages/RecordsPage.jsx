@@ -279,7 +279,7 @@ function JathaTable({ records, onDelete }) {
               <td className="cell-date">{formatDateIndian(r.in_date)}</td>
               <td className="cell-date">{formatDateIndian(r.out_date)}</td>
               <td className="cell-days">{jathaDays(r.in_date, r.out_date) || '-'}</td>
-              <td className="cell-remarks" style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.remarks || '-'}</td>
+              <td className="cell-remarks">{r.remarks || '-'}</td>
               <td className="cell-scanner">{r.entered_by_name || '-'}</td>
               <td>{onDelete && <button className="btn-icon btn-delete" onClick={() => onDelete('jatha_attendance', r.id)} title="Delete"><Trash2 size={13} /></button>}</td>
             </tr>
@@ -303,6 +303,8 @@ export default function RecordsPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [showFilters, setShowFilters] = useState(false)
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const searchDebounceRef = useRef(null)
   const [dateFrom, setDateFrom] = useState(getLocalDate())
   const [dateTo, setDateTo] = useState(getLocalDate())
   const [dutyFilter, setDutyFilter] = useState('')
@@ -458,8 +460,8 @@ export default function RecordsPage() {
     if (dutyFilter && dutyFilter !== 'JATHA') {
       gateFiltered = gateFiltered.filter(r => r.duty_type === dutyFilter)
     }
-    if (searchTerm) {
-      const term = searchTerm.toUpperCase()
+    if (debouncedSearch) {
+      const term = debouncedSearch.toUpperCase()
       gateFiltered = gateFiltered.filter(r => r.badge_number?.includes(term) || r.sewadar_name?.toUpperCase().includes(term))
     }
     setGateRecords(gateFiltered)
@@ -469,8 +471,8 @@ export default function RecordsPage() {
       const { data: jathaData } = await supabase
         .from('jatha_attendance')
         .select(`*, jatha_master:jatha_id (jatha_type, centre_name, department)`)
-        .gte('from_date', dateFrom)
         .lte('from_date', dateTo)
+        .gte('to_date', dateFrom)
         .order('entered_at', { ascending: false })
         .limit(10000)
 
@@ -507,8 +509,8 @@ export default function RecordsPage() {
         jathaFiltered = jathaFiltered.filter(r => r.centre === centreFilter)
       }
 
-      if (searchTerm) {
-        const term = searchTerm.toUpperCase()
+      if (debouncedSearch) {
+        const term = debouncedSearch.toUpperCase()
         jathaFiltered = jathaFiltered.filter(r => r.badge_number?.includes(term) || r.sewadar_name?.toUpperCase().includes(term))
       }
 
@@ -528,12 +530,18 @@ export default function RecordsPage() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [dateFrom, dateTo, dutyFilter, profile?.centre, profile?.role, searchTerm, centreFilter, jathaQuickFilter])
+  }, [dateFrom, dateTo, dutyFilter, profile?.centre, profile?.role, debouncedSearch, centreFilter, jathaQuickFilter])
 
   const fetchRecordsRef = useRef(fetchRecords)
   fetchRecordsRef.current = fetchRecords
 
-  useEffect(() => { setPage(1) }, [dateFrom, dateTo, dutyFilter, centreFilter, searchTerm, quickFilter, jathaQuickFilter])
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
+    searchDebounceRef.current = setTimeout(() => setDebouncedSearch(searchTerm), 300)
+    return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current) }
+  }, [searchTerm])
+
+  useEffect(() => { setPage(1) }, [dateFrom, dateTo, dutyFilter, centreFilter, debouncedSearch, quickFilter, jathaQuickFilter])
   useEffect(() => { fetchRecords() }, [fetchRecords])
 
   useEffect(() => {
@@ -666,35 +674,33 @@ export default function RecordsPage() {
         <button className="btn-icon export" onClick={exportCSV}><Download size={16} /></button>
       </div>
 
-      {showFilters && (
+      <div className="pinned-filter-bar">
+        <Calendar size={14} />
+        <span className="filter-label">From</span>
+        <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="input-v2 pinned-date" />
+        <span className="filter-label">to</span>
+        <input type="date" value={dateTo} min={dateFrom} onChange={e => setDateTo(e.target.value)} className="input-v2 pinned-date" />
+        {profile?.role !== ROLES.SC_SP_USER && centresList.length > 0 && (
+          <>
+            <MapPin size={14} />
+            <select value={centreFilter} onChange={e => setCentreFilter(e.target.value)} className="input-v2 centre-select" style={{ minWidth: 120 }}>
+              <option value="">All Centres</option>
+              {centresList.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </select>
+          </>
+        )}
+      </div>
+
+      {showFilters && activeTab === 'gate' && (
         <div className="filters-panel">
           <div className="filter-row">
-            <Calendar size={14} />
-            <span className="filter-label">From</span>
-            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="input-v2" />
-            <span className="filter-label">to</span>
-            <input type="date" value={dateTo} min={dateFrom} onChange={e => setDateTo(e.target.value)} className="input-v2" />
+            <span className="filter-label">Duty</span>
+            <div className="duty-filters">
+              {['', 'SATSCAN', 'DAILY', 'NIGHT', 'WATCH_AND_WARD'].map(duty => (
+                <button key={duty} className={`chip ${dutyFilter === duty ? 'active' : ''}`} onClick={() => setDutyFilter(duty)}>{duty || 'All'}</button>
+              ))}
+            </div>
           </div>
-          {profile?.role !== ROLES.SC_SP_USER && centresList.length > 0 && (
-            <div className="filter-row">
-              <MapPin size={14} />
-              <span className="filter-label">Centre</span>
-              <select value={centreFilter} onChange={e => setCentreFilter(e.target.value)} className="input-v2 centre-select">
-                <option value="">All Centres</option>
-                {centresList.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-              </select>
-            </div>
-          )}
-          {activeTab === 'gate' && (
-            <div className="filter-row">
-              <span className="filter-label">Duty</span>
-              <div className="duty-filters">
-                {['', 'SATSCAN', 'DAILY', 'NIGHT', 'WATCH_AND_WARD'].map(duty => (
-                  <button key={duty} className={`chip ${dutyFilter === duty ? 'active' : ''}`} onClick={() => setDutyFilter(duty)}>{duty || 'All'}</button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
 
