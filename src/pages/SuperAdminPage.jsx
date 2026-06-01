@@ -302,7 +302,16 @@ export default function SuperAdminPage() {
     try {
       const sortField = TABLES.find(t => t.id === tableId)?.sortBy || 'id'
       const ascending = tableId !== 'logs'
-      const { data: result } = await supabase.from(tableId).select('*').order(sortField, { ascending })
+      let query = supabase.from(tableId).select('*')
+      if (tableId === 'logs') {
+        query = query
+          .not('action', 'in', '("ADMIN_ADD","ADMIN_DELETE","ADMIN_EDIT")')
+          .order(sortField, { ascending })
+          .limit(500)
+      } else {
+        query = query.order(sortField, { ascending })
+      }
+      const { data: result } = await query
       setData(d => ({ ...d, [tableId]: result || [] }))
     } catch (err) {
       console.error('Fetch error:', err)
