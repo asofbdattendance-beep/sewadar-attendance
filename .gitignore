@@ -4,3 +4,8 @@ dist
 .env.local
 *.log
 .DS_Store
+npx
+certs/
+supabase/.temp/
+*.pem
+AGENTS.md

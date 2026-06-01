@@ -1,6 +1,6 @@
 import { supabase } from './supabase'
 
-export async function logAction(userBadge, userName, action, details = {}) {
+export function logAction(userBadge, userName, action, details = {}) {
   try {
     const payload = {
       user_badge: userBadge || 'unknown',
@@ -9,7 +9,7 @@ export async function logAction(userBadge, userName, action, details = {}) {
       details: typeof details === 'object' ? JSON.stringify(details) : String(details),
       timestamp: new Date().toISOString()
     }
-    await supabase.from('logs').insert(payload)
+    supabase.from('logs').insert(payload).catch(err => console.error('Log error:', err))
   } catch (err) {
     console.error('Log error:', err)
   }

@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
 import { CameraOff, RefreshCw, Zap } from 'lucide-react'
 
-const BADGE_REGEX = /^(BH|FB)[0-9]{4}[A-Z]{1,2}[0-9]{4,}$/
+const BADGE_REGEX = /^FB(597[1-9]|59[89]\d|600\d|601[01])(GA|LA)\d{4}$/
 
 function clean(raw) {
   return raw.trim().toUpperCase().replace(/\s+/g, '')
@@ -37,7 +37,9 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const rafRef = useRef(null)
   const detectorRef = useRef(null)
   const mountedRef = useRef(true)
+  const onScanRef = useRef(onScan)
   const lastScanRef = useRef({ badge: null, time: 0 })
+  const confirmRef = useRef({ badge: null, count: 0 })
   const isDetectingRef = useRef(false)
 
   const [status, setStatus] = useState('starting')
@@ -45,7 +47,9 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   const [lastScanned, setLastScanned] = useState('')
   const [engineLabel, setEngineLabel] = useState('')
   const [fps, setFps] = useState(0)
+  const [detectedBox, setDetectedBox] = useState(null)
   const fpsRef = useRef({ frames: 0, last: Date.now() })
+  onScanRef.current = onScan
 
   const stopScanner = () => {
     console.log('stopScanner called')
@@ -59,6 +63,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
       videoRef.current.load()
     }
     isDetectingRef.current = false
+    confirmRef.current = { badge: null, count: 0 }
   }
 
   const startScanner = async () => {
@@ -105,8 +110,8 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
     try {
       const constraints = {
         video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
+          width: { ideal: 640 },
+          height: { ideal: 480 },
           facingMode: 'environment'
         },
         audio: false
@@ -147,26 +152,74 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
       if (!isDetectingRef.current && videoRef.current?.readyState === 4) {
         isDetectingRef.current = true
+        let foundBox = null
         try {
           const barcodes = await detectorRef.current.detect(videoRef.current)
           for (const b of barcodes) {
             const text = clean(b.rawValue)
-            if (!BADGE_REGEX.test(text)) continue
+            if (!BADGE_REGEX.test(text)) {
+              confirmRef.current = { badge: null, count: 0 }
+              continue
+            }
+
+            // — corner-point center validation —
+            const corners = b.cornerPoints
+            const vw = videoRef.current.videoWidth
+            const vh = videoRef.current.videoHeight
+            if (corners && corners.length >= 4) {
+              const cx = corners.reduce((s, p) => s + p.x, 0) / 4
+              const cy = corners.reduce((s, p) => s + p.y, 0) / 4
+              const mx = vw * 0.1, my = vh * 0.1
+              if (cx < mx || cx > vw - mx || cy < my || cy > vh - my) continue
+            }
+
+            // — compute display box from corners or fallback to boundingBox —
+            const scaleX = videoRef.current.clientWidth / vw
+            const scaleY = videoRef.current.clientHeight / vh
+            if (corners && corners.length >= 4) {
+              const xs = corners.map(p => p.x * scaleX)
+              const ys = corners.map(p => p.y * scaleY)
+              foundBox = {
+                left: Math.min(...xs),
+                top: Math.min(...ys),
+                width: Math.max(...xs) - Math.min(...xs),
+                height: Math.max(...ys) - Math.min(...ys)
+              }
+            } else if (b.boundingBox) {
+              foundBox = {
+                left: b.boundingBox.x * scaleX,
+                top: b.boundingBox.y * scaleY,
+                width: b.boundingBox.width * scaleX,
+                height: b.boundingBox.height * scaleY
+              }
+            }
+
             const t = Date.now()
             if (text === lastScanRef.current.badge && t - lastScanRef.current.time < 2000) continue
-            lastScanRef.current = { badge: text, time: t }
-            setLastScanned(text)
-            setTimeout(() => { if (mountedRef.current) setLastScanned('') }, 1500)
-            onScan(text)
+            if (text === confirmRef.current.badge) {
+              confirmRef.current.count++
+              if (confirmRef.current.count >= 2) {
+                confirmRef.current = { badge: null, count: 0 }
+                lastScanRef.current = { badge: text, time: t }
+                setLastScanned(text)
+                setTimeout(() => { if (mountedRef.current) setLastScanned('') }, 1500)
+                onScanRef.current(text)
+              }
+            } else {
+              confirmRef.current = { badge: text, count: 1 }
+            }
             break
           }
         } catch (err) {
           console.warn('Barcode detection error:', err)
         }
+        setDetectedBox(foundBox)
         isDetectingRef.current = false
       }
 
-      rafRef.current = requestAnimationFrame(detect)
+      rafRef.current = requestAnimationFrame(() => {
+        setTimeout(() => detect(), 150)
+      })
     }
 
     rafRef.current = requestAnimationFrame(detect)
@@ -226,13 +279,19 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
       {status === 'ready' && (
         <>
-          <div className="scan-frame">
-            <div className="scan-corner tl" />
-            <div className="scan-corner tr" />
-            <div className="scan-corner bl" />
-            <div className="scan-corner br" />
-            <div className="scan-line" />
-          </div>
+          {detectedBox && (
+            <div className="scan-detected-box" style={{
+              left: detectedBox.left,
+              top: detectedBox.top,
+              width: detectedBox.width,
+              height: detectedBox.height
+            }}>
+              <div className="scan-detected-corner tl" />
+              <div className="scan-detected-corner tr" />
+              <div className="scan-detected-corner bl" />
+              <div className="scan-detected-corner br" />
+            </div>
+          )}
 
           <div className="scanner-info-badge">
             <Zap size={10} />

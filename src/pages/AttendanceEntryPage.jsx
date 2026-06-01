@@ -12,7 +12,7 @@ const JATHA_TYPES = [
 ]
 
 const MAX_JATHA_DAYS = 10
-const MAX_PAST_DAYS = 30
+
 
 function GateEntryForm({ onSuccess }) {
   const { profile } = useAuth()
@@ -30,12 +30,13 @@ function GateEntryForm({ onSuccess }) {
   const [allowOtherCentres, setAllowOtherCentres] = useState(false)
   const [childCentres, setChildCentres] = useState([])
   const searchTimeout = useRef(null)
+  const gateSearchTickRef = useRef(0)
 
   useEffect(() => {
     if (profile?.centre) {
       supabase.from('centres').select('name').eq('parent_centre', profile.centre).then(({ data }) => {
         setChildCentres(data?.map(c => c.name) || [])
-      })
+      }).catch(() => {})
     }
   }, [profile?.centre])
 
@@ -142,19 +143,11 @@ function GateEntryForm({ onSuccess }) {
   const checkDbOverlaps = async (badgeNumber, entryId, entry) => {
     if (!entry.inDate || !entry.outDate) return
 
-    console.log('Checking DB overlaps for:', badgeNumber)
-    console.log('New entry:', entry.inDate, entry.inTime, 'to', entry.outDate, entry.outTime)
-
     const { data } = await supabase
       .from('attendance_sessions')
       .select('id, in_date, in_time, out_date, out_time, status')
       .eq('badge_number', badgeNumber)
       .or('status.eq.OPEN,status.eq.CLOSED')
-
-    console.log('Existing sessions:', data?.length)
-    if (data && data.length > 0) {
-      console.log('Session 1:', data[0])
-    }
 
     if (!data) return
 
@@ -199,34 +192,29 @@ function GateEntryForm({ onSuccess }) {
       return
     }
 
+    const tick = ++gateSearchTickRef.current
     setSearchLoading(true)
     const term = query.replace(/[%_]/g, '').toUpperCase().slice(0, 50)
 
-    if (profile?.centre && !allowOtherCentres) {
-      const { data: childData } = await supabase.from('centres').select('name').eq('parent_centre', profile.centre)
-      const childNames = (childData || []).map(c => c.name)
-      
-      if (childNames.length > 0) {
-        const parentSewadars = await supabase.from('sewadars').select('*').eq('centre', profile.centre).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(10)
-        
-        const childSewadars = await supabase.from('sewadars').select('*').in('centre', childNames).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(10)
-        
-        const all = [...(parentSewadars.data || []), ...(childSewadars.data || [])]
-        setSearchResults(all)
-        setSearchLoading(false)
-        return
+    try {
+      if (profile?.centre && !allowOtherCentres) {
+        const childNames = childCentres
+        const allowed = [profile.centre, ...childNames].filter(Boolean)
+        const q = supabase.from('sewadars').select('*').in('centre', allowed).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
+        const { data } = await q
+        if (tick !== gateSearchTickRef.current) return
+        const existing = entries.map(e => e.badge_number)
+        setSearchResults((data || []).filter(s => !existing.includes(s.badge_number)))
       } else {
-        const { data } = await supabase.from('sewadars').select('*').eq('centre', profile.centre).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
+        const { data } = await supabase.rpc('search_sewadars_all', { p_term: term })
+        if (tick !== gateSearchTickRef.current) return
         setSearchResults(data || [])
-        setSearchLoading(false)
-        return
       }
+    } catch (err) {
+      console.error('Gate sewadar search error:', err)
+    } finally {
+      if (tick === gateSearchTickRef.current) setSearchLoading(false)
     }
-
-    console.log('Searching ALL centres (allowOtherCentres=true, using RPC)')
-    const { data } = await supabase.rpc('search_sewadars_all', { p_term: term })
-    setSearchResults(data || [])
-    setSearchLoading(false)
   }
 
   const handleSearchChange = (e) => {
@@ -287,28 +275,23 @@ function GateEntryForm({ onSuccess }) {
     if (hasErrors) {
       setValidationErrors(errors)
       setValidationMsg(firstError)
-      return 'Validation failed'
+      return { errors, msg: firstError }
     }
     
+    // Check DB overlaps from state
+    const overlapKeys = Object.keys(dbOverlaps)
+    if (overlapKeys.length > 0) {
+      return { errors: dbOverlaps, msg: 'Overlaps with existing sessions' }
+    }
+
     setValidationMsg('')
     return null
   }
 
   const submitEntries = async () => {
-    const error = await validateEntries()
-    if (error) {
-      return
-    }
-
-    const hasValidationErrors = validationErrors && typeof validationErrors === 'object' && Object.keys(validationErrors).some(key => Array.isArray(validationErrors[key]) && validationErrors[key].length > 0)
-    if (hasValidationErrors) {
-      toast.error('Please fix validation errors before submitting')
-      return
-    }
-
-    const hasDbOverlaps = Object.keys(dbOverlaps).length > 0
-    if (hasDbOverlaps) {
-      toast.error('Cannot submit: Overlaps with existing sessions')
+    const result = await validateEntries()
+    if (result) {
+      toast.error(result.msg || 'Please fix validation errors before submitting')
       return
     }
 
@@ -429,7 +412,7 @@ function GateEntryForm({ onSuccess }) {
           </div>
 
           {profile && (
-            <label className="checkbox-label" style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text)' }}>
+            <label className="checkbox-label" style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-primary)' }}>
               <input type="checkbox" checked={allowOtherCentres} onChange={e => { setAllowOtherCentres(e.target.checked); setSearchTerm('') }} />
               <span>Allow other centres (not default)</span>
             </label>
@@ -562,10 +545,22 @@ function JathaEntryForm({ onSuccess }) {
   const [searchResults, setSearchResults] = useState([])
   const [searchLoading, setSearchLoading] = useState(false)
   const searchTimeout = useRef(null)
+  const searchTickRef = useRef(0)
+
+  const [jathaSearchTerm, setJathaSearchTerm] = useState('')
+  const [jathaChildCentres, setJathaChildCentres] = useState([])
 
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
   const [remarks, setRemarks] = useState('')
+
+  useEffect(() => {
+    if (profile?.centre && profile?.role !== ROLES.SUPER_ADMIN) {
+      supabase.from('centres').select('name').eq('parent_centre', profile.centre).then(({ data }) => {
+        setJathaChildCentres(data?.map(c => c.name) || [])
+      }).catch(() => {})
+    }
+  }, [profile?.centre, profile?.role])
 
   const resetForm = () => {
     setSelectedJatha(null)
@@ -573,6 +568,7 @@ function JathaEntryForm({ onSuccess }) {
     setSewadars([])
     setSearchTerm('')
     setSearchResults([])
+    setJathaSearchTerm('')
     setFromDate('')
     setToDate('')
     setSubmitResult(null)
@@ -609,26 +605,31 @@ function JathaEntryForm({ onSuccess }) {
 
   const searchSewadars = async (query) => {
     if (!query || query.length < 2) { setSearchResults([]); return }
+    const tick = ++searchTickRef.current
     setSearchLoading(true)
     const term = query.replace(/[%_]/g, '').toUpperCase().slice(0, 50)
 
-    let q = supabase.from('sewadars')
-      .select('*')
-      .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
-      .limit(10)
+    try {
+      let q = supabase.from('sewadars')
+        .select('*')
+        .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
+        .limit(20)
 
-    if (profile?.centre && profile?.role !== ROLES.SUPER_ADMIN) {
-      const { data: childData } = await supabase.from('centres').select('name').eq('parent_centre', profile.centre)
-      const childNames = childData?.map(c => c.name) || []
-      const allowed = [profile.centre, ...childNames].filter(Boolean)
-      q = q.in('centre', allowed)
+      if (profile?.centre && profile?.role !== ROLES.SUPER_ADMIN) {
+        const allowed = [profile.centre, ...jathaChildCentres].filter(Boolean)
+        q = q.in('centre', allowed)
+      }
+
+      const { data } = await q
+      if (tick !== searchTickRef.current) return
+      const existingBadges = sewadars.map(s => s.badge_number)
+      const filtered = (data || []).filter(s => !existingBadges.includes(s.badge_number))
+      setSearchResults(filtered)
+    } catch (err) {
+      console.error('Jatha sewadar search error:', err)
+    } finally {
+      if (tick === searchTickRef.current) setSearchLoading(false)
     }
-
-    const { data } = await q
-    const existingBadges = sewadars.map(s => s.badge_number)
-    const filtered = (data || []).filter(s => !existingBadges.includes(s.badge_number))
-    setSearchResults(filtered)
-    setSearchLoading(false)
   }
 
   const handleSearchChange = (e) => {
@@ -660,10 +661,7 @@ function JathaEntryForm({ onSuccess }) {
       const diffDays = Math.ceil((to - from) / (1000 * 60 * 60 * 24))
       if (diffDays > MAX_JATHA_DAYS) return `Maximum ${MAX_JATHA_DAYS} days between FROM and TO date`
     }
-    if (fromDate) {
-      const daysDiff = Math.ceil((today - from) / (1000 * 60 * 60 * 24))
-      if (daysDiff > MAX_PAST_DAYS) return `FROM DATE cannot be more than ${MAX_PAST_DAYS} days in the past`
-    }
+
     return null
   }
 
@@ -845,7 +843,7 @@ function JathaEntryForm({ onSuccess }) {
             <>
               <div className="search-box-gate" style={{ marginTop: '1rem' }}>
                 <Search size={16} />
-                <input type="text" placeholder="Search jatha..." onFocus={() => setShowJathaDropdown(true)} />
+                <input type="text" placeholder="Search jatha..." value={jathaSearchTerm} onChange={e => setJathaSearchTerm(e.target.value)} onFocus={() => setShowJathaDropdown(true)} />
                 <ChevronDown size={16} />
               </div>
 
@@ -855,18 +853,27 @@ function JathaEntryForm({ onSuccess }) {
                   <div className="search-results-gate jatha-dropdown">
                     {loading ? <div className="loading-text">Loading...</div> :
                       fetchError ? <div className="no-results" style={{ color: 'var(--red)' }}>{fetchError}</div> :
-                      Object.keys(groupedJathas).length > 0 ?
-                        Object.entries(groupedJathas).map(([centre, items]) => (
-                          <div key={centre}>
-                            <div className="jatha-centre-header">{centre}</div>
-                            {items.map(j => (
-                              <div key={j.id} className="result-item-gate jatha-item"
-                                onClick={() => { setSelectedJatha(j); setShowJathaDropdown(false) }}>
-                                <div className="result-name">{j.department}</div>
-                              </div>
-                            ))}
-                          </div>
-                        )) : <div className="no-results">No jathas found</div>
+                      (() => {
+                        const term = jathaSearchTerm.toUpperCase()
+                        const filtered = term ? jathas.filter(j => j.centre_name.toUpperCase().includes(term) || j.department.toUpperCase().includes(term)) : jathas
+                        const grouped = filtered.reduce((acc, j) => {
+                          if (!acc[j.centre_name]) acc[j.centre_name] = []
+                          acc[j.centre_name].push(j)
+                          return acc
+                        }, {})
+                        return Object.keys(grouped).length > 0 ?
+                          Object.entries(grouped).map(([centre, items]) => (
+                            <div key={centre}>
+                              <div className="jatha-centre-header">{centre}</div>
+                              {items.map(j => (
+                                <div key={j.id} className="result-item-gate jatha-item"
+                                  onClick={() => { setSelectedJatha(j); setShowJathaDropdown(false) }}>
+                                  <div className="result-name">{j.department}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )) : <div className="no-results">No jathas found</div>
+                      })()
                     }
                   </div>
                 </>
@@ -993,8 +1000,10 @@ function JathaEntryForm({ onSuccess }) {
 }
 
 export default function AttendanceEntryPage() {
-  const { profile } = useAuth()
-  const [activeTab, setActiveTab] = useState('gate')
+  const { profile, hasPermission } = useAuth()
+  const canGate = hasPermission('allow_gate_entry')
+  const canJatha = hasPermission('allow_jatha')
+  const [activeTab, setActiveTab] = useState(canGate ? 'gate' : 'jatha')
 
   return (
     <div className="page pb-nav">
@@ -1006,18 +1015,22 @@ export default function AttendanceEntryPage() {
       </div>
 
       <div className="tab-container">
-        <button className={`tab-btn ${activeTab === 'gate' ? 'active' : ''}`} onClick={() => setActiveTab('gate')}>
-          <DoorOpen size={16} />
-          Gate Entry
-        </button>
-        <button className={`tab-btn ${activeTab === 'jatha' ? 'active' : ''}`} onClick={() => setActiveTab('jatha')}>
-          <Truck size={16} />
-          Jatha Entry
-        </button>
+        {canGate && (
+          <button className={`tab-btn ${activeTab === 'gate' ? 'active' : ''}`} onClick={() => setActiveTab('gate')}>
+            <DoorOpen size={16} />
+            Gate Entry
+          </button>
+        )}
+        {canJatha && (
+          <button className={`tab-btn ${activeTab === 'jatha' ? 'active' : ''}`} onClick={() => setActiveTab('jatha')}>
+            <Truck size={16} />
+            Jatha Entry
+          </button>
+        )}
       </div>
 
-{activeTab === 'gate' && <GateEntryForm />}
-{activeTab === 'jatha' && <JathaEntryForm />}
+{activeTab === 'gate' && canGate && <GateEntryForm />}
+{activeTab === 'jatha' && canJatha && <JathaEntryForm />}
     </div>
   )
 }

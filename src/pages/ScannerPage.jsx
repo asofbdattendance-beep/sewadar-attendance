@@ -3,6 +3,7 @@ import { supabase, ROLES, DUTY_TYPES, SESSION_STATUS, getDutyType, formatTime12H
 import { useAuth } from '../context/AuthContext'
 import { logAction } from '../lib/logger'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
+import { useToast } from '../components/Toast'
 import { Wifi, WifiOff, CheckCircle, XCircle, Clock, AlertTriangle, Keyboard, Search, Info, MapPin, RefreshCw } from 'lucide-react'
 
 // Geofencing: Calculate distance between two coordinates using Haversine formula
@@ -19,6 +20,7 @@ function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
 
 export default function ScannerPage({ isOnline }) {
   const { profile } = useAuth()
+  const toast = useToast()
   const [popupState, setPopupState] = useState(null)
   const [processing, setProcessing] = useState(false)
   const [recentScans, setRecentScans] = useState([])
@@ -37,12 +39,15 @@ export default function ScannerPage({ isOnline }) {
   const [manualHasSession, setManualHasSession] = useState(false)
   const [manualForgotOutData, setManualForgotOutData] = useState(null)
   const [manualTimeError, setManualTimeError] = useState('')
+  const [allCentres, setAllCentres] = useState([])
+  const [manualScanCentre, setManualScanCentre] = useState('')
+  const [scopeDataLoaded, setScopeDataLoaded] = useState(false)
 
   const scannerRef = useRef(null)
   const lastScanRef = useRef({ badge: null, time: 0 })
   const manualSearchTimeout = useRef(null)
+  const manualSearchTickRef = useRef(0)
   const popupOpenRef = useRef(false)
-  const scopeLoadedRef = useRef(false)
   const [geoCheckDone, setGeoCheckDone] = useState(false)
   const [geoBlocked, setGeoBlocked] = useState(false)
   const [geoDistance, setGeoDistance] = useState(null)
@@ -69,10 +74,10 @@ export default function ScannerPage({ isOnline }) {
   // Geofencing: Check location on page load
   useEffect(() => {
     const checkGeoLocation = async () => {
-      const isASO = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
+      const isElevatedAccess = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
 
       // ASO is exempt from geofencing
-      if (isASO) {
+      if (isElevatedAccess) {
         setGeoCheckDone(true)
         setGeoLoading(false)
         return
@@ -109,7 +114,7 @@ export default function ScannerPage({ isOnline }) {
         const distance = getDistanceFromLatLonInMeters(userLat, userLon, centreData.latitude, centreData.longitude)
         const radius = centreData.geo_radius || 200
 
-        console.log(`Initial geo check: ${distance.toFixed(0)}m from centre (max ${radius}m)`)
+    
 
         if (distance > radius) {
           setGeoBlocked(true)
@@ -146,21 +151,30 @@ export default function ScannerPage({ isOnline }) {
         setChildCentres(centresResult.data?.map(c => c.name) || [])
         const depts = deptsResult.data?.map(d => d.department_name?.trim().toUpperCase()) || []
         setSpecialDepts(depts)
-        scopeLoadedRef.current = true
+        setScopeDataLoaded(true)
       }).catch(err => {
         console.error('Failed to load scope data:', err)
-        scopeLoadedRef.current = true
+        setScopeDataLoaded(true)
       })
     } else {
-      scopeLoadedRef.current = true
+      setScopeDataLoaded(true)
     }
   }, [profile?.centre])
 
+  useEffect(() => {
+    if (profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN) {
+      supabase.from('centres').select('name').then(({ data }) => {
+        setAllCentres(data?.map(c => c.name) || [])
+      })
+    }
+  }, [profile?.role])
+
   const isInScope = (sewadarCentre, department) => {
+    if (profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN) return true
     if (!profile?.centre) return true
     const scope = [profile?.centre, ...childCentres]
     if (sewadarCentre && scope.includes(sewadarCentre)) return true
-    if (scopeLoadedRef.current && !specialDepts.length) return true
+    if (scopeDataLoaded && !specialDepts.length) return true
     if (department) {
       const deptUpper = department.trim().toUpperCase()
       if (specialDepts.includes(deptUpper)) return true
@@ -170,33 +184,20 @@ export default function ScannerPage({ isOnline }) {
 
 const handleScan = useCallback(async (badge) => {
     const now = Date.now()
-    console.log('=== handleScan START ===', badge)
-    console.log('popupOpenRef:', popupOpenRef.current)
-    console.log('lastScanRef:', lastScanRef.current)
-    
     if (popupOpenRef.current) {
-      console.log('Blocked: popup already showing')
       return
     }
     if (badge === lastScanRef.current.badge && now - lastScanRef.current.time < 2000) {
-      console.log('Rejected: too soon')
       return
     }
     if (!profile?.centre) {
-      console.log('Rejected: no centre')
       return
     }
-    lastScanRef.current = { badge, time: now }
-    console.log('Updated lastScanRef:', lastScanRef.current)
-    
-    if (!scopeLoadedRef.current) {
-      console.log('Blocked: scope data not loaded yet')
+    if (!scopeDataLoaded) {
       setProcessing(false)
       return
     }
     setProcessing(true)
-
-    console.log('Fetching sewadar:', badge)
 
     try {
       let found = null
@@ -221,8 +222,8 @@ const handleScan = useCallback(async (badge) => {
 
       // Check if user is within their centre's geo-fence radius
       // SKIP for ASO/Super Admin — they can scan from anywhere
-      const isASO = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
-      if (!isASO && profile?.centre) {
+      const isElevatedAccess = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
+      if (!isElevatedAccess && profile?.centre) {
         const { data: centreData } = await supabase
           .from('centres')
           .select('latitude, longitude, geo_radius, geo_enabled')
@@ -248,8 +249,6 @@ const handleScan = useCallback(async (badge) => {
             const distance = getDistanceFromLatLonInMeters(userLat, userLon, centreData.latitude, centreData.longitude)
             const radius = centreData.geo_radius || 200
 
-            console.log(`Geo check: ${distance.toFixed(0)}m from centre (max ${radius}m)`)
-
             if (distance > radius) {
               setPopupState({
                 type: 'out_of_range',
@@ -268,6 +267,9 @@ const handleScan = useCallback(async (badge) => {
         }
       }
 
+      // All guards passed — record this scan for debounce
+      lastScanRef.current = { badge, time: now }
+
       let openSession = null
       if (isOnline) {
         const { data } = await supabase.rpc('get_open_session', { p_badge: badge })
@@ -279,14 +281,12 @@ const handleScan = useCallback(async (badge) => {
       const todayStr = getLocalDate(today)
       const currentTime = today.toTimeString().slice(0, 5)
 
-      console.log('openSession:', openSession)
-
       if (openSession) {
         if (scannerRef.current) scannerRef.current.stop()
         popupOpenRef.current = true
 
-        const inDate = new Date(openSession.in_date + 'T12:00:00')
-        const hoursSinceIn = (today - inDate) / (1000 * 60 * 60)
+        const inDateTime = new Date(openSession.in_date + 'T' + (openSession.in_time || '12:00') + ':00')
+        const hoursSinceIn = (today - inDateTime) / (1000 * 60 * 60)
 
         // If OPEN session is >12 hours old, assume sewadar forgot to mark OUT
         // Show forgot_out prompt instead of normal OUT
@@ -300,7 +300,11 @@ const handleScan = useCallback(async (badge) => {
         if (scannerRef.current) scannerRef.current.stop()
         popupOpenRef.current = true
 
-        setPopupState({ type: 'in', sewadar: found, dutyType, inDate: todayStr, inTime: currentTime })
+        const isAsoOrSuper = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
+        setPopupState({
+          type: 'in', sewadar: found, dutyType, inDate: todayStr, inTime: currentTime,
+          scanCentre: isAsoOrSuper ? found.centre : null
+        })
       }
     } catch (err) {
       console.error('Scan error:', err)
@@ -318,6 +322,7 @@ const handleScan = useCallback(async (badge) => {
     const now = new Date()
     const inDate = customTime?.date || getLocalDate(now)
     const inTime = customTime?.time || now.toTimeString().slice(0, 5)
+    const scanCentre = popupState.scanCentre || profile?.centre || sewadar.centre || 'UNKNOWN'
 
     if (navigator.vibrate) navigator.vibrate([40])
 
@@ -326,14 +331,14 @@ const handleScan = useCallback(async (badge) => {
         const record = {
           badge_number: sewadar.badge_number,
           sewadar_name: sewadar.sewadar_name,
-          centre: profile?.centre || sewadar.centre || 'UNKNOWN',
+          centre: scanCentre,
           duty_type: getDutyType(),
           status: SESSION_STATUS.OPEN,
           in_date: inDate,
           in_time: inTime,
           in_scanner_badge: profile?.badge_number,
           in_scanner_name: profile?.name,
-          in_scanner_centre: profile?.centre || sewadar.centre || 'UNKNOWN',
+          in_scanner_centre: scanCentre,
         }
         const { data, error } = await supabase.from('attendance_sessions').insert(record).select().single()
         if (error) {
@@ -344,10 +349,11 @@ const handleScan = useCallback(async (badge) => {
               return
             }
           }
+          toast.error(error.message || 'Failed to record entry')
           console.error('Failed to insert session:', error)
           return
         }
-        await logAction(profile?.badge_number, profile?.name, 'SCAN_IN', {
+        logAction(profile?.badge_number, profile?.name, 'SCAN_IN', {
           badge: sewadar.badge_number,
           name: sewadar.sewadar_name,
           centre: profile?.centre,
@@ -388,9 +394,10 @@ const handleScan = useCallback(async (badge) => {
         })
         if (error) {
           console.error('Failed to close session:', error)
+          toast.error(error.message || 'Failed to close session')
           return
         }
-        await logAction(profile?.badge_number, profile?.name, 'SCAN_OUT', {
+        logAction(profile?.badge_number, profile?.name, 'SCAN_OUT', {
           badge: popupState?.sewadar?.badge_number,
           name: popupState?.sewadar?.sewadar_name,
           session_id: sessionId
@@ -399,6 +406,7 @@ const handleScan = useCallback(async (badge) => {
         fetchRecentScans()
       } catch (err) {
         console.error('Failed to close session:', err)
+        toast.error(err?.message || 'Cannot close session')
         return
       }
     } else {
@@ -427,6 +435,7 @@ const handleScan = useCallback(async (badge) => {
     setManualNoSession(false)
     setManualHasSession(false)
     setManualForgotOutData(null)
+    setManualScanCentre('')
     setManualTimeError('')
   }
 
@@ -436,25 +445,32 @@ const handleScan = useCallback(async (badge) => {
       return
     }
 
+    const tick = ++manualSearchTickRef.current
     setManualLoading(true)
     const term = query.replace(/[%_]/g, '').toUpperCase().slice(0, 50)
 
-    let data = null
-    if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
-      const scope = [profile.centre, ...childCentres]
-      const { data: d } = await supabase.from('sewadars').select('*').in('centre', scope).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
-      data = d
-    } else {
-      const { data: d } = await supabase.rpc('search_sewadars_all', { p_term: term })
-      data = d
-    }
+    try {
+      let data = null
+      if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
+        const scope = [profile.centre, ...childCentres]
+        const { data: d } = await supabase.from('sewadars').select('*').in('centre', scope).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
+        data = d
+      } else {
+        const { data: d } = await supabase.rpc('search_sewadars_all', { p_term: term })
+        data = d
+      }
 
-    let filtered = data || []
-    if (profile?.centre) {
-      filtered = filtered.filter(s => isInScope(s.centre, s.department))
+      if (tick !== manualSearchTickRef.current) return
+      let filtered = data || []
+      if (profile?.centre) {
+        filtered = filtered.filter(s => isInScope(s.centre, s.department))
+      }
+      setManualResults(filtered)
+    } catch (err) {
+      console.error('Manual search error:', err)
+    } finally {
+      if (tick === manualSearchTickRef.current) setManualLoading(false)
     }
-    setManualResults(filtered)
-    setManualLoading(false)
   }
 
   const handleManualSearch = (e) => {
@@ -472,6 +488,9 @@ const handleScan = useCallback(async (badge) => {
     setManualHasSession(false)
     setManualForgotOutData(null)
     setManualTimeError('')
+    if (profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN) {
+      setManualScanCentre(sewadar.centre || '')
+    }
     
     const now = new Date()
     setManualEntryTime({
@@ -486,8 +505,8 @@ const handleScan = useCallback(async (badge) => {
         setManualOpenSession(data)
         
         // Check if session is older than 12 hours
-        const inDate = new Date(data.in_date + 'T12:00:00')
-        const hoursSinceIn = (now - inDate) / (1000 * 60 * 60)
+        const inDateTime = new Date(data.in_date + 'T' + (data.in_time || '12:00') + ':00')
+        const hoursSinceIn = (now - inDateTime) / (1000 * 60 * 60)
         
         if (hoursSinceIn > 12) {
           // Session is very old - show forgot_out mode
@@ -519,22 +538,12 @@ const handleScan = useCallback(async (badge) => {
   }
 
   const submitManualEntry = async () => {
-    console.log('submitManualEntry called', {
-      manualSelectedSewadar: manualSelectedSewadar?.badge_number,
-      manualEntryType,
-      manualEntryTime,
-      manualForgotOutData,
-      manualOpenSession: manualOpenSession?.id
-    })
-    
     if (!manualSelectedSewadar) {
-      console.log('No sewadar selected')
       return
     }
     
     if (manualEntryType === 'in') {
       if (!manualEntryTime.date || !manualEntryTime.time) {
-        console.log('IN: missing date/time')
         return
       }
     } else {
@@ -554,18 +563,19 @@ const handleScan = useCallback(async (badge) => {
     const now = new Date()
     
     if (manualEntryType === 'in') {
-      console.log('Inserting IN session...')
+      const isAsoOrSuper = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
+      const manualScanCtr = isAsoOrSuper ? (manualScanCentre || manualSelectedSewadar.centre || 'UNKNOWN') : (profile?.centre || manualSelectedSewadar.centre || 'UNKNOWN')
       const record = {
         badge_number: manualSelectedSewadar.badge_number,
         sewadar_name: manualSelectedSewadar.sewadar_name,
-        centre: profile?.centre || manualSelectedSewadar.centre || 'UNKNOWN',
+        centre: manualScanCtr,
         duty_type: getDutyType(),
         status: SESSION_STATUS.OPEN,
         in_date: manualEntryTime.date,
         in_time: manualEntryTime.time,
         in_scanner_badge: profile?.badge_number,
         in_scanner_name: profile?.name,
-        in_scanner_centre: profile?.centre || manualSelectedSewadar.centre || 'UNKNOWN',
+        in_scanner_centre: manualScanCtr,
         is_manual: true,
         entered_by_badge: profile?.badge_number,
         entered_by_name: profile?.name,
@@ -580,22 +590,20 @@ const handleScan = useCallback(async (badge) => {
             setManualHasSession(true)
             return
           }
+          toast.error(error.message || 'Failed to record manual entry')
           console.error('Failed to insert session:', error)
+          return
         }
-        if (!error) {
-          await logAction(profile?.badge_number, profile?.name, 'MANUAL_IN', {
-            badge: manualSelectedSewadar.badge_number,
-            name: manualSelectedSewadar.sewadar_name,
-            centre: profile?.centre,
-            duty: getDutyType()
-          })
-        }
+        logAction(profile?.badge_number, profile?.name, 'MANUAL_IN', {
+          badge: manualSelectedSewadar.badge_number,
+          name: manualSelectedSewadar.sewadar_name,
+          centre: profile?.centre,
+          duty: getDutyType()
+        })
         fetchRecentScans()
       }
     } else {
-      console.log('Processing OUT session...', { manualOpenSession })
       if (!manualOpenSession) {
-        console.log('No open session found')
         setManualNoSession(true)
         return
       }
@@ -603,10 +611,7 @@ const handleScan = useCallback(async (badge) => {
       const outDate = manualForgotOutData?.date || manualEntryTime.date
       const outTime = manualForgotOutData?.time || manualEntryTime.time
       
-      console.log('OUT date/time:', { outDate, outTime, from: manualForgotOutData ? 'forgotOutData' : 'manualEntryTime' })
-      
       if (!outDate || !outTime) {
-        console.log('Missing out date/time')
         return
       }
       
@@ -619,43 +624,32 @@ const handleScan = useCallback(async (badge) => {
         out_scanner_centre: profile?.centre || manualSelectedSewadar?.centre || 'UNKNOWN',
         updated_at: now.toISOString()
       }
-      
-      console.log('Updating session:', manualOpenSession.id, updateData)
-
       const sessionId = typeof manualOpenSession === 'object' ? manualOpenSession.id : manualOpenSession
-      console.log('Using session ID:', sessionId, 'type:', typeof sessionId, 'manualOpenSession:', manualOpenSession)
 
       if (isOnline) {
-        const { data: existing } = await supabase
-          .from('attendance_sessions')
-          .select('*')
-          .eq('id', sessionId)
-          .single()
-        console.log('Existing session before update:', existing)
+        try {
+          const { error } = await supabase.rpc('close_session', {
+            p_session_id: sessionId,
+            p_out_date: outDate,
+            p_out_time: outTime,
+            p_out_scanner_badge: profile?.badge_number,
+            p_out_scanner_name: profile?.name,
+            p_out_scanner_centre: profile?.centre || manualSelectedSewadar?.centre || 'UNKNOWN'
+          })
+          if (error) {
+            toast.error(error.message || 'Failed to close session')
+            return
+          }
+        } catch (err) {
+          toast.error(err?.message || 'Cannot close session')
+          return
+        }
         
-        // Try using RPC to bypass RLS
-        const rpcResult = await supabase.rpc('close_session', {
-          p_session_id: sessionId,
-          p_out_date: outDate,
-          p_out_time: outTime,
-          p_out_scanner_badge: profile?.badge_number,
-          p_out_scanner_name: profile?.name,
-          p_out_scanner_centre: profile?.centre || manualSelectedSewadar?.centre || 'UNKNOWN'
-        })
-        console.log('RPC result:', rpcResult)
-        
-        await logAction(profile?.badge_number, profile?.name, 'MANUAL_OUT', {
+        logAction(profile?.badge_number, profile?.name, 'MANUAL_OUT', {
           badge: manualSelectedSewadar.badge_number,
           name: manualSelectedSewadar.sewadar_name,
           session_id: sessionId
         })
-
-        const { data: updated } = await supabase
-          .from('attendance_sessions')
-          .select('*')
-          .eq('id', sessionId)
-          .single()
-        console.log('Session after update:', updated)
         
         fetchRecentScans()
       }
@@ -694,7 +688,7 @@ const handleScan = useCallback(async (badge) => {
         </div>
       ) : geoBlocked ? (
         <div className="popup-error">
-          <MapPin size={48} color="#ef4444" style={{ margin: '0 auto 16px', display: 'block' }} />
+          <MapPin size={48} color="var(--red-light)" style={{ margin: '0 auto 16px', display: 'block' }} />
           <div className="error-title">Out of Range</div>
           <div className="error-msg">You are {geoDistance}m away from centre</div>
           <div className="error-msg" style={{ fontSize: '0.88rem', marginTop: 8 }}>
@@ -761,7 +755,7 @@ const handleScan = useCallback(async (badge) => {
                 <div className="popup-header">
                   <div className="sewadar-info">
                     <div className="name">{popupState.sewadar.sewadar_name}</div>
-                    <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>{popupState.sewadar.badge_number}</div>
+                    <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: 'var(--text-muted)' }}>{popupState.sewadar.badge_number}</div>
                   </div>
                   <span className={`gender-badge ${popupState.sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>
                     {popupState.sewadar.gender || 'Unknown'}
@@ -769,7 +763,7 @@ const handleScan = useCallback(async (badge) => {
                 </div>
                 <div className="popup-details">
                   <div className="detail"><span>Centre</span><span>{popupState.sewadar?.centre || '-'}</span></div>
-                  {popupState.sewadar?.centre && popupState.sewadar.centre !== profile?.centre && (
+                  {popupState.sewadar?.centre && popupState.sewadar.centre !== (popupState.scanCentre || profile?.centre) && (
                     <div className="detail"><span>Guest</span><span className="guest-tag">From {popupState.sewadar.centre}</span></div>
                   )}
                   <div className="detail"><span>Dept</span><span>{popupState.sewadar?.department || '—'}</span></div>
@@ -777,6 +771,17 @@ const handleScan = useCallback(async (badge) => {
                   <div className="detail"><span>IN Date</span><span>{popupState.inDate}</span></div>
                   <div className="detail"><span>IN Time</span><span>{popupState.inTime}</span></div>
                   <div className="detail"><span>Duty</span><span style={{ color: 'var(--excel-green)', fontWeight: 700 }}>{popupState.dutyType}</span></div>
+                  {(profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN) && (
+                    <div className="detail" style={{ gridColumn: '1 / -1' }}>
+                      <span>Scan Centre</span>
+                      <select
+                        value={popupState.scanCentre || ''}
+                        onChange={e => setPopupState(s => ({ ...s, scanCentre: e.target.value }))}
+                      >
+                        {allCentres.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                  )}
                 </div>
                 <div className="popup-actions">
                   <button className="btn-in" onClick={markIN}>IN</button>
@@ -791,7 +796,7 @@ const handleScan = useCallback(async (badge) => {
                 <div className="popup-header">
                   <div className="sewadar-info">
                     <div className="name">{popupState.sewadar.sewadar_name}</div>
-                    <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>{popupState.sewadar.badge_number}</div>
+                    <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: 'var(--text-muted)' }}>{popupState.sewadar.badge_number}</div>
                   </div>
                   <span className={`gender-badge ${popupState.sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>
                     {popupState.sewadar.gender || 'Unknown'}
@@ -799,7 +804,7 @@ const handleScan = useCallback(async (badge) => {
                 </div>
                 <div className="popup-details">
                   <div className="detail"><span>Centre</span><span>{popupState.sewadar?.centre || '-'}</span></div>
-                  {popupState.sewadar?.centre && popupState.sewadar.centre !== profile?.centre && (
+                  {popupState.sewadar?.centre && popupState.sewadar.centre !== (popupState.openSession?.centre || profile?.centre) && (
                     <div className="detail"><span>Guest</span><span className="guest-tag">From {popupState.sewadar.centre}</span></div>
                   )}
                   <div className="detail"><span>Dept</span><span>{popupState.sewadar?.department || '—'}</span></div>
@@ -819,16 +824,16 @@ const handleScan = useCallback(async (badge) => {
             {popupState.type === 'forgot_out' && (
               <>
                 <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
-                  <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 8px', display: 'block' }} />
-                  <div style={{ fontWeight: 700, fontSize: '1rem', color: '#f59e0b' }}>Previous Session Still Open</div>
-                  <div style={{ fontSize: '0.8rem', color: '#6b7280', marginTop: '4px' }}>
+                  <AlertTriangle size={32} color="var(--warning)" style={{ margin: '0 auto 8px', display: 'block' }} />
+                  <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--warning)' }}>Previous Session Still Open</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
                     From {formatDate(popupState.openSession.in_date)} at {formatTime(popupState.openSession.in_time)}
                   </div>
                 </div>
                 <div className="popup-header">
                   <div className="sewadar-info">
                     <div className="name">{popupState.sewadar.sewadar_name}</div>
-                    <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: '#6b7280' }}>{popupState.sewadar.badge_number}</div>
+                    <div className="badge" style={{ fontFamily: 'monospace', fontSize: 13, color: 'var(--text-muted)' }}>{popupState.sewadar.badge_number}</div>
                   </div>
                   <span className={`gender-badge ${popupState.sewadar.gender?.toUpperCase() === 'MALE' ? 'male' : 'female'}`}>
                     {popupState.sewadar.gender || 'Unknown'}
@@ -836,7 +841,7 @@ const handleScan = useCallback(async (badge) => {
                 </div>
                 <div className="popup-details">
                   <div className="detail"><span>Centre</span><span>{popupState.sewadar?.centre || '-'}</span></div>
-                  {popupState.sewadar?.centre && popupState.sewadar.centre !== profile?.centre && (
+                  {popupState.sewadar?.centre && popupState.sewadar.centre !== (popupState.openSession?.centre || profile?.centre) && (
                     <div className="detail"><span>Guest</span><span className="guest-tag">From {popupState.sewadar.centre}</span></div>
                   )}
                   <div className="detail"><span>Dept</span><span>{popupState.sewadar?.department || '—'}</span></div>
@@ -861,7 +866,7 @@ const handleScan = useCallback(async (badge) => {
             {/* Not Found */}
             {popupState.type === 'not_found' && (
               <div className="popup-error">
-                <XCircle size={32} color="#dc2626" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <XCircle size={32} color="var(--error)" style={{ margin: '0 auto 12px', display: 'block' }} />
                 <div className="error-title">Badge Not Found</div>
                 <div className="error-badge">{popupState.badge}</div>
                 <div className="error-msg">This badge is not registered</div>
@@ -872,7 +877,7 @@ const handleScan = useCallback(async (badge) => {
             {/* Not In Scope */}
             {popupState.type === 'not_in_scope' && (
               <div className="popup-error">
-                <AlertTriangle size={32} color="#f59e0b" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <AlertTriangle size={32} color="var(--warning)" style={{ margin: '0 auto 12px', display: 'block' }} />
                 <div className="error-title">Not In Scope</div>
                 <div className="error-badge">{popupState.sewadar.sewadar_name}</div>
                 <div className="error-msg">Sewadar is from {popupState.sewadar.centre}</div>
@@ -884,7 +889,7 @@ const handleScan = useCallback(async (badge) => {
             {/* Out of Range - Geofencing */}
             {popupState.type === 'out_of_range' && (
               <div className="popup-error">
-                <MapPin size={32} color="#ef4444" style={{ margin: '0 auto 12px', display: 'block' }} />
+                <MapPin size={32} color="var(--red-light)" style={{ margin: '0 auto 12px', display: 'block' }} />
                 <div className="error-title">Out of Range</div>
                 <div className="error-badge">{popupState.sewadar.sewadar_name}</div>
                 <div className="error-msg">You are {popupState.distance}m away</div>
@@ -899,13 +904,13 @@ const handleScan = useCallback(async (badge) => {
             {popupState.type === 'success' && (
               <div className="popup-success">
                 <div className={`success-icon-ring ${popupState.action === 'IN' ? 'ring-green' : 'ring-red'}`}>
-                  <CheckCircle size={36} color={popupState.action === 'IN' ? '#16a34a' : '#dc2626'} />
+                  <CheckCircle size={36} color={popupState.action === 'IN' ? 'var(--green)' : 'var(--error)'} />
                 </div>
-                <div className="success-title" style={{ color: popupState.action === 'IN' ? '#16a34a' : '#dc2626' }}>
+                <div className="success-title" style={{ color: popupState.action === 'IN' ? 'var(--green)' : 'var(--error)' }}>
                   {popupState.action}
                 </div>
                 <div className="success-name">{popupState.sewadar.sewadar_name}</div>
-                {popupState.sewadar?.centre && popupState.sewadar.centre !== profile?.centre && (
+                {popupState.sewadar?.centre && popupState.sewadar.centre !== (popupState.scanCentre || popupState.openSession?.centre || profile?.centre) && (
                   <div className="success-guest">Guest from {popupState.sewadar.centre}</div>
                 )}
                 <div className="success-type">{popupState.time}</div>
@@ -972,6 +977,7 @@ const handleScan = useCallback(async (badge) => {
                   </div>
                   <button className="change-btn" onClick={() => {
                     setManualSelectedSewadar(null)
+                    setManualScanCentre('')
                     setManualOpenSession(null)
                     setManualNoSession(false)
                     setManualHasSession(false)
@@ -999,10 +1005,10 @@ const handleScan = useCallback(async (badge) => {
                     )}
 
                     {manualForgotOutData && (
-                      <div className="warning-box" style={{ borderColor: '#f59e0b', background: 'rgba(245, 158, 11, 0.08)' }}>
-                        <AlertTriangle size={14} color="#f59e0b" />
+                      <div className="warning-box" style={{ borderColor: 'var(--warning)', background: 'var(--warning-bg)' }}>
+                        <AlertTriangle size={14} color="var(--warning)" />
                         <div>
-                          <div style={{ fontWeight: 600, fontSize: 12, color: '#f59e0b' }}>Previous Session Still Open</div>
+                          <div style={{ fontWeight: 600, fontSize: 12, color: 'var(--warning)' }}>Previous Session Still Open</div>
                           <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
                             From {manualForgotOutData.inDate} at {formatTime12Hour(manualForgotOutData.inTime)}
                           </div>
@@ -1045,10 +1051,10 @@ const handleScan = useCallback(async (badge) => {
                     )}
 
                     {manualTimeError && (
-                      <div className="warning-box" style={{ borderColor: '#dc2626', background: 'rgba(220,38,38,0.08)' }}>
-                        <AlertTriangle size={14} color="#dc2626" />
+                      <div className="warning-box" style={{ borderColor: 'var(--error)', background: 'var(--error-bg)' }}>
+                        <AlertTriangle size={14} color="var(--error)" />
                         <div>
-                          <div style={{ fontWeight: 600, fontSize: 12, color: '#dc2626' }}>{manualTimeError}</div>
+                          <div style={{ fontWeight: 600, fontSize: 12, color: 'var(--error)' }}>{manualTimeError}</div>
                         </div>
                       </div>
                     )}
@@ -1077,6 +1083,15 @@ const handleScan = useCallback(async (badge) => {
                         OUT
                       </button>
                     </div>
+
+                    {(profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN) && (
+                      <div style={{ marginBottom: '0.8rem' }}>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>Scan Centre</label>
+                        <select className="scan-centre-select" value={manualScanCentre || ''} onChange={e => setManualScanCentre(e.target.value)}>
+                          {allCentres.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                    )}
 
                     {!manualForgotOutData && (
                       <div className="time-inputs">

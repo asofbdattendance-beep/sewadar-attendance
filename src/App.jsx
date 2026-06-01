@@ -54,6 +54,9 @@ function AppLayout() {
   // Filter nav items based on permissions (ASO sees all)
   const visibleNavItems = navItems.filter(item => {
     if (!item.permission) return true // Profile always visible
+    if (item.path === '/entry') {
+      return hasPermission('allow_gate_entry') || hasPermission('allow_jatha')
+    }
     return hasPermission(item.permission)
   })
 
@@ -79,7 +82,7 @@ function AppLayout() {
         <Route path="/reports" element={hasPermission('allow_reports') ? <ReportsPage /> : <Navigate to="/" replace />} />
         <Route path="/scan" element={hasPermission('allow_scan') ? <ScannerPage isOnline={isOnline} /> : <Navigate to="/" replace />} />
         <Route path="/records" element={hasPermission('allow_records') ? <RecordsPage /> : <Navigate to="/" replace />} />
-        <Route path="/entry" element={hasPermission('allow_gate_entry') ? <AttendanceEntryPage /> : <Navigate to="/" replace />} />
+        <Route path="/entry" element={hasPermission('allow_gate_entry') || hasPermission('allow_jatha') ? <AttendanceEntryPage /> : <Navigate to="/" replace />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/superadmin" element={hasPermission('allow_settings') ? <SuperAdminPage /> : <Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />

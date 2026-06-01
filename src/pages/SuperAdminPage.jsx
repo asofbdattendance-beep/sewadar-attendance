@@ -3,7 +3,7 @@ import { supabase, ROLES, ROLE_LABELS } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import { logAction } from '../lib/logger'
-import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search, Copy, CheckCircle, UserPlus, FileText, ChevronRight, ChevronDown } from 'lucide-react'
+import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search, Copy, CheckCircle, UserPlus, FileText, ChevronRight, ChevronDown, Calendar } from 'lucide-react'
 
 const TABLES = [
   { id: 'centres', label: 'Centres', icon: MapPin, 
@@ -20,6 +20,8 @@ const TABLES = [
   { id: 'logs', label: 'Logs', icon: FileText, 
     columns: ['id', 'user_badge', 'user_name', 'action', 'details', 'timestamp'],
     sortBy: 'timestamp', defaults: {} },
+  { id: 'settings', label: 'Settings', icon: Calendar,
+    columns: [], sortBy: '', defaults: {} },
 ]
 
 const PERMISSIONS_LIST = [
@@ -104,7 +106,7 @@ function FormFields({ table, formData, setFormData, centres, isUsersTable, roleL
                     if (data?.permissions) {
                       setFormData(prev => ({ ...prev, permissions: data.permissions }))
                     }
-                  })
+                  }).catch(() => {})
                 }
               }}
               required
@@ -207,6 +209,8 @@ export default function SuperAdminPage() {
   const [data, setData] = useState({})
   const [loading, setLoading] = useState({})
   const [search, setSearch] = useState('')
+  const [debouncedTableSearch, setDebouncedTableSearch] = useState('')
+  const tableSearchDebounceRef = useRef(null)
   const [modal, setModal] = useState({ open: false, mode: 'add', data: null })
   const [formData, setFormData] = useState({})
   const [centres, setCentres] = useState([])
@@ -218,7 +222,11 @@ export default function SuperAdminPage() {
   const [showSuccess, setShowSuccess] = useState(false)
   const [successData, setSuccessData] = useState(null)
   const [expandedLog, setExpandedLog] = useState(null)
+  const [lockDate, setLockDate] = useState('')
+  const [newLockDate, setNewLockDate] = useState('')
+  const [savingLock, setSavingLock] = useState(false)
   const sewadarSearchTimeout = useRef(null)
+  const sewadarSearchTickRef = useRef(0)
 
   const currentTable = TABLES.find(t => t.id === activeTable)
   const isSuperAdmin = profile?.role === ROLES.SUPER_ADMIN
@@ -227,6 +235,18 @@ export default function SuperAdminPage() {
 
   useEffect(() => {
     if (!canAccessPanel) return
+    if (activeTable === 'settings') {
+      supabase.from('settings').select('value').eq('key', 'lock_date').single().then(({ data }) => {
+        if (data?.value) {
+          setLockDate(data.value)
+          setNewLockDate(data.value)
+        } else {
+          setLockDate('')
+          setNewLockDate('')
+        }
+      }).catch(() => {})
+      return
+    }
     fetchData(activeTable)
   }, [activeTable, canAccessPanel])
 
@@ -242,7 +262,7 @@ export default function SuperAdminPage() {
           data.forEach(r => { map[r.role_key] = r.role_label.replace(/_/g, ' ') })
           setRoleLabelMap(map)
         }
-      })
+      }).catch(() => {})
     }
   }, [canAccessPanel])
 
@@ -264,12 +284,17 @@ export default function SuperAdminPage() {
       setSewadarResults([])
       return
     }
-    const { data } = await supabase
-      .from('sewadars')
-      .select('badge_number, sewadar_name, centre, department')
-      .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
-      .limit(10)
-    setSewadarResults(data || [])
+    const tick = ++sewadarSearchTickRef.current
+    try {
+      const { data } = await supabase
+        .from('sewadars')
+        .select('badge_number, sewadar_name, centre, department')
+        .or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`)
+        .limit(10)
+      if (tick === sewadarSearchTickRef.current) setSewadarResults(data || [])
+    } catch (err) {
+      console.error('Sewadar search error:', err)
+    }
   }
 
   const fetchData = async (tableId) => {
@@ -277,7 +302,16 @@ export default function SuperAdminPage() {
     try {
       const sortField = TABLES.find(t => t.id === tableId)?.sortBy || 'id'
       const ascending = tableId !== 'logs'
-      const { data: result } = await supabase.from(tableId).select('*').order(sortField, { ascending })
+      let query = supabase.from(tableId).select('*')
+      if (tableId === 'logs') {
+        query = query
+          .not('action', 'in', '("ADMIN_ADD","ADMIN_DELETE","ADMIN_EDIT")')
+          .order(sortField, { ascending })
+          .limit(500)
+      } else {
+        query = query.order(sortField, { ascending })
+      }
+      const { data: result } = await query
       setData(d => ({ ...d, [tableId]: result || [] }))
     } catch (err) {
       console.error('Fetch error:', err)
@@ -287,21 +321,31 @@ export default function SuperAdminPage() {
   }
 
   // For users and role_masters tables - parse permissions from JSON to object for display
+  const safeJsonParse = (str) => {
+    try { return JSON.parse(str) } catch { return {} }
+  }
+
   const tableData = data[activeTable]?.map(row => {
     if ((activeTable === 'users' || activeTable === 'role_masters') && row.permissions) {
       return {
         ...row,
         permissions: typeof row.permissions === 'string' 
-          ? JSON.parse(row.permissions) 
+          ? safeJsonParse(row.permissions) 
           : row.permissions
       }
     }
     return row
   }) || []
       
+  useEffect(() => {
+    if (tableSearchDebounceRef.current) clearTimeout(tableSearchDebounceRef.current)
+    tableSearchDebounceRef.current = setTimeout(() => setDebouncedTableSearch(search), 200)
+    return () => { if (tableSearchDebounceRef.current) clearTimeout(tableSearchDebounceRef.current) }
+  }, [search])
+
       const filteredData = tableData.filter(row => {
-    if (!search) return true
-    const searchLower = search.toLowerCase()
+    if (!debouncedTableSearch) return true
+    const searchLower = debouncedTableSearch.toLowerCase()
     return currentTable.columns.some(col => {
       const val = row[col]
       return val && String(val).toLowerCase().includes(searchLower)
@@ -397,26 +441,7 @@ export default function SuperAdminPage() {
         result = await supabase.from(activeTable).insert([payload]).select()
       } else {
         // For update, don't include id, created_at, auth_id, email in payload (read-only fields)
-        
-        // Try direct update using the client
         result = await supabase.from(activeTable).update(updatePayload).eq('id', formData.id)
-        
-        // If that didn't work, try via RPC (fallback)
-        if (!result.error && (!result.data || result.data === null)) {
-          // For users table specifically, try a different approach
-          if (activeTable === 'users') {
-            const rpcResult = await supabase.rpc('update_user_permissions', {
-              p_id: formData.id,
-              p_name: updatePayload.name,
-              p_badge_number: updatePayload.badge_number,
-              p_role: updatePayload.role,
-              p_centre: updatePayload.centre,
-              p_is_active: updatePayload.is_active,
-              p_permissions: updatePayload.permissions
-            })
-            result = rpcResult
-          }
-        }
       }
 
       if (result.error) {
@@ -425,22 +450,13 @@ export default function SuperAdminPage() {
         return
       }
 
-      // When role_masters permissions are updated, cascade to all users with that role
+      // DB trigger auto-cascades role permissions to users
       if (activeTable === 'role_masters' && modal.mode === 'edit') {
         const roleKey = formData.role_key
-        const newPerms = updatePayload.permissions || {}
-        const { error: cascadeError } = await supabase
-          .from('users')
-          .update({ permissions: newPerms })
-          .eq('role', roleKey)
-        if (cascadeError) {
-          console.error('Cascade error:', cascadeError)
-        } else {
-          const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', roleKey)
-          toast.success(`Role updated — ${count || 0} users synced`)
-          logAction(profile?.badge_number, profile?.name, 'ROLE_CASCADE', { role: roleKey, count: count || 0 })
-          await fetchData('users')
-        }
+        const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', roleKey)
+        toast.success(`Role updated — ${count || 0} users synced`)
+        logAction(profile?.badge_number, profile?.name, 'ROLE_CASCADE', { role: roleKey, count: count || 0 })
+        await fetchData('users')
       }
 
       if (activeTable === 'users' && modal.mode === 'add') {
@@ -449,7 +465,6 @@ export default function SuperAdminPage() {
 
         try {
           const { error: fnError } = await supabase.functions.invoke('create-auth-user', {
-            headers: { 'X-Internal-Secret': 'my-random-secret-here' },
             body: {
               email: formData.email,
               password: pwd,
@@ -502,7 +517,7 @@ export default function SuperAdminPage() {
   if (!canAccessPanel) {
     return (
       <div className="page-full" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
-        <div style={{ textAlign: 'center', color: '#9ca3af' }}>
+        <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
           <Shield size={48} style={{ marginBottom: 12, opacity: 0.5 }} />
           <p>Access denied. ASO only.</p>
         </div>
@@ -512,19 +527,15 @@ export default function SuperAdminPage() {
 
   return (
     <div className="page-full pb-nav">
-      <div className="header" style={{ background: 'white', padding: '16px', borderBottom: '1px solid #e5e7eb' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Settings size={22} style={{ color: '#6366f1' }} />
-            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#111827' }}>Admin Panel</h2>
+      <div className="header" style={{ background: 'white', padding: '16px', borderBottom: '1px solid var(--border)' }}>
+            <Settings size={22} style={{ color: 'var(--excel-green)' }} />
+            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>ASO Panel</h2>
           </div>
-          {activeTable !== 'logs' && canWrite && (
+          {activeTable !== 'logs' && activeTable !== 'settings' && canWrite && (
             <button className="btn-primary" onClick={handleAdd} style={{ padding: '10px 18px', fontSize: 14 }}>
               <Plus size={16} /> Add New
             </button>
           )}
-        </div>
-      </div>
 
       <div className="superadmin-tabs" style={{ background: 'white' }}>
         {TABLES.map(table => (
@@ -539,6 +550,82 @@ export default function SuperAdminPage() {
         ))}
       </div>
 
+      {activeTable === 'settings' ? (
+        <div className="settings-panel" style={{ padding: 24 }}>
+          <div className="settings-section" style={{ background: 'white', borderRadius: 12, padding: 24, border: '1px solid var(--border)' }}>
+            <h3 style={{ margin: '0 0 8px 0', fontSize: 16, fontWeight: 600 }}>Date Lock</h3>
+            <p style={{ margin: '0 0 20px 0', fontSize: 13, color: 'var(--text-muted)' }}>
+              After this date passes, users cannot add, edit, or delete records from months before the current month.
+            </p>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label>Lock Date</label>
+                <input
+                  type="date"
+                  value={newLockDate}
+                  onChange={e => setNewLockDate(e.target.value)}
+                  style={{ padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 14 }}
+                />
+              </div>
+              <button
+                className="btn-primary"
+                style={{ marginTop: 22, padding: '8px 20px' }}
+                disabled={savingLock || !newLockDate || newLockDate === lockDate}
+                onClick={async () => {
+                  if (!canWrite) return
+                  setSavingLock(true)
+                  try {
+                    if (lockDate) {
+                      await supabase.from('settings').update({ value: newLockDate }).eq('key', 'lock_date')
+                    } else {
+                      await supabase.from('settings').insert({ key: 'lock_date', value: newLockDate })
+                    }
+                    setLockDate(newLockDate)
+                    toast.success('Lock date saved')
+                    logAction(profile?.badge_number, profile?.name, 'LOCK_DATE_SET', { date: newLockDate })
+                  } catch (err) {
+                    toast.error('Failed to save lock date')
+                  } finally {
+                    setSavingLock(false)
+                  }
+                }}
+              >
+                {savingLock ? 'Saving...' : 'Save'}
+              </button>
+              {lockDate && (
+                <button
+                  className="btn-ghost"
+                  style={{ marginTop: 22, padding: '8px 16px', color: 'var(--danger)' }}
+                  onClick={async () => {
+                    if (!confirm('Clear the lock date? Users will have full access to all dates.')) return
+                    try {
+                      await supabase.from('settings').delete().eq('key', 'lock_date')
+                      setLockDate('')
+                      setNewLockDate('')
+                      toast.success('Lock date cleared')
+                      logAction(profile?.badge_number, profile?.name, 'LOCK_DATE_CLEARED', {})
+                    } catch (err) {
+                      toast.error('Failed to clear lock date')
+                    }
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            {lockDate && (
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                Current lock date: <strong>{new Date(lockDate + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</strong>
+                {new Date(lockDate) < new Date() && (
+                  <span style={{ color: 'var(--danger)', marginLeft: 8 }}>— Lock is active</span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
       <div className="superadmin-toolbar">
         <div className="search-box">
           <Search size={16} />
@@ -553,7 +640,9 @@ export default function SuperAdminPage() {
           <span className="table-count">{filteredData.length} of {data[activeTable]?.length || 0} records</span>
         )}
       </div>
+      )}
 
+      {activeTable !== 'settings' && (
       <div className="superadmin-table-wrap">
         <table className="superadmin-table">
           <thead>
@@ -590,7 +679,7 @@ export default function SuperAdminPage() {
                             {row[col] ? 'Active' : 'Inactive'}
                           </span>
                         ) : col === 'permissions' && (activeTable === 'users' || activeTable === 'role_masters') ? (
-                          <span style={{ fontSize: 12, color: '#6b7280' }}>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                             {(() => {
                               let p = row[col]
                               if (typeof p === 'string') {
@@ -617,7 +706,7 @@ export default function SuperAdminPage() {
                         ) : col === 'action' && activeTable === 'logs' ? (
                           <span className={`action-pill ${row[col]}`}>{row[col]}</span>
                         ) : col === 'timestamp' && activeTable === 'logs' ? (
-                          <span style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                             {new Date(row[col]).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
                           </span>
                         ) : col === 'user_badge' && activeTable === 'logs' ? (
@@ -664,6 +753,7 @@ export default function SuperAdminPage() {
           </tbody>
         </table>
       </div>
+      )}
 
       <Modal
         isOpen={modal.open}
@@ -700,6 +790,24 @@ export default function SuperAdminPage() {
                 toast.success('Copied to clipboard — ready to share on WhatsApp')
               }}>
                 <Copy size={16} /> Copy All (WhatsApp)
+              </button>
+              <button className="btn-outline" onClick={() => {
+                setShowSuccess(false)
+                setSelectedSewadar(null)
+                setSewadarSearch('')
+                setSewadarResults([])
+                setGeneratedPassword('')
+                const empty = { ...currentTable.defaults } || {}
+                currentTable.columns.forEach(col => {
+                  if (!(col in empty)) {
+                    if (col === 'is_active') empty[col] = true
+                    else if (col === 'permissions') empty[col] = {}
+                    else empty[col] = ''
+                  }
+                })
+                setFormData(empty)
+              }}>
+                <UserPlus size={16} /> Add Another
               </button>
               <button className="btn-ghost" onClick={() => {
                 setModal({ open: false, mode: 'add', data: null })
@@ -756,7 +864,7 @@ export default function SuperAdminPage() {
                   </div>
                 )}
                 {sewadarSearch.length >= 2 && sewadarResults.length === 0 && (
-                  <div style={{ textAlign: 'center', padding: 24, color: '#9ca3af', fontSize: 14 }}>No sewadar found</div>
+                  <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)', fontSize: 14 }}>No sewadar found</div>
                 )}
               </div>
             ) : (
