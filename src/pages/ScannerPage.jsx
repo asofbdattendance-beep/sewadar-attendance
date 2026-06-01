@@ -3,6 +3,7 @@ import { supabase, ROLES, DUTY_TYPES, SESSION_STATUS, getDutyType, formatTime12H
 import { useAuth } from '../context/AuthContext'
 import { logAction } from '../lib/logger'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
+import { useToast } from '../components/Toast'
 import { Wifi, WifiOff, CheckCircle, XCircle, Clock, AlertTriangle, Keyboard, Search, Info, MapPin, RefreshCw } from 'lucide-react'
 
 // Geofencing: Calculate distance between two coordinates using Haversine formula
@@ -19,6 +20,7 @@ function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
 
 export default function ScannerPage({ isOnline }) {
   const { profile } = useAuth()
+  const toast = useToast()
   const [popupState, setPopupState] = useState(null)
   const [processing, setProcessing] = useState(false)
   const [recentScans, setRecentScans] = useState([])
@@ -72,10 +74,10 @@ export default function ScannerPage({ isOnline }) {
   // Geofencing: Check location on page load
   useEffect(() => {
     const checkGeoLocation = async () => {
-      const isASO = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
+      const isElevatedAccess = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
 
       // ASO is exempt from geofencing
-      if (isASO) {
+      if (isElevatedAccess) {
         setGeoCheckDone(true)
         setGeoLoading(false)
         return
@@ -220,8 +222,8 @@ const handleScan = useCallback(async (badge) => {
 
       // Check if user is within their centre's geo-fence radius
       // SKIP for ASO/Super Admin — they can scan from anywhere
-      const isASO = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
-      if (!isASO && profile?.centre) {
+      const isElevatedAccess = profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN
+      if (!isElevatedAccess && profile?.centre) {
         const { data: centreData } = await supabase
           .from('centres')
           .select('latitude, longitude, geo_radius, geo_enabled')
@@ -347,6 +349,7 @@ const handleScan = useCallback(async (badge) => {
               return
             }
           }
+          toast.error(error.message || 'Failed to record entry')
           console.error('Failed to insert session:', error)
           return
         }
@@ -391,6 +394,7 @@ const handleScan = useCallback(async (badge) => {
         })
         if (error) {
           console.error('Failed to close session:', error)
+          toast.error(error.message || 'Failed to close session')
           return
         }
         logAction(profile?.badge_number, profile?.name, 'SCAN_OUT', {
@@ -402,6 +406,7 @@ const handleScan = useCallback(async (badge) => {
         fetchRecentScans()
       } catch (err) {
         console.error('Failed to close session:', err)
+        toast.error(err?.message || 'Cannot close session')
         return
       }
     } else {
@@ -585,16 +590,16 @@ const handleScan = useCallback(async (badge) => {
             setManualHasSession(true)
             return
           }
+          toast.error(error.message || 'Failed to record manual entry')
           console.error('Failed to insert session:', error)
+          return
         }
-        if (!error) {
-          logAction(profile?.badge_number, profile?.name, 'MANUAL_IN', {
-            badge: manualSelectedSewadar.badge_number,
-            name: manualSelectedSewadar.sewadar_name,
-            centre: profile?.centre,
-            duty: getDutyType()
-          })
-        }
+        logAction(profile?.badge_number, profile?.name, 'MANUAL_IN', {
+          badge: manualSelectedSewadar.badge_number,
+          name: manualSelectedSewadar.sewadar_name,
+          centre: profile?.centre,
+          duty: getDutyType()
+        })
         fetchRecentScans()
       }
     } else {
@@ -622,14 +627,23 @@ const handleScan = useCallback(async (badge) => {
       const sessionId = typeof manualOpenSession === 'object' ? manualOpenSession.id : manualOpenSession
 
       if (isOnline) {
-        await supabase.rpc('close_session', {
-          p_session_id: sessionId,
-          p_out_date: outDate,
-          p_out_time: outTime,
-          p_out_scanner_badge: profile?.badge_number,
-          p_out_scanner_name: profile?.name,
-          p_out_scanner_centre: profile?.centre || manualSelectedSewadar?.centre || 'UNKNOWN'
-        })
+        try {
+          const { error } = await supabase.rpc('close_session', {
+            p_session_id: sessionId,
+            p_out_date: outDate,
+            p_out_time: outTime,
+            p_out_scanner_badge: profile?.badge_number,
+            p_out_scanner_name: profile?.name,
+            p_out_scanner_centre: profile?.centre || manualSelectedSewadar?.centre || 'UNKNOWN'
+          })
+          if (error) {
+            toast.error(error.message || 'Failed to close session')
+            return
+          }
+        } catch (err) {
+          toast.error(err?.message || 'Cannot close session')
+          return
+        }
         
         logAction(profile?.badge_number, profile?.name, 'MANUAL_OUT', {
           badge: manualSelectedSewadar.badge_number,

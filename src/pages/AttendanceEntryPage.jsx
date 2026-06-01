@@ -12,7 +12,7 @@ const JATHA_TYPES = [
 ]
 
 const MAX_JATHA_DAYS = 10
-const MAX_PAST_DAYS = 30
+
 
 function GateEntryForm({ onSuccess }) {
   const { profile } = useAuth()
@@ -661,10 +661,7 @@ function JathaEntryForm({ onSuccess }) {
       const diffDays = Math.ceil((to - from) / (1000 * 60 * 60 * 24))
       if (diffDays > MAX_JATHA_DAYS) return `Maximum ${MAX_JATHA_DAYS} days between FROM and TO date`
     }
-    if (fromDate) {
-      const daysDiff = Math.ceil((today - from) / (1000 * 60 * 60 * 24))
-      if (daysDiff > MAX_PAST_DAYS) return `FROM DATE cannot be more than ${MAX_PAST_DAYS} days in the past`
-    }
+
     return null
   }
 
@@ -1003,8 +1000,10 @@ function JathaEntryForm({ onSuccess }) {
 }
 
 export default function AttendanceEntryPage() {
-  const { profile } = useAuth()
-  const [activeTab, setActiveTab] = useState('gate')
+  const { profile, hasPermission } = useAuth()
+  const canGate = hasPermission('allow_gate_entry')
+  const canJatha = hasPermission('allow_jatha')
+  const [activeTab, setActiveTab] = useState(canGate ? 'gate' : 'jatha')
 
   return (
     <div className="page pb-nav">
@@ -1016,18 +1015,22 @@ export default function AttendanceEntryPage() {
       </div>
 
       <div className="tab-container">
-        <button className={`tab-btn ${activeTab === 'gate' ? 'active' : ''}`} onClick={() => setActiveTab('gate')}>
-          <DoorOpen size={16} />
-          Gate Entry
-        </button>
-        <button className={`tab-btn ${activeTab === 'jatha' ? 'active' : ''}`} onClick={() => setActiveTab('jatha')}>
-          <Truck size={16} />
-          Jatha Entry
-        </button>
+        {canGate && (
+          <button className={`tab-btn ${activeTab === 'gate' ? 'active' : ''}`} onClick={() => setActiveTab('gate')}>
+            <DoorOpen size={16} />
+            Gate Entry
+          </button>
+        )}
+        {canJatha && (
+          <button className={`tab-btn ${activeTab === 'jatha' ? 'active' : ''}`} onClick={() => setActiveTab('jatha')}>
+            <Truck size={16} />
+            Jatha Entry
+          </button>
+        )}
       </div>
 
-{activeTab === 'gate' && <GateEntryForm />}
-{activeTab === 'jatha' && <JathaEntryForm />}
+{activeTab === 'gate' && canGate && <GateEntryForm />}
+{activeTab === 'jatha' && canJatha && <JathaEntryForm />}
     </div>
   )
 }

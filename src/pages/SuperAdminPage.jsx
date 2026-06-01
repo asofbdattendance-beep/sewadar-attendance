@@ -3,7 +3,7 @@ import { supabase, ROLES, ROLE_LABELS } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import { logAction } from '../lib/logger'
-import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search, Copy, CheckCircle, UserPlus, FileText, ChevronRight, ChevronDown } from 'lucide-react'
+import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search, Copy, CheckCircle, UserPlus, FileText, ChevronRight, ChevronDown, Calendar } from 'lucide-react'
 
 const TABLES = [
   { id: 'centres', label: 'Centres', icon: MapPin, 
@@ -20,6 +20,8 @@ const TABLES = [
   { id: 'logs', label: 'Logs', icon: FileText, 
     columns: ['id', 'user_badge', 'user_name', 'action', 'details', 'timestamp'],
     sortBy: 'timestamp', defaults: {} },
+  { id: 'settings', label: 'Settings', icon: Calendar,
+    columns: [], sortBy: '', defaults: {} },
 ]
 
 const PERMISSIONS_LIST = [
@@ -220,6 +222,9 @@ export default function SuperAdminPage() {
   const [showSuccess, setShowSuccess] = useState(false)
   const [successData, setSuccessData] = useState(null)
   const [expandedLog, setExpandedLog] = useState(null)
+  const [lockDate, setLockDate] = useState('')
+  const [newLockDate, setNewLockDate] = useState('')
+  const [savingLock, setSavingLock] = useState(false)
   const sewadarSearchTimeout = useRef(null)
   const sewadarSearchTickRef = useRef(0)
 
@@ -230,6 +235,18 @@ export default function SuperAdminPage() {
 
   useEffect(() => {
     if (!canAccessPanel) return
+    if (activeTable === 'settings') {
+      supabase.from('settings').select('value').eq('key', 'lock_date').single().then(({ data }) => {
+        if (data?.value) {
+          setLockDate(data.value)
+          setNewLockDate(data.value)
+        } else {
+          setLockDate('')
+          setNewLockDate('')
+        }
+      }).catch(() => {})
+      return
+    }
     fetchData(activeTable)
   }, [activeTable, canAccessPanel])
 
@@ -424,22 +441,13 @@ export default function SuperAdminPage() {
         return
       }
 
-      // When role_masters permissions are updated, cascade to all users with that role
+      // DB trigger auto-cascades role permissions to users
       if (activeTable === 'role_masters' && modal.mode === 'edit') {
         const roleKey = formData.role_key
-        const newPerms = updatePayload.permissions || {}
-        const { error: cascadeError } = await supabase
-          .from('users')
-          .update({ permissions: newPerms })
-          .eq('role', roleKey)
-        if (cascadeError) {
-          console.error('Cascade error:', cascadeError)
-        } else {
-          const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', roleKey)
-          toast.success(`Role updated — ${count || 0} users synced`)
-          logAction(profile?.badge_number, profile?.name, 'ROLE_CASCADE', { role: roleKey, count: count || 0 })
-          await fetchData('users')
-        }
+        const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('role', roleKey)
+        toast.success(`Role updated — ${count || 0} users synced`)
+        logAction(profile?.badge_number, profile?.name, 'ROLE_CASCADE', { role: roleKey, count: count || 0 })
+        await fetchData('users')
       }
 
       if (activeTable === 'users' && modal.mode === 'add') {
@@ -514,7 +522,7 @@ export default function SuperAdminPage() {
             <Settings size={22} style={{ color: 'var(--excel-green)' }} />
             <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>ASO Panel</h2>
           </div>
-          {activeTable !== 'logs' && canWrite && (
+          {activeTable !== 'logs' && activeTable !== 'settings' && canWrite && (
             <button className="btn-primary" onClick={handleAdd} style={{ padding: '10px 18px', fontSize: 14 }}>
               <Plus size={16} /> Add New
             </button>
@@ -533,6 +541,82 @@ export default function SuperAdminPage() {
         ))}
       </div>
 
+      {activeTable === 'settings' ? (
+        <div className="settings-panel" style={{ padding: 24 }}>
+          <div className="settings-section" style={{ background: 'white', borderRadius: 12, padding: 24, border: '1px solid var(--border)' }}>
+            <h3 style={{ margin: '0 0 8px 0', fontSize: 16, fontWeight: 600 }}>Date Lock</h3>
+            <p style={{ margin: '0 0 20px 0', fontSize: 13, color: 'var(--text-muted)' }}>
+              After this date passes, users cannot add, edit, or delete records from months before the current month.
+            </p>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label>Lock Date</label>
+                <input
+                  type="date"
+                  value={newLockDate}
+                  onChange={e => setNewLockDate(e.target.value)}
+                  style={{ padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 14 }}
+                />
+              </div>
+              <button
+                className="btn-primary"
+                style={{ marginTop: 22, padding: '8px 20px' }}
+                disabled={savingLock || !newLockDate || newLockDate === lockDate}
+                onClick={async () => {
+                  if (!canWrite) return
+                  setSavingLock(true)
+                  try {
+                    if (lockDate) {
+                      await supabase.from('settings').update({ value: newLockDate }).eq('key', 'lock_date')
+                    } else {
+                      await supabase.from('settings').insert({ key: 'lock_date', value: newLockDate })
+                    }
+                    setLockDate(newLockDate)
+                    toast.success('Lock date saved')
+                    logAction(profile?.badge_number, profile?.name, 'LOCK_DATE_SET', { date: newLockDate })
+                  } catch (err) {
+                    toast.error('Failed to save lock date')
+                  } finally {
+                    setSavingLock(false)
+                  }
+                }}
+              >
+                {savingLock ? 'Saving...' : 'Save'}
+              </button>
+              {lockDate && (
+                <button
+                  className="btn-ghost"
+                  style={{ marginTop: 22, padding: '8px 16px', color: 'var(--danger)' }}
+                  onClick={async () => {
+                    if (!confirm('Clear the lock date? Users will have full access to all dates.')) return
+                    try {
+                      await supabase.from('settings').delete().eq('key', 'lock_date')
+                      setLockDate('')
+                      setNewLockDate('')
+                      toast.success('Lock date cleared')
+                      logAction(profile?.badge_number, profile?.name, 'LOCK_DATE_CLEARED', {})
+                    } catch (err) {
+                      toast.error('Failed to clear lock date')
+                    }
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            {lockDate && (
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                Current lock date: <strong>{new Date(lockDate + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</strong>
+                {new Date(lockDate) < new Date() && (
+                  <span style={{ color: 'var(--danger)', marginLeft: 8 }}>— Lock is active</span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
       <div className="superadmin-toolbar">
         <div className="search-box">
           <Search size={16} />
@@ -547,7 +631,9 @@ export default function SuperAdminPage() {
           <span className="table-count">{filteredData.length} of {data[activeTable]?.length || 0} records</span>
         )}
       </div>
+      )}
 
+      {activeTable !== 'settings' && (
       <div className="superadmin-table-wrap">
         <table className="superadmin-table">
           <thead>
@@ -658,6 +744,7 @@ export default function SuperAdminPage() {
           </tbody>
         </table>
       </div>
+      )}
 
       <Modal
         isOpen={modal.open}

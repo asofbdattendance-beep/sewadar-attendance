@@ -362,13 +362,13 @@ export default function RecordsPage() {
     else setLoading(true)
 
     try {
-    const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
-    const targetCentre = centreFilter || (isASO ? null : profile?.centre)
+    const isElevatedAccess = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
+    const targetCentre = centreFilter || (isElevatedAccess ? null : profile?.centre)
 
     let sessions = []
 
     // Step 1: Fetch sessions based on role
-    if (isASO) {
+    if (isElevatedAccess) {
       let q = supabase.from('attendance_sessions')
         .select('*')
         .gte('in_date', dateFrom)

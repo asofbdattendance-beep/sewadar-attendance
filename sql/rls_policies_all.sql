@@ -22,6 +22,117 @@ BEGIN
 END;
 $$;
 
+-- Check if current user has a specific permission
+-- Mirrors the frontend hasPermission() logic for defense-in-depth
+CREATE OR REPLACE FUNCTION public.has_permission(p_perm_key TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_role TEXT;
+  v_permissions JSONB;
+BEGIN
+  SELECT role, permissions INTO v_role, v_permissions
+  FROM public.users WHERE auth_id = auth.uid();
+
+  -- super_admin has all permissions
+  IF v_role = 'super_admin' THEN
+    RETURN TRUE;
+  END IF;
+
+  -- aso has read-only permissions
+  IF v_role = 'aso' THEN
+    RETURN p_perm_key IN ('allow_dashboard', 'allow_records', 'allow_reports');
+  END IF;
+
+  -- Other roles: check the permissions JSONB column
+  IF v_permissions IS NULL OR jsonb_typeof(v_permissions) != 'object' THEN
+    RETURN FALSE;
+  END IF;
+
+  RETURN COALESCE((v_permissions->>p_perm_key)::boolean, FALSE);
+END;
+$$;
+
+-- ============================================================
+-- TRIGGER: Cascade role permissions to users
+-- ============================================================
+-- When role_masters.permissions is updated, automatically
+-- update all users with that role (atomic, server-side)
+CREATE OR REPLACE FUNCTION public.cascade_role_permissions()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  UPDATE public.users
+  SET permissions = NEW.permissions
+  WHERE role = NEW.role_key;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_cascade_role_permissions ON public.role_masters;
+CREATE TRIGGER trg_cascade_role_permissions
+  AFTER UPDATE OF permissions ON public.role_masters
+  FOR EACH ROW
+  EXECUTE FUNCTION public.cascade_role_permissions();
+
+-- ============================================================
+-- TABLE: settings
+-- ============================================================
+-- Key-value store for system settings (e.g., lock_date)
+CREATE TABLE IF NOT EXISTS public.settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS settings_read ON public.settings;
+DROP POLICY IF EXISTS settings_write ON public.settings;
+
+CREATE POLICY settings_read ON public.settings
+  FOR SELECT TO authenticated USING (true);
+
+CREATE POLICY settings_write ON public.settings
+  FOR ALL TO authenticated
+  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
+  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
+
+-- ============================================================
+-- FUNCTION: Check if a date is in a locked month
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.is_date_locked(p_date DATE)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_lock_date DATE;
+BEGIN
+  SELECT value::DATE INTO v_lock_date FROM public.settings WHERE key = 'lock_date';
+
+  -- No lock date set
+  IF v_lock_date IS NULL THEN
+    RETURN FALSE;
+  END IF;
+
+  -- Lock hasn't activated yet (current date is on or before lock date)
+  IF CURRENT_DATE <= v_lock_date THEN
+    RETURN FALSE;
+  END IF;
+
+  -- Lock is active: lock records from months before the current month
+  RETURN date_trunc('month', p_date) < date_trunc('month', CURRENT_DATE);
+END;
+$$;
+
 -- Get centres accessible to the current user
 -- SUPER_ADMIN / ASO → all centres
 -- ADMIN / CENTRE_USER / SC_SP_USER → own centre + child centres (recursive)
@@ -139,8 +250,8 @@ CREATE POLICY centres_read ON public.centres
 
 CREATE POLICY centres_write ON public.centres
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin')
-  WITH CHECK (public.get_user_role() = 'super_admin');
+  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
+  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
 
 -- ============================================================
 -- TABLE: jatha_master
@@ -158,8 +269,8 @@ CREATE POLICY jatha_read ON public.jatha_master
 
 CREATE POLICY jatha_write ON public.jatha_master
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin')
-  WITH CHECK (public.get_user_role() = 'super_admin');
+  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
+  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
 
 -- ============================================================
 -- TABLE: jatha_attendance
@@ -175,7 +286,8 @@ DROP POLICY IF EXISTS jatha_att_write ON public.jatha_attendance;
 CREATE POLICY jatha_att_read ON public.jatha_attendance
   FOR SELECT TO authenticated
   USING (
-    badge_number IN (
+    public.has_permission('allow_jatha')
+    AND badge_number IN (
       SELECT badge_number FROM public.sewadars
       WHERE centre IN (SELECT public.get_user_accessible_centres())
     )
@@ -184,24 +296,32 @@ CREATE POLICY jatha_att_read ON public.jatha_attendance
 CREATE POLICY jatha_att_write ON public.jatha_attendance
   FOR ALL TO authenticated
   USING (
-    public.get_user_role() = 'super_admin'
-    OR (
-      public.get_user_role() IN ('admin', 'centre_user')
-      AND badge_number IN (
-        SELECT badge_number FROM public.sewadars
-        WHERE centre IN (SELECT public.get_user_accessible_centres())
+    public.has_permission('allow_jatha')
+    AND (
+      public.get_user_role() = 'super_admin'
+      OR (
+        public.get_user_role() IN ('admin', 'centre_user')
+        AND badge_number IN (
+          SELECT badge_number FROM public.sewadars
+          WHERE centre IN (SELECT public.get_user_accessible_centres())
+        )
       )
     )
+    AND (public.get_user_role() = 'super_admin' OR from_date IS NULL OR NOT public.is_date_locked(from_date))
   )
   WITH CHECK (
-    public.get_user_role() = 'super_admin'
-    OR (
-      public.get_user_role() IN ('admin', 'centre_user')
-      AND badge_number IN (
-        SELECT badge_number FROM public.sewadars
-        WHERE centre IN (SELECT public.get_user_accessible_centres())
+    public.has_permission('allow_jatha')
+    AND (
+      public.get_user_role() = 'super_admin'
+      OR (
+        public.get_user_role() IN ('admin', 'centre_user')
+        AND badge_number IN (
+          SELECT badge_number FROM public.sewadars
+          WHERE centre IN (SELECT public.get_user_accessible_centres())
+        )
       )
     )
+    AND (public.get_user_role() = 'super_admin' OR from_date IS NULL OR NOT public.is_date_locked(from_date))
   );
 
 -- ============================================================
@@ -221,45 +341,70 @@ DROP POLICY IF EXISTS sessions_delete ON public.attendance_sessions;
 CREATE POLICY sessions_read ON public.attendance_sessions
   FOR SELECT TO authenticated
   USING (
-    centre IN (SELECT public.get_user_accessible_centres())
-    OR badge_number IN (
-      SELECT badge_number FROM public.sewadars
-      WHERE centre IN (SELECT public.get_user_accessible_centres())
+    (public.has_permission('allow_dashboard')
+      OR public.has_permission('allow_records')
+      OR public.has_permission('allow_scan')
+      OR public.has_permission('allow_gate_entry'))
+    AND (
+      centre IN (SELECT public.get_user_accessible_centres())
+      OR badge_number IN (
+        SELECT badge_number FROM public.sewadars
+        WHERE centre IN (SELECT public.get_user_accessible_centres())
+      )
+    )
+    AND (
+      public.get_user_role() != 'sc_sp_user'
+      OR in_scanner_centre = (SELECT centre FROM public.users WHERE auth_id = auth.uid())
     )
   );
 
 CREATE POLICY sessions_insert ON public.attendance_sessions
   FOR INSERT TO authenticated
   WITH CHECK (
-    public.get_user_role() = 'super_admin'
-    OR centre IN (SELECT public.get_user_accessible_centres())
+    (public.has_permission('allow_gate_entry') OR public.has_permission('allow_scan'))
+    AND (
+      public.get_user_role() = 'super_admin'
+      OR centre IN (SELECT public.get_user_accessible_centres())
+    )
+    AND (public.get_user_role() = 'super_admin' OR NOT public.is_date_locked(in_date))
   );
 
 CREATE POLICY sessions_update ON public.attendance_sessions
   FOR UPDATE TO authenticated
   USING (
-    public.get_user_role() = 'super_admin'
-    OR (
-      public.get_user_role() IN ('admin', 'centre_user')
-      AND centre IN (SELECT public.get_user_accessible_centres())
+    public.has_permission('allow_scan')
+    AND (
+      public.get_user_role() = 'super_admin'
+      OR (
+        public.get_user_role() IN ('admin', 'centre_user')
+        AND centre IN (SELECT public.get_user_accessible_centres())
+      )
     )
+    AND (public.get_user_role() = 'super_admin' OR NOT public.is_date_locked(in_date))
   )
   WITH CHECK (
-    public.get_user_role() = 'super_admin'
-    OR (
-      public.get_user_role() IN ('admin', 'centre_user')
-      AND centre IN (SELECT public.get_user_accessible_centres())
+    public.has_permission('allow_scan')
+    AND (
+      public.get_user_role() = 'super_admin'
+      OR (
+        public.get_user_role() IN ('admin', 'centre_user')
+        AND centre IN (SELECT public.get_user_accessible_centres())
+      )
     )
+    AND (public.get_user_role() = 'super_admin' OR NOT public.is_date_locked(in_date))
   );
 
 CREATE POLICY sessions_delete ON public.attendance_sessions
   FOR DELETE TO authenticated
   USING (
-    public.get_user_role() = 'super_admin'
-    OR (
-      public.get_user_role() IN ('admin', 'centre_user')
-      AND centre IN (SELECT public.get_user_accessible_centres())
+    (
+      public.get_user_role() = 'super_admin'
+      OR (
+        public.get_user_role() IN ('admin', 'centre_user')
+        AND centre IN (SELECT public.get_user_accessible_centres())
+      )
     )
+    AND (public.get_user_role() = 'super_admin' OR NOT public.is_date_locked(in_date))
   );
 
 -- ============================================================
@@ -282,22 +427,36 @@ DROP POLICY IF EXISTS sewadars_write ON public.sewadars;
 
 CREATE POLICY sewadars_read ON public.sewadars
   FOR SELECT TO authenticated
-  USING (centre IN (SELECT public.get_user_accessible_centres()));
+  USING (
+    (public.has_permission('allow_dashboard')
+      OR public.has_permission('allow_records')
+      OR public.has_permission('allow_scan')
+      OR public.has_permission('allow_gate_entry')
+      OR public.has_permission('allow_jatha')
+      OR public.has_permission('allow_reports'))
+    AND centre IN (SELECT public.get_user_accessible_centres())
+  );
 
 CREATE POLICY sewadars_write ON public.sewadars
   FOR ALL TO authenticated
   USING (
-    public.get_user_role() = 'super_admin'
-    OR (
-      public.get_user_role() IN ('admin', 'centre_user')
-      AND centre IN (SELECT public.get_user_accessible_centres())
+    public.has_permission('allow_settings')
+    AND (
+      public.get_user_role() = 'super_admin'
+      OR (
+        public.get_user_role() IN ('admin', 'centre_user')
+        AND centre IN (SELECT public.get_user_accessible_centres())
+      )
     )
   )
   WITH CHECK (
-    public.get_user_role() = 'super_admin'
-    OR (
-      public.get_user_role() IN ('admin', 'centre_user')
-      AND centre IN (SELECT public.get_user_accessible_centres())
+    public.has_permission('allow_settings')
+    AND (
+      public.get_user_role() = 'super_admin'
+      OR (
+        public.get_user_role() IN ('admin', 'centre_user')
+        AND centre IN (SELECT public.get_user_accessible_centres())
+      )
     )
   );
 
@@ -315,8 +474,8 @@ CREATE POLICY users_read ON public.users
 
 CREATE POLICY users_write ON public.users
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin')
-  WITH CHECK (public.get_user_role() = 'super_admin');
+  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
+  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
 
 -- ============================================================
 -- TABLE: role_masters
@@ -331,8 +490,8 @@ CREATE POLICY role_masters_read ON public.role_masters
 
 CREATE POLICY role_masters_write ON public.role_masters
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin')
-  WITH CHECK (public.get_user_role() = 'super_admin');
+  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
+  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
 
 -- ============================================================
 -- TABLE: special_departments
@@ -347,8 +506,8 @@ CREATE POLICY depts_read ON public.special_departments
 
 CREATE POLICY depts_write ON public.special_departments
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin')
-  WITH CHECK (public.get_user_role() = 'super_admin');
+  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
+  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
 
 -- ============================================================
 -- TABLE: logs
@@ -397,10 +556,21 @@ CREATE OR REPLACE FUNCTION public.close_session(
   p_out_scanner_centre TEXT
 )
 RETURNS VOID
-LANGUAGE sql
+LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = ''
 AS $$
+DECLARE
+  v_in_date DATE;
+BEGIN
+  -- Get the session's in_date
+  SELECT in_date INTO v_in_date FROM public.attendance_sessions WHERE id = p_session_id;
+
+  -- Block if date is locked (unless super_admin)
+  IF v_in_date IS NOT NULL AND public.get_user_role() != 'super_admin' AND public.is_date_locked(v_in_date) THEN
+    RAISE EXCEPTION 'Cannot close session: date is locked';
+  END IF;
+
   UPDATE public.attendance_sessions
   SET
     out_date = p_out_date,
@@ -411,6 +581,7 @@ AS $$
     status = 'CLOSED',
     updated_at = now()
   WHERE id = p_session_id AND status = 'OPEN';
+END;
 $$;
 
 -- ============================================================
@@ -452,6 +623,117 @@ ALTER TABLE public.jatha_attendance
   ON DELETE SET NULL;
 
 -- ============================================================
+-- CLEANUP: Close duplicate OPEN sessions (keep latest per badge)
+-- ============================================================
+UPDATE public.attendance_sessions t
+SET status = 'CLOSED',
+    out_date = t.in_date,
+    out_time = t.in_time,
+    out_scanner_name = 'duplicate-cleanup',
+    updated_at = now()
+FROM (
+  SELECT id
+  FROM (
+    SELECT id, badge_number,
+           ROW_NUMBER() OVER (PARTITION BY badge_number ORDER BY (in_date + in_time) DESC, created_at DESC) AS rn
+    FROM public.attendance_sessions
+    WHERE status = 'OPEN'
+  ) sub
+  WHERE sub.rn > 1
+) dupes
+WHERE t.id = dupes.id;
+
+-- ============================================================
+-- UNIQUE INDEX: Prevent multiple OPEN sessions per badge
+-- ============================================================
+DROP INDEX IF EXISTS idx_one_open_per_badge;
+CREATE UNIQUE INDEX idx_one_open_per_badge
+  ON public.attendance_sessions(badge_number)
+  WHERE status = 'OPEN';
+
+-- ============================================================
+-- TRIGGER: Prevent overlapping attendance sessions
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.check_session_overlap()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_new_start TIMESTAMP;
+  v_new_end TIMESTAMP;
+BEGIN
+  v_new_start := NEW.in_date + NEW.in_time;
+  v_new_end := CASE
+                WHEN NEW.out_date IS NOT NULL AND NEW.out_time IS NOT NULL
+                THEN NEW.out_date + NEW.out_time
+                ELSE NULL
+              END;
+
+  -- Check overlap with other attendance_sessions for same badge
+  IF EXISTS (
+    SELECT 1 FROM public.attendance_sessions
+    WHERE badge_number = NEW.badge_number
+      AND id != COALESCE(NEW.id, -1)
+      AND (in_date + in_time) < COALESCE(v_new_end, 'infinity'::timestamp)
+      AND COALESCE(out_date + out_time, 'infinity'::timestamp) > v_new_start
+  ) THEN
+    RAISE EXCEPTION 'This sewadar already has an overlapping session';
+  END IF;
+
+  -- Check overlap with jatha_attendance for same badge
+  IF EXISTS (
+    SELECT 1 FROM public.jatha_attendance
+    WHERE badge_number = NEW.badge_number
+      AND from_date IS NOT NULL
+      AND from_date <= COALESCE(NEW.out_date, NEW.in_date)
+      AND COALESCE(to_date, from_date) >= NEW.in_date
+  ) THEN
+    RAISE EXCEPTION 'This sewadar has a jatha entry overlapping this date';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_check_session_overlap ON public.attendance_sessions;
+CREATE TRIGGER trg_check_session_overlap
+  BEFORE INSERT OR UPDATE ON public.attendance_sessions
+  FOR EACH ROW
+  EXECUTE FUNCTION public.check_session_overlap();
+
+-- ============================================================
+-- TRIGGER: Prevent overlapping jatha entries
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.check_jatha_overlap()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  -- Check overlap with attendance_sessions for same badge
+  IF EXISTS (
+    SELECT 1 FROM public.attendance_sessions
+    WHERE badge_number = NEW.badge_number
+      AND in_date <= COALESCE(NEW.to_date, NEW.from_date)
+      AND COALESCE(out_date, in_date) >= NEW.from_date
+  ) THEN
+    RAISE EXCEPTION 'This sewadar has an attendance session overlapping this jatha';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_check_jatha_overlap ON public.jatha_attendance;
+CREATE TRIGGER trg_check_jatha_overlap
+  BEFORE INSERT OR UPDATE ON public.jatha_attendance
+  FOR EACH ROW
+  EXECUTE FUNCTION public.check_jatha_overlap();
+
+-- ============================================================
 -- HOW TO DEPLOY
 -- ============================================================
 -- 1. Run the entire file in Supabase SQL Editor
@@ -463,7 +745,7 @@ ALTER TABLE public.jatha_attendance
 --    - Indexes on badge_number and in_date for query performance
 --    - UNIQUE constraint on sewadars.badge_number (zero duplicates confirmed)
 --    - FK constraints (attendance_sessions, jatha_attendance → sewadars)
---
+--    - Unique partial index + overlap triggers on attendance_sessions and jatha_attendance
 -- ============================================================
 -- VERIFICATION
 -- ============================================================

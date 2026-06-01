@@ -8,3 +8,4 @@ npx
 certs/
 supabase/.temp/
 *.pem
+AGENTS.md

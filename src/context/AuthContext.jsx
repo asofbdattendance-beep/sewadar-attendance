@@ -22,7 +22,7 @@ export function AuthProvider({ children }) {
       if (session?.user) {
         if (initialSession) {
           initialSession = false
-          return
+          if (event === 'INITIAL_SESSION') return
         }
         fetchProfile(session.user.id)
       } else { setProfile(null); setPermissions({}); setLoading(false) }
@@ -40,14 +40,14 @@ export function AuthProvider({ children }) {
         .single()
 
       // Determine if user is Super Admin (only super_admin or aso)
-      const isASO = data?.role === ROLES.SUPER_ADMIN || data?.role === ROLES.ASO
+      const isElevatedAccess = data?.role === ROLES.SUPER_ADMIN || data?.role === ROLES.ASO
       const isFullAdmin = data?.role === ROLES.SUPER_ADMIN
 
       let perms = {}
       if (isFullAdmin) {
         // super_admin gets all permissions by default
         perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true, allow_settings: true }
-      } else if (isASO) {
+      } else if (isElevatedAccess) {
         // aso gets read-only permissions
         perms = { allow_dashboard: true, allow_records: true, allow_reports: true }
       } else if (data?.role) {

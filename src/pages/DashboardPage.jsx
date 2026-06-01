@@ -181,7 +181,7 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [selectedDate, setSelectedDate] = useState(getLocalDate())
   
-  const isASO = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
+  const isElevatedAccess = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
   const userCentre = profile?.centre
 
   // Only super_admin can view ALL centres. admin/centre_user see their own + children
