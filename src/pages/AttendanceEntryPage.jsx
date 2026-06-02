@@ -34,8 +34,8 @@ function GateEntryForm({ onSuccess }) {
 
   useEffect(() => {
     if (profile?.centre) {
-      supabase.from('centres').select('name').eq('parent_centre', profile.centre).then(({ data }) => {
-        setChildCentres(data?.map(c => c.name) || [])
+      supabase.rpc('get_user_accessible_centres').then(({ data }) => {
+        setChildCentres((data || []).map(r => r.centre_name).filter(c => c !== profile.centre))
       }).catch(() => {})
     }
   }, [profile?.centre])
@@ -556,8 +556,8 @@ function JathaEntryForm({ onSuccess }) {
 
   useEffect(() => {
     if (profile?.centre && profile?.role !== ROLES.SUPER_ADMIN) {
-      supabase.from('centres').select('name').eq('parent_centre', profile.centre).then(({ data }) => {
-        setJathaChildCentres(data?.map(c => c.name) || [])
+      supabase.rpc('get_user_accessible_centres').then(({ data }) => {
+        setJathaChildCentres((data || []).map(r => r.centre_name).filter(c => c !== profile.centre))
       }).catch(() => {})
     }
   }, [profile?.centre, profile?.role])
@@ -658,6 +658,7 @@ function JathaEntryForm({ onSuccess }) {
     if (fromDate && fromDate > todayStr) return 'FROM DATE cannot be in the future'
     if (toDate && toDate > todayStr) return 'TO DATE cannot be in the future'
     if (fromDate && toDate) {
+      if (fromDate > toDate) return 'FROM DATE must be before or equal to TO DATE'
       const diffDays = Math.ceil((to - from) / (1000 * 60 * 60 * 24))
       if (diffDays > MAX_JATHA_DAYS) return `Maximum ${MAX_JATHA_DAYS} days between FROM and TO date`
     }
@@ -666,13 +667,12 @@ function JathaEntryForm({ onSuccess }) {
   }
 
   const checkForDuplicates = async () => {
-    if (!selectedJatha || !fromDate || !toDate || sewadars.length === 0) return []
+    if (!fromDate || !toDate || sewadars.length === 0) return []
     const duplicates = []
     for (const sewadar of sewadars) {
       const { data } = await supabase
         .from('jatha_attendance')
-        .select('*')
-        .eq('jatha_id', selectedJatha.id)
+        .select(`from_date, to_date, jatha_master!jatha_id(centre_name)`)
         .eq('badge_number', sewadar.badge_number)
         .lte('from_date', toDate)
         .gte('to_date', fromDate)
@@ -682,7 +682,8 @@ function JathaEntryForm({ onSuccess }) {
           name: sewadar.sewadar_name,
           badge: sewadar.badge_number,
           existingFrom: data[0].from_date,
-          existingTo: data[0].to_date
+          existingTo: data[0].to_date,
+          destination: data[0].jatha_master?.centre_name || 'Unknown'
         })
       }
     }
@@ -735,7 +736,7 @@ function JathaEntryForm({ onSuccess }) {
       duplicates.forEach(d => {
         allWarnings.push({
           type: 'error',
-          message: `${d.name} already marked for this jatha from ${formatDateIndian(d.existingFrom)} to ${formatDateIndian(d.existingTo)}`
+          message: `${d.name} already has a jatha entry (${d.destination}) from ${formatDateIndian(d.existingFrom)} to ${formatDateIndian(d.existingTo)}`
         })
       })
     }
@@ -784,6 +785,7 @@ function JathaEntryForm({ onSuccess }) {
         sewadar_name: sewadar.sewadar_name,
         from_date: fromDate,
         to_date: toDate,
+        centre: selectedJatha.centre_name,
         remarks: remarks?.trim() || null,
         entered_by_badge: profile.badge_number,
         entered_by_name: profile.name,

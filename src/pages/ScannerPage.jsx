@@ -145,10 +145,12 @@ export default function ScannerPage({ isOnline }) {
   useEffect(() => {
     if (profile?.centre) {
       Promise.all([
-        supabase.from('centres').select('name').eq('parent_centre', profile.centre),
+        supabase.rpc('get_user_accessible_centres'),
         supabase.from('special_departments').select('department_name')
       ]).then(([centresResult, deptsResult]) => {
-        setChildCentres(centresResult.data?.map(c => c.name) || [])
+        const accessible = (centresResult.data || []).map(r => r.centre_name)
+        setChildCentres(accessible.filter(c => c !== profile.centre))
+        setAllCentres(accessible)
         const depts = deptsResult.data?.map(d => d.department_name?.trim().toUpperCase()) || []
         setSpecialDepts(depts)
         setScopeDataLoaded(true)
@@ -160,14 +162,6 @@ export default function ScannerPage({ isOnline }) {
       setScopeDataLoaded(true)
     }
   }, [profile?.centre])
-
-  useEffect(() => {
-    if (profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN) {
-      supabase.from('centres').select('name').then(({ data }) => {
-        setAllCentres(data?.map(c => c.name) || [])
-      })
-    }
-  }, [profile?.role])
 
   const isInScope = (sewadarCentre, department) => {
     if (profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN) return true
@@ -553,6 +547,10 @@ const handleScan = useCallback(async (badge) => {
       // Validate OUT time is after IN time
       const outDate = manualForgotOutData?.date || manualEntryTime.date
       const outTime = manualForgotOutData?.time || manualEntryTime.time
+      if (outDate && manualOpenSession.in_date && outDate < manualOpenSession.in_date) {
+        setManualTimeError('OUT date must be on or after IN date')
+        return
+      }
       if (outDate && manualOpenSession.in_date && outDate === manualOpenSession.in_date && outTime && manualOpenSession.in_time && outTime <= manualOpenSession.in_time) {
         setManualTimeError('OUT time must be after IN time')
         return

@@ -77,9 +77,44 @@ $$;
 
 DROP TRIGGER IF EXISTS trg_cascade_role_permissions ON public.role_masters;
 CREATE TRIGGER trg_cascade_role_permissions
-  AFTER UPDATE OF permissions ON public.role_masters
+  AFTER INSERT OR UPDATE OF permissions ON public.role_masters
   FOR EACH ROW
   EXECUTE FUNCTION public.cascade_role_permissions();
+
+-- ============================================================
+-- TRIGGER: Auto-set user permissions from role_masters on INSERT
+-- ============================================================
+-- When a new user row is created, copy permissions from role_masters
+-- Fixes: new users had NULL permissions, causing RLS to reject all writes
+CREATE OR REPLACE FUNCTION public.set_user_permissions()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  SELECT permissions INTO NEW.permissions
+  FROM public.role_masters
+  WHERE role_key = NEW.role;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_set_user_permissions ON public.users;
+CREATE TRIGGER trg_set_user_permissions
+  BEFORE INSERT ON public.users
+  FOR EACH ROW
+  EXECUTE FUNCTION public.set_user_permissions();
+
+-- ============================================================
+-- ONE-TIME FIX: Populate NULL permissions for EXISTING users
+-- ============================================================
+-- Remove this after running once (or keep for idempotency)
+UPDATE public.users u
+SET permissions = rm.permissions
+FROM public.role_masters rm
+WHERE u.role = rm.role_key
+  AND (u.permissions IS NULL OR u.permissions = '{}'::jsonb);
 
 -- ============================================================
 -- TABLE: settings
@@ -137,7 +172,7 @@ $$;
 -- SUPER_ADMIN / ASO → all centres
 -- ADMIN / CENTRE_USER / SC_SP_USER → own centre + child centres (recursive)
 CREATE OR REPLACE FUNCTION public.get_user_accessible_centres()
-RETURNS SETOF TEXT
+RETURNS TABLE(centre_name TEXT)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = ''
@@ -151,19 +186,19 @@ BEGIN
 
   -- ASO and SUPER_ADMIN see ALL centres
   IF v_role IN ('aso', 'super_admin') THEN
-    RETURN QUERY SELECT name FROM public.centres;
+    RETURN QUERY SELECT c.name FROM public.centres c;
     RETURN;
   END IF;
 
   -- Other roles see own centre + children (recursive, with cycle detection)
   RETURN QUERY
   WITH RECURSIVE centre_tree AS (
-    SELECT name FROM public.centres WHERE name = v_centre
+    SELECT c.name FROM public.centres c WHERE c.name = v_centre
     UNION ALL
     SELECT c.name FROM public.centres c
     INNER JOIN centre_tree ct ON c.parent_centre = ct.name
   ) CYCLE name SET is_cycle USING path
-  SELECT name FROM centre_tree WHERE NOT is_cycle;
+  SELECT ct.name FROM centre_tree ct WHERE NOT is_cycle;
 END;
 $$;
 
@@ -275,7 +310,8 @@ CREATE POLICY jatha_write ON public.jatha_master
 -- ============================================================
 -- TABLE: jatha_attendance
 -- ============================================================
--- READ: only records for sewadars whose home centre is accessible
+-- READ: records where either the destination centre (jatha_master.centre_name)
+--   OR the sewadar's home centre is in the user's accessible centres
 -- WRITE (incl. DELETE): SUPER_ADMIN can do all;
 --   ADMIN / CENTRE_USER can modify records for their accessible centres' sewadars
 ALTER TABLE public.jatha_attendance ENABLE ROW LEVEL SECURITY;
@@ -283,13 +319,33 @@ ALTER TABLE public.jatha_attendance ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS jatha_att_read ON public.jatha_attendance;
 DROP POLICY IF EXISTS jatha_att_write ON public.jatha_attendance;
 
+-- Add centre column (destination centre, captured at entry time for scoping)
+ALTER TABLE public.jatha_attendance DROP COLUMN IF EXISTS centre;
+ALTER TABLE public.jatha_attendance ADD COLUMN centre TEXT;
+
+-- Backfill centre from jatha_master for existing records
+-- (disable overlap trigger since we're just populating a new column)
+ALTER TABLE public.jatha_attendance DISABLE TRIGGER trg_check_jatha_overlap;
+ALTER TABLE public.attendance_sessions DISABLE TRIGGER trg_check_session_overlap;
+
+UPDATE public.jatha_attendance ja
+SET centre = jm.centre_name
+FROM public.jatha_master jm
+WHERE ja.jatha_id = jm.id AND ja.centre IS NULL;
+
+ALTER TABLE public.jatha_attendance ENABLE TRIGGER trg_check_jatha_overlap;
+ALTER TABLE public.attendance_sessions ENABLE TRIGGER trg_check_session_overlap;
+
 CREATE POLICY jatha_att_read ON public.jatha_attendance
   FOR SELECT TO authenticated
   USING (
     public.has_permission('allow_jatha')
-    AND badge_number IN (
-      SELECT badge_number FROM public.sewadars
-      WHERE centre IN (SELECT public.get_user_accessible_centres())
+    AND (
+      centre IN (SELECT public.get_user_accessible_centres())
+      OR badge_number IN (
+        SELECT badge_number FROM public.sewadars
+        WHERE centre IN (SELECT public.get_user_accessible_centres())
+      )
     )
   );
 
@@ -301,9 +357,12 @@ CREATE POLICY jatha_att_write ON public.jatha_attendance
       public.get_user_role() = 'super_admin'
       OR (
         public.get_user_role() IN ('admin', 'centre_user')
-        AND badge_number IN (
-          SELECT badge_number FROM public.sewadars
-          WHERE centre IN (SELECT public.get_user_accessible_centres())
+        AND (
+          centre IN (SELECT public.get_user_accessible_centres())
+          OR badge_number IN (
+            SELECT badge_number FROM public.sewadars
+            WHERE centre IN (SELECT public.get_user_accessible_centres())
+          )
         )
       )
     )
@@ -315,9 +374,12 @@ CREATE POLICY jatha_att_write ON public.jatha_attendance
       public.get_user_role() = 'super_admin'
       OR (
         public.get_user_role() IN ('admin', 'centre_user')
-        AND badge_number IN (
-          SELECT badge_number FROM public.sewadars
-          WHERE centre IN (SELECT public.get_user_accessible_centres())
+        AND (
+          centre IN (SELECT public.get_user_accessible_centres())
+          OR badge_number IN (
+            SELECT badge_number FROM public.sewadars
+            WHERE centre IN (SELECT public.get_user_accessible_centres())
+          )
         )
       )
     )
@@ -566,6 +628,11 @@ BEGIN
   -- Get the session's in_date
   SELECT in_date INTO v_in_date FROM public.attendance_sessions WHERE id = p_session_id;
 
+  -- Validate out_date >= in_date
+  IF v_in_date IS NOT NULL AND p_out_date < v_in_date THEN
+    RAISE EXCEPTION 'OUT date must be on or after IN date';
+  END IF;
+
   -- Block if date is locked (unless super_admin)
   IF v_in_date IS NOT NULL AND public.get_user_role() != 'super_admin' AND public.is_date_locked(v_in_date) THEN
     RAISE EXCEPTION 'Cannot close session: date is locked';
@@ -621,6 +688,40 @@ ALTER TABLE public.jatha_attendance
   ADD CONSTRAINT fk_jatha_attendance_badge
   FOREIGN KEY (badge_number) REFERENCES public.sewadars(badge_number)
   ON DELETE SET NULL;
+
+-- ============================================================
+-- FIX: Swap in_date/out_date for rows where in_date > out_date
+-- (existing data from before the date-range validation was added)
+-- Temporarily disable overlap triggers to avoid false positives
+-- from swaps that create valid overlaps after correction
+-- ============================================================
+ALTER TABLE public.attendance_sessions DISABLE TRIGGER trg_check_session_overlap;
+ALTER TABLE public.jatha_attendance DISABLE TRIGGER trg_check_jatha_overlap;
+
+UPDATE public.attendance_sessions
+SET
+  in_date = out_date,
+  out_date = in_date,
+  in_time = out_time,
+  out_time = in_time
+WHERE in_date IS NOT NULL AND out_date IS NOT NULL AND in_date > out_date;
+
+ALTER TABLE public.attendance_sessions ENABLE TRIGGER trg_check_session_overlap;
+ALTER TABLE public.jatha_attendance ENABLE TRIGGER trg_check_jatha_overlap;
+
+-- ============================================================
+-- CHECK CONSTRAINT: attendance_sessions date range (in <= out)
+-- ============================================================
+ALTER TABLE public.attendance_sessions DROP CONSTRAINT IF EXISTS chk_session_dates;
+ALTER TABLE public.attendance_sessions ADD CONSTRAINT chk_session_dates
+  CHECK (out_date IS NULL OR in_date IS NULL OR in_date <= out_date);
+
+-- ============================================================
+-- CHECK CONSTRAINT: jatha_attendance date range
+-- ============================================================
+ALTER TABLE public.jatha_attendance DROP CONSTRAINT IF EXISTS chk_jatha_dates;
+ALTER TABLE public.jatha_attendance ADD CONSTRAINT chk_jatha_dates
+  CHECK (from_date IS NULL OR to_date IS NULL OR from_date <= to_date);
 
 -- ============================================================
 -- CLEANUP: Close duplicate OPEN sessions (keep latest per badge)
@@ -713,6 +814,18 @@ SECURITY DEFINER
 SET search_path = ''
 AS $$
 BEGIN
+  -- Check overlap with other jatha_attendance for same badge
+  IF EXISTS (
+    SELECT 1 FROM public.jatha_attendance
+    WHERE badge_number = NEW.badge_number
+      AND id != COALESCE(NEW.id, -1)
+      AND from_date IS NOT NULL
+      AND from_date <= COALESCE(NEW.to_date, NEW.from_date)
+      AND COALESCE(to_date, from_date) >= NEW.from_date
+  ) THEN
+    RAISE EXCEPTION 'This sewadar already has a jatha entry overlapping this date range';
+  END IF;
+
   -- Check overlap with attendance_sessions for same badge
   IF EXISTS (
     SELECT 1 FROM public.attendance_sessions
