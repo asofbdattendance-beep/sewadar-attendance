@@ -184,7 +184,7 @@ export default function DashboardPage() {
   const isElevatedAccess = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
   const userCentre = profile?.centre
 
-  // Only super_admin can view ALL centres. admin/centre_user see their own + children
+  // All users see their accessible centres (RLS enforces scope automatically)
   const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
 
   const [stats, setStats] = useState({
@@ -236,7 +236,7 @@ export default function DashboardPage() {
     const isLatest = () => tick === fetchTickRef.current
 
     try {
-      const centreFilter = (!canViewAllCentres && userCentre) ? userCentre : null
+      const centreFilter = null
 
       // Run all independent queries in PARALLEL
       const [centresRes, totalRes, permRes, openRes, elderlyRes, maleRes, femaleRes, sessionsRes, openSessionsRes, jathaRes, sewadars] = await Promise.all([

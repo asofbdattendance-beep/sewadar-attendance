@@ -317,13 +317,9 @@ export default function RecordsPage() {
   const realtimeDebounceRef = useRef(null)
 
   useEffect(() => {
-    if (profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO) {
-      supabase.from('centres').select('name').order('name').then(({ data }) => setCentresList(data || []))
-    } else if (profile?.centre) {
-      supabase.from('centres').select('name, parent_centre').then(({ data }) => {
-        const visible = (data || []).filter(c => c.name === profile.centre || c.parent_centre === profile.centre)
-        setCentresList(visible)
-        setCentreFilter(profile.centre)
+    if (profile?.centre) {
+      supabase.rpc('get_user_accessible_centres').then(({ data }) => {
+        setCentresList((data || []).map(r => ({ name: r.centre_name })))
       }).catch(() => {})
     }
   }, [profile?.role, profile?.centre])
@@ -362,79 +358,31 @@ export default function RecordsPage() {
     else setLoading(true)
 
     try {
-    const isElevatedAccess = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
-    const targetCentre = centreFilter || (isElevatedAccess ? null : profile?.centre)
-
     let sessions = []
 
-    // Step 1: Fetch sessions based on role
-    if (isElevatedAccess) {
-      let q = supabase.from('attendance_sessions')
-        .select('*')
-        .gte('in_date', dateFrom)
-        .lte('in_date', dateTo)
-        .order('in_time', { ascending: false })
-        .limit(10000)
-      if (targetCentre) q = q.eq('centre', targetCentre)
-      const { data } = await q
-      sessions = data || []
-    } else if (targetCentre) {
-      // Fetch sessions AT the user's centre
-      let q = supabase.from('attendance_sessions')
-        .select('*')
-        .gte('in_date', dateFrom)
-        .lte('in_date', dateTo)
-        .order('in_time', { ascending: false })
-        .limit(10000)
+    // Base query: fetch sessions, RLS scopes to accessible centres + their sewadars
+    let q = supabase.from('attendance_sessions')
+      .select('*')
+      .gte('in_date', dateFrom)
+      .lte('in_date', dateTo)
+      .order('in_time', { ascending: false })
+      .limit(10000)
 
+    if (centreFilter) {
+      // User explicitly selected a centre from dropdown—filter by it
       if (profile?.role === ROLES.SC_SP_USER) {
-        q = q.eq('in_scanner_centre', targetCentre)
+        q = q.eq('in_scanner_centre', centreFilter)
       } else {
-        q = q.eq('centre', targetCentre)
+        q = q.eq('centre', centreFilter)
       }
-
-      const { data: localSessions } = await q
-      sessions = localSessions || []
-
-      // Also fetch sessions where sewadars from this centre scanned ELSEWHERE
-      const { data: centreSewadars } = await supabase
-        .from('sewadars')
-        .select('badge_number')
-        .eq('centre', targetCentre)
-
-      if (centreSewadars && centreSewadars.length > 0) {
-        const centreBadges = centreSewadars.map(s => s.badge_number)
-        const badgeBatches = []
-        for (let i = 0; i < centreBadges.length; i += 1000) {
-          badgeBatches.push(centreBadges.slice(i, i + 1000))
-        }
-
-        let outboundSessions = []
-        for (const batch of badgeBatches) {
-          let q = supabase.from('attendance_sessions')
-            .select('*')
-            .gte('in_date', dateFrom)
-            .lte('in_date', dateTo)
-            .in('badge_number', batch)
-            .limit(10000)
-          if (profile?.role === ROLES.SC_SP_USER) {
-            // SC_SP_USER only sees sessions scanned by their centre
-          } else {
-            q = q.neq('centre', targetCentre)
-          }
-          const { data: crossData } = await q
-          if (crossData) outboundSessions = outboundSessions.concat(crossData)
-        }
-
-        // Merge and deduplicate by id
-        const existingIds = new Set(sessions.map(s => s.id))
-        for (const os of outboundSessions) {
-          if (!existingIds.has(os.id)) {
-            sessions.push(os)
-          }
-        }
-      }
+    } else if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
+      // SC_SP_USER without explicit filter: scope to their own centre only
+      q = q.eq('in_scanner_centre', profile.centre)
     }
+    // For admin/centre_user: RLS scopes to accessible centres automatically
+
+    const { data } = await q
+    sessions = data || []
 
     // Step 2: Detect cross-scans (sewadar scanned at a different centre than their home)
     // Uses SECURITY DEFINER RPC to bypass RLS, so any role can look up any sewadar's home centre
@@ -501,11 +449,7 @@ export default function RecordsPage() {
         jatha_department: j.jatha_master?.department
       }))
 
-      // For non-super-admin users, jatha_attendance RLS already restricts
-      // by sewadar's home centre. centreFilter applies to DESTINATION centre
-      // (jatha_master.centre_name), so only apply it for super_admin or
-      // when the user explicitly selects a destination centre.
-      if (centreFilter && (profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO)) {
+      if (centreFilter) {
         jathaFiltered = jathaFiltered.filter(r => r.centre === centreFilter)
       }
 

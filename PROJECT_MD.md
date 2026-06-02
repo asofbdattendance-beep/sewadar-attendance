@@ -2,7 +2,7 @@
 
 A mobile-friendly web app for tracking attendance of sewadars (volunteers) across 41 satsang centres in Haryana, UP, and Delhi.
 
-**Version:** 2.5  
+**Version:** 2.6  
 **Supabase Project:** `lnznhbwgkusgdcmvgznf`  
 **Frontend:** React 18 + Vite 5  
 **Backend:** Supabase (PostgreSQL + Auth + REST)  
@@ -398,6 +398,7 @@ Called from frontend via `supabase.rpc()`:
 
 | Function | Defined in Repo? | Purpose |
 |----------|-----------------|---------|
+| `get_user_accessible_centres()` | ✅ `rls_policies_all.sql:174` | Returns TABLE(centre_name) — recursive CTE of own centre + children (or all for super_admin/aso) |
 | `get_sewadar_by_badge(p_badge TEXT)` | ✅ `rls_policies_all.sql:93` | Returns full sewadar record, bypasses RLS |
 | `search_sewadars_all(p_term TEXT)` | ✅ `rls_policies_all.sql:111` | Searches all sewadars by name/badge, 3-char minimum, bypasses RLS |
 | `get_sewadar_details(p_badge_numbers TEXT[])` | ✅ `rls_policies_all.sql:77` | Returns centre + department for records page |
@@ -490,6 +491,7 @@ Both are hard blocks — no override option. Only non-ASO users are checked.
 - Set date range (max 10 days, validated)
 - Submits batch INSERT into jatha_attendance
 - Uses separate fetch + submit from Gate Entry
+- Overlap detection: validates no jatha-vs-jatha overlap (across ALL jathas, not just same jatha) and no jatha-vs-session overlap
 
 ### 8.6 Records (Gate + Jatha)
 
@@ -563,8 +565,6 @@ Logs viewable in ASO Panel (read-only, super_admin/aso only).
 ### 9.2 Known Security Notes
 
 - `logs` table INSERT has `WITH CHECK (true)` — any authenticated user can insert audit entries
-- `badge_number` has no UNIQUE constraint on `sewadars` — duplicates possible
-- No FK from `attendance_sessions.badge_number` → `sewadars.badge_number` — orphans possible
 - `sessions_insert` policy doesn't restrict by role — SC_SP user could technically INSERT via API (frontend-gated only)
 - No request timeouts on Supabase queries — can hang on slow networks
 
@@ -591,6 +591,7 @@ Logs viewable in ASO Panel (read-only, super_admin/aso only).
 | Duration "Invalid" on records | OUT before IN on same date | Fix the data entry |
 | Gate Entry "No results" with Allow Other Centres | `search_sewadars_all` RPC not deployed | Create the RPC function |
 | Login fails with 400 | `users` table query failing | Check `select()` columns match table schema |
+| "new row violates RLS policy" on jatha_attendance | User has `permissions = NULL` (new user created without role cascading) | Run `rls_policies_all.sql` — triggers `trg_set_user_permissions` + one-time fix. Also verify `role_masters` has `"allow_jatha": true` for admin/centre_user roles |
 
 ### 10.2 Known Issues
 
@@ -600,6 +601,7 @@ Logs viewable in ASO Panel (read-only, super_admin/aso only).
 4. **No session timeout**: No auto-logout after inactivity.
 5. **get_open_session/close_session not in repo SQL**: Must be extracted from live DB for fresh deploys.
 6. **Centre geo-coordinates**: Latitude/longitude for 41 centres were defined in `sql/enable_geo.sql` (removed). Coordinates are already stored in the DB. If re-seeding is needed, extract from the `centres` table.
+7. **RLS policy severity**: `has_permission()` functions are SECURITY DEFINER — if they fail or return NULL, access is silently denied. Always test with a non-super_admin account after deploying role changes.
 
 ---
 
@@ -624,3 +626,8 @@ Logs viewable in ASO Panel (read-only, super_admin/aso only).
 | May 2026 | AuthContext cleanup | select('*') → explicit columns; signOut only resets state on success |
 | May 2026 | Scanner page refactored | lastScanRef moved after all guard checks; removed dead Debug Supabase queries from manual OUT path |
 | May 2026 | App.jsx login routing | Reverted from Navigate-based redirect to inline render (Navigate broke login page) |
+| Jun 2026 | Auto-Set User Permissions | Added `trg_set_user_permissions` — BEFORE INSERT ON users copies permissions from role_masters. Extended cascade trigger to INSERT (not just UPDATE) of role_masters. One-time fix for existing NULL permissions. Fixes: new users had `permissions = NULL` causing "new row violates RLS policy" on jatha_attendance writes. Source: `sql/rls_policies_all.sql`. |
+| Jun 2026 | Recursive Centre Scoping in Frontend | All pages switched from `eq('parent_centre', ...)` to `supabase.rpc('get_user_accessible_centres')`. Covers grandchild centres (recursive CTE), not just direct children. Affected: ScannerPage, AttendanceEntryPage (Gate+Jatha), RecordsPage, DashboardPage. |
+| Jun 2026 | `get_user_accessible_centres()` return type | Changed from `SETOF TEXT` to `TABLE(centre_name TEXT)` so PostgREST returns `{"centre_name":"..."}` instead of `{"get_user_accessible_centres":"..."}`. Frontend callers map `.centre_name`. Also fixed unaliased column references in recursive CTE. |
+| Jun 2026 | RecordsPage simplified | Removed manual centre-scoped session fetch + cross-centre query. RLS on `attendance_sessions` handles scoping automatically. Centre filter defaults to empty (All Centres). |
+| Jun 2026 | Jatha-vs-Jatha overlap detection | `check_jatha_overlap()` trigger now prevents jatha-vs-jatha overlap (not just jatha-vs-session). Frontend `checkForDuplicates()` checks across ALL jathas (not just same `jatha_id`) and shows destination centre in error message. |

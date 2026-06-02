@@ -727,20 +727,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
     const { data: records } = await query
 
-    const { data: sewadars } = await supabase
-      .from('sewadars')
-      .select('badge_number, centre')
-
-    const sewadarMap = {}
-    ;(sewadars || []).forEach(s => { sewadarMap[s.badge_number] = s.centre })
-
-    let filtered = (records || []).filter(r => {
-      if (canViewAllCentres) return true
-      const centre = sewadarMap[r.badge_number] || ''
-      return centre === userCentre
-    })
-
-    const rows = filtered.map(r => ({
+    // RLS handles scoping — no client-side filter needed
+    const rows = (records || []).map(r => ({
       badge_number: { value: r.badge_number, className: 'cell-badge' },
       name: { value: r.sewadar_name, className: 'cell-name' },
       jatha_type: { value: r.jatha_master?.jatha_type || '—', className: `type-pill ${r.jatha_master?.jatha_type || ''}` },
