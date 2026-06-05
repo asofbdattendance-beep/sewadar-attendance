@@ -315,6 +315,7 @@ export default function RecordsPage() {
   const PAGE_SIZE = 50
   const pullStartY = useRef(0)
   const realtimeDebounceRef = useRef(null)
+  const fetchTickRef = useRef(0)
 
   useEffect(() => {
     if (profile?.centre) {
@@ -329,31 +330,37 @@ export default function RecordsPage() {
   const handleDelete = useCallback(async (table, id) => {
     const label = table === 'attendance_sessions' ? 'attendance' : 'jatha'
     if (!window.confirm(`Delete this ${label} record?`)) return
-    const { data: deletedRecord } = await supabase.from(table).select('*').eq('id', id).single()
+    try {
+      const { data: deletedRecord } = await supabase.from(table).select('*').eq('id', id).single()
 
-    if (!deletedRecord) { toast.error('Record not found'); return }
+      if (!deletedRecord) { toast.error('Record not found'); return }
 
-    // Non-super_admin cannot delete records from previous months
-    if (profile?.role !== ROLES.SUPER_ADMIN) {
-      const recordDate = table === 'attendance_sessions' ? deletedRecord.in_date : deletedRecord.from_date
-      if (recordDate) {
-        const recordMonth = new Date(recordDate + 'T12:00:00')
-        const now = new Date()
-        if (recordMonth.getFullYear() < now.getFullYear() || (recordMonth.getFullYear() === now.getFullYear() && recordMonth.getMonth() < now.getMonth())) {
-          toast.error('Cannot delete entries from previous months')
-          return
+      // Non-super_admin cannot delete records from previous months
+      if (profile?.role !== ROLES.SUPER_ADMIN) {
+        const recordDate = table === 'attendance_sessions' ? deletedRecord.in_date : deletedRecord.from_date
+        if (recordDate) {
+          const recordMonth = new Date(recordDate + 'T12:00:00')
+          const now = new Date()
+          if (recordMonth.getFullYear() < now.getFullYear() || (recordMonth.getFullYear() === now.getFullYear() && recordMonth.getMonth() < now.getMonth())) {
+            toast.error('Cannot delete entries from previous months')
+            return
+          }
         }
       }
-    }
 
-    const { error } = await supabase.from(table).delete().eq('id', id)
-    if (error) { toast.error(error.message); return }
-    toast.success(`${label} record deleted`)
-    logAction(profile?.badge_number, profile?.name, 'RECORD_DELETE', { table, record_id: id, type: label, deleted_record: deletedRecord || null })
-    fetchRecordsRef.current()
+      const { error } = await supabase.from(table).delete().eq('id', id)
+      if (error) { toast.error(error.message); return }
+      toast.success(`${label} record deleted`)
+      logAction(profile?.badge_number, profile?.name, 'RECORD_DELETE', { table, record_id: id, type: label, deleted_record: deletedRecord || null })
+      fetchRecordsRef.current()
+    } catch (err) {
+      toast.error('Failed to delete record')
+      console.error('Delete error:', err)
+    }
   }, [profile, toast])
 
   const fetchRecords = useCallback(async (isRefresh = false) => {
+    const currentTick = ++fetchTickRef.current
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
 
@@ -382,6 +389,7 @@ export default function RecordsPage() {
     // For admin/centre_user: RLS scopes to accessible centres automatically
 
     const { data } = await q
+    if (currentTick !== fetchTickRef.current) return
     sessions = data || []
 
     // Step 2: Detect cross-scans (sewadar scanned at a different centre than their home)
@@ -392,6 +400,7 @@ export default function RecordsPage() {
       const homeCentreMap = {}
       const deptMap = {}
       const { data: sewadars } = await supabase.rpc('get_sewadar_details', { p_badge_numbers: badgeNumbers })
+      if (currentTick !== fetchTickRef.current) return
       for (const s of (sewadars || [])) {
         homeCentreMap[s.badge_number] = s.centre
         deptMap[s.badge_number] = s.department
@@ -412,10 +421,11 @@ export default function RecordsPage() {
       const term = debouncedSearch.toUpperCase()
       gateFiltered = gateFiltered.filter(r => r.badge_number?.includes(term) || r.sewadar_name?.toUpperCase().includes(term))
     }
+    if (currentTick !== fetchTickRef.current) return
     setGateRecords(gateFiltered)
 
     // Fetch Jatha Records
-    if (!dutyFilter || dutyFilter === 'JATHA') {
+    if (activeTab === 'jatha' || !dutyFilter || dutyFilter === 'JATHA') {
       const { data: jathaData } = await supabase
         .from('jatha_attendance')
         .select(`*, jatha_master:jatha_id (jatha_type, centre_name, department)`)
@@ -462,19 +472,23 @@ export default function RecordsPage() {
         jathaFiltered = jathaFiltered.filter(r => r.jatha_type === jathaQuickFilter)
       }
 
+      if (currentTick !== fetchTickRef.current) return
       setJathaRecords(jathaFiltered)
     } else {
       setJathaRecords([])
     }
 
     } catch (err) {
+      if (currentTick !== fetchTickRef.current) return
       console.error('Failed to fetch records:', err)
       toast?.error('Failed to load records. Check your connection.')
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (currentTick === fetchTickRef.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
-  }, [dateFrom, dateTo, dutyFilter, profile?.centre, profile?.role, debouncedSearch, centreFilter, jathaQuickFilter])
+  }, [dateFrom, dateTo, dutyFilter, profile?.centre, profile?.role, debouncedSearch, centreFilter, jathaQuickFilter, activeTab])
 
   const fetchRecordsRef = useRef(fetchRecords)
   fetchRecordsRef.current = fetchRecords
@@ -485,7 +499,7 @@ export default function RecordsPage() {
     return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current) }
   }, [searchTerm])
 
-  useEffect(() => { setPage(1) }, [dateFrom, dateTo, dutyFilter, centreFilter, debouncedSearch, quickFilter, jathaQuickFilter])
+  useEffect(() => { setPage(1) }, [dateFrom, dateTo, dutyFilter, centreFilter, debouncedSearch, quickFilter, jathaQuickFilter, activeTab])
   useEffect(() => { fetchRecords() }, [fetchRecords])
 
   useEffect(() => {

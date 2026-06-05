@@ -52,7 +52,6 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   onScanRef.current = onScan
 
   const stopScanner = () => {
-    console.log('stopScanner called')
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
     if (streamRef.current) { 
       streamRef.current.getTracks().forEach(t => t.stop())
@@ -67,7 +66,6 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
   }
 
   const startScanner = async () => {
-    console.log('startScanner called, mounted:', mountedRef.current)
     if (!mountedRef.current) return
     
     // Stop existing first
@@ -233,18 +231,14 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan }, ref) {
 
   useImperativeHandle(ref, () => ({
     stop: () => {
-      console.log('Scanner: stop')
       stopScanner()
     },
     resume: () => { 
-      console.log('Scanner: resume')
       if (mountedRef.current) startScanner() 
     },
     restart: () => { 
-      console.log('Scanner: restart')
       stopScanner()
       setTimeout(() => { 
-        console.log('Scanner: starting after delay')
         if (mountedRef.current) startScanner() 
       }, 300) 
     }

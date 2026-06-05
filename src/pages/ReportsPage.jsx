@@ -18,16 +18,6 @@ const REPORTS = {
       { id: 'late_coming', label: 'Late Coming', icon: AlertTriangle },
     ]
   },
-  JATHA: {
-    id: 'jatha',
-    label: 'Jatha',
-    icon: Users,
-    subReports: [
-      { id: 'jatha_active', label: 'Active Jathas', icon: Calendar },
-      { id: 'jatha_historical', label: 'Past Jathas', icon: Calendar },
-      { id: 'jatha_all', label: 'All Jathas', icon: Calendar },
-    ]
-  },
   ASO: {
     id: 'aso',
     label: 'ASO Reports',
@@ -205,52 +195,30 @@ function ConfigModal({ open, onClose, title, children, onSave }) {
   )
 }
 
-function AsoTreeNode({ name, data, children, level = 0, defaultOpen = false }) {
-  const [isOpen, setIsOpen] = useState(defaultOpen || level === 0)
-  const hasChildren = children && children.length > 0
-  const indent = level * 24
-
-  return (
-    <div className="aso-tree-item">
-      <div
-        className={`aso-tree-row ${hasChildren ? 'clickable' : ''}`}
-        style={{ paddingLeft: `${12 + indent}px` }}
-        onClick={() => hasChildren && setIsOpen(!isOpen)}
-      >
-        <span className="aso-tree-toggle">
-          {hasChildren ? (
-            isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />
-          ) : (
-            <span style={{ width: 16, display: 'inline-block' }} />
-          )}
-        </span>
-        <span className="aso-tree-name">
-          {level === 0 && <MapPin size={14} />}
-          {name}
-        </span>
-        <span className="aso-stat total">{data.total}</span>
-        <span className="aso-stat permanent">{data.permanent}</span>
-        <span className="aso-stat open">{data.open}</span>
-        <span className="aso-stat elderly">{data.elderly}</span>
-      </div>
-      {isOpen && hasChildren && (
-        <div className="aso-tree-children">
-          {children.map(child => (
-            <AsoTreeNode
-              key={child.name}
-              name={child.name}
-              data={child.data}
-              children={child.children}
-              level={level + 1}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function AsoOverviewTree({ centres, loading }) {
+  const [openNodes, setOpenNodes] = useState(new Set())
+
+  const toggleNode = (name, hasChildren) => {
+    if (!hasChildren) return
+    setOpenNodes(prev => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
+
+  const flattenTree = (nodes, level = 0) => {
+    const result = []
+    for (const node of nodes) {
+      result.push({ ...node, level })
+      if (openNodes.has(node.name) && node.children?.length) {
+        result.push(...flattenTree(node.children, level + 1))
+      }
+    }
+    return result
+  }
+
   if (loading) {
     return <div className="report-loading"><RefreshCw size={24} className="spin" /><p>Loading centres...</p></div>
   }
@@ -276,6 +244,8 @@ function AsoOverviewTree({ centres, loading }) {
   const totalOpen = centres.reduce((s, c) => s + mergeCounts(c).open, 0)
   const totalElderly = centres.reduce((s, c) => s + mergeCounts(c).elderly, 0)
 
+  const flattened = flattenTree(centres)
+
   return (
     <div className="aso-container">
       <div className="aso-summary-row">
@@ -284,25 +254,41 @@ function AsoOverviewTree({ centres, loading }) {
         <div className="aso-summary-stat"><span className="aso-summary-value">{totalOpen}</span><span className="aso-summary-label">Open</span></div>
         <div className="aso-summary-stat"><span className="aso-summary-value">{totalElderly}</span><span className="aso-summary-label">Elderly</span></div>
       </div>
-      <div className="aso-tree-legend">
-        <span>Centre</span>
-        <span className="aso-legend-num">Total</span>
-        <span className="aso-legend-num">Permanent</span>
-        <span className="aso-legend-num">Open</span>
-        <span className="aso-legend-num">Elderly</span>
-      </div>
-      <div className="aso-tree">
-        {centres.map(root => (
-          <AsoTreeNode
-            key={root.name}
-            name={root.name}
-            data={root.data}
-            children={root.children}
-            level={0}
-            defaultOpen={false}
-          />
-        ))}
-      </div>
+      <table className="aso-table">
+        <thead>
+          <tr>
+            <th>Centre</th>
+            <th>Total</th>
+            <th>Permanent</th>
+            <th>Open</th>
+            <th>Elderly</th>
+          </tr>
+        </thead>
+        <tbody>
+          {flattened.map(row => {
+            const hasChildren = row.children?.length > 0
+            return (
+              <tr key={row.name} className="aso-tree-row" onClick={() => toggleNode(row.name, hasChildren)}>
+                <td className="aso-tree-name" style={{ paddingLeft: `${12 + row.level * 24}px` }}>
+                  <span className="aso-tree-toggle">
+                    {hasChildren ? (
+                      openNodes.has(row.name) ? <ChevronDown size={16} /> : <ChevronRight size={16} />
+                    ) : (
+                      <span className="aso-tree-toggle-placeholder" />
+                    )}
+                  </span>
+                  {row.level === 0 && <MapPin size={14} />}
+                  {row.name}
+                </td>
+                <td className="aso-stat total">{row.data.total}</td>
+                <td className="aso-stat permanent">{row.data.permanent}</td>
+                <td className="aso-stat open">{row.data.open}</td>
+                <td className="aso-stat elderly">{row.data.elderly}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -327,7 +313,6 @@ export default function ReportsPage() {
   
   const [lateThreshold, setLateThreshold] = useState(LATE_THRESHOLD_DEFAULT)
   const [showSettings, setShowSettings] = useState(false)
-  const [jathaFilter, setJathaFilter] = useState('active') // active, historical, all
   const [asoTreeData, setAsoTreeData] = useState([])
 
   const currentCategory = Object.values(REPORTS).find(c => c.id === activeCategory)
@@ -382,24 +367,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           break
         case 'missing_out':
           await fetchMissingOut(canViewAllCentres, userCentre)
-          break
-        case 'jatha_active':
-          setJathaFilter('active')
-          await fetchJathaAttendance(canViewAllCentres, userCentre, 'active')
-          break
-        case 'jatha_historical':
-          setJathaFilter('historical')
-          await fetchJathaAttendance(canViewAllCentres, userCentre, 'historical')
-          break
-        case 'jatha_all':
-          setJathaFilter('all')
-          await fetchJathaAttendance(canViewAllCentres, userCentre, 'all')
-          break
-        case 'jatha_attendance':
-          await fetchJathaAttendance(canViewAllCentres, userCentre)
-          break
-        case 'jatha_summary':
-          await fetchJathaSummary(canViewAllCentres, userCentre)
           break
         case 'weekly_summary':
           await fetchWeeklySummary(canViewAllCentres, userCentre)
@@ -704,91 +671,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     setReportSummary({ total: rows.length })
   }
 
-  // Jatha Attendance: jatha entries based on filter
-  const fetchJathaAttendance = async (canViewAllCentres, userCentre, filterType) => {
-    const filter = filterType || jathaFilter
-    const todayStr = getLocalDate()
-    
-    let query = supabase
-      .from('jatha_attendance')
-      .select('*, jatha_master(jatha_type, centre_name, department)')
-
-    // Apply date filter based on filter
-    if (filter === 'active') {
-      query = query.gte('to_date', todayStr)
-    } else if (filter === 'historical') {
-      query = query.lt('from_date', todayStr)
-    } else {
-      // 'all' - use date range from page state
-      query = query.gte('from_date', dateFrom).lte('from_date', dateTo)
-    }
-    
-    query = query.order('entered_at', { ascending: false })
-
-    const { data: records } = await query
-
-    // RLS handles scoping — no client-side filter needed
-    const rows = (records || []).map(r => ({
-      badge_number: { value: r.badge_number, className: 'cell-badge' },
-      name: { value: r.sewadar_name, className: 'cell-name' },
-      jatha_type: { value: r.jatha_master?.jatha_type || '—', className: `type-pill ${r.jatha_master?.jatha_type || ''}` },
-      centre: r.jatha_master?.centre_name || '—',
-      department: r.jatha_master?.department || '—',
-      dates: `${formatDateIndian(r.from_date)} - ${formatDateIndian(r.to_date)}`,
-    }))
-
-    setReportData(rows)
-    setReportSummary({ total: rows.length, active: rows.length })
-  }
-
-  // Jatha Summary: Grouped by jatha type
-  const fetchJathaSummary = async (canViewAllCentres, userCentre) => {
-    let query = supabase
-      .from('jatha_attendance')
-      .select('jatha_id, badge_number, jatha_master(jatha_type, centre_name, department)')
-
-    const { data: records } = await query
-
-    const { data: todaySessions } = await supabase
-      .from('attendance_sessions')
-      .select('badge_number')
-      .eq('in_date', today)
-
-    const presentBadges = new Set(todaySessions?.map(s => s.badge_number) || [])
-
-    const groupMap = {}
-    ;(records || []).forEach(r => {
-      const key = `${r.jatha_master?.jatha_type || 'unknown'}|${r.jatha_master?.centre_name || 'unknown'}|${r.jatha_master?.department || 'unknown'}`
-      if (!groupMap[key]) {
-        groupMap[key] = {
-          jatha_type: r.jatha_master?.jatha_type || 'unknown',
-          centre: r.jatha_master?.centre_name || 'unknown',
-          department: r.jatha_master?.department || 'unknown',
-          total: 0,
-          present: 0,
-          badges: []
-        }
-      }
-      groupMap[key].total++
-      groupMap[key].badges.push(r.badge_number)
-      if (presentBadges.has(r.badge_number)) groupMap[key].present++
-    })
-
-    const rows = Object.values(groupMap)
-      .sort((a, b) => b.total - a.total)
-      .map(g => ({
-        jatha_type: { value: g.jatha_type, className: `type-pill ${g.jatha_type}` },
-        centre: g.centre,
-        department: g.department,
-        total: g.total,
-        present: g.present,
-        percentage: { value: g.total ? `${Math.round(g.present / g.total * 100)}%` : '—', className: 'cell-percent' },
-      }))
-
-    setReportData(rows)
-    setReportSummary({ total: rows.length })
-  }
-
   // Weekly Summary: Day-wise
   const fetchWeeklySummary = async (canViewAllCentres, userCentre) => {
     let query = supabase
@@ -941,13 +823,11 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
   // ASO Overview: Centre-wise badge breakdown
   const fetchAsoOverview = async (canViewAllCentres, userCentre) => {
-    const [centresRes, sewadarsRes] = await Promise.all([
-      supabase.from('centres').select('name, parent_centre').order('name'),
-      supabase.from('sewadars').select('centre, badge_status')
+    const [centresRes] = await Promise.all([
+      supabase.from('centres').select('name, parent_centre').order('name')
     ])
 
     const centres = centresRes.data || []
-    const sewadars = sewadarsRes.data || []
 
     // Build centre hierarchy
     const centreMap = {}
@@ -955,14 +835,32 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       centreMap[c.name] = { name: c.name, parent: c.parent_centre, data: { total: 0, permanent: 0, open: 0, elderly: 0 }, children: [] }
     }
 
-    // Count badges per centre
-    for (const s of sewadars) {
-      const entry = centreMap[s.centre]
-      if (!entry) continue
-      entry.data.total++
-      if (s.badge_status === 'PERMANENT') entry.data.permanent++
-      else if (s.badge_status === 'OPEN') entry.data.open++
-      else if (s.badge_status === 'ELDERLY') entry.data.elderly++
+    // Try server-side aggregation RPC first; fall back to fetching all sewadars
+    let counts = null
+    try {
+      const { data, error } = await supabase.rpc('get_aso_badge_counts')
+      if (!error) counts = data
+    } catch {}
+    
+    if (counts) {
+      for (const row of counts) {
+        const entry = centreMap[row.centre]
+        if (!entry) continue
+        entry.data.total += Number(row.count)
+        if (row.badge_status === 'PERMANENT') entry.data.permanent += Number(row.count)
+        else if (row.badge_status === 'OPEN') entry.data.open += Number(row.count)
+        else if (row.badge_status === 'ELDERLY') entry.data.elderly += Number(row.count)
+      }
+    } else {
+      const { data: sewadars } = await supabase.from('sewadars').select('centre, badge_status')
+      for (const s of (sewadars || [])) {
+        const entry = centreMap[s.centre]
+        if (!entry) continue
+        entry.data.total++
+        if (s.badge_status === 'PERMANENT') entry.data.permanent++
+        else if (s.badge_status === 'OPEN') entry.data.open++
+        else if (s.badge_status === 'ELDERLY') entry.data.elderly++
+      }
     }
 
     // Build tree: root centres + children
@@ -1069,8 +967,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       gate_summary: ['Badge', 'Name', 'Date', 'IN', 'OUT', 'Status', 'Centre', 'Duty'],
       late_coming: ['Badge', 'Name', 'Date', 'IN Time', 'Delay', 'Centre'],
       missing_out: ['Badge', 'Name', 'IN Date', 'IN Time', 'Days Open', 'Centre', 'Duty'],
-      jatha_attendance: ['Badge', 'Name', 'Jatha Type', 'Centre', 'Department', 'Dates'],
-      jatha_summary: ['Jatha Type', 'Centre', 'Department', 'Total', 'Present', '%'],
       weekly_summary: ['Date', 'Day', 'Present', '%'],
       department_wise: ['Department', 'Total', 'Present', '%', 'PERMANENT', 'OPEN'],
       centre_wise: ['Centre', 'Total', 'Present', '%'],
@@ -1177,11 +1073,11 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       {/* Date Range */}
       <div className="report-filters">
         <DateRangePicker
-          dateFrom={['late_coming', 'jatha_all', 'aso_overview'].includes(activeReport) ? dateFrom : today}
-          dateTo={['late_coming', 'jatha_all', 'aso_overview'].includes(activeReport) ? dateTo : today}
-          onDateFromChange={(val) => ['late_coming', 'jatha_all', 'aso_overview'].includes(activeReport) && setDateFrom(val)}
-          onDateToChange={(val) => ['late_coming', 'jatha_all', 'aso_overview'].includes(activeReport) ? setDateTo(val) : setDateTo(val)}
-          singleDate={!['late_coming', 'jatha_all', 'aso_overview'].includes(activeReport)}
+          dateFrom={['late_coming', 'aso_overview'].includes(activeReport) ? dateFrom : today}
+          dateTo={['late_coming', 'aso_overview'].includes(activeReport) ? dateTo : today}
+          onDateFromChange={(val) => ['late_coming', 'aso_overview'].includes(activeReport) && setDateFrom(val)}
+          onDateToChange={(val) => setDateTo(val)}
+          singleDate={!['late_coming', 'aso_overview'].includes(activeReport)}
         />
         <div className="export-btn-group">
           <ExportDropdown onExport={handleExport} loading={loading} label="Export" description="Centre + Sub Centre" />
@@ -1195,7 +1091,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       <ReportTabs
         activeTab={activeCategory}
         onTabChange={handleCategoryChange}
-        tabs={Object.values(REPORTS)}
+        tabs={Object.values(REPORTS).filter(t => t.id !== 'aso' || profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO)}
       />
 
       {/* Sub Tabs */}
@@ -1243,9 +1139,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           )}
           {activeReport === 'missing_out' && (
             <SummaryCard title="Missing OUT" value={reportSummary.total} icon={AlertTriangle} color="red" />
-          )}
-          {['jatha_active', 'jatha_historical', 'jatha_all', 'jatha_attendance', 'jatha_summary'].includes(activeReport) && (
-            <SummaryCard title="Total Records" value={reportSummary.total} icon={Users} color="purple" />
           )}
           {(activeReport === 'weekly_summary') && (
             <>
