@@ -14,6 +14,9 @@ export function AuthProvider({ children }) {
       setUser(session?.user ?? null)
       if (session?.user) fetchProfile(session.user.id)
       else setLoading(false)
+    }).catch(err => {
+      console.error('Failed to get session:', err)
+      setLoading(false)
     })
 
     let initialSession = true

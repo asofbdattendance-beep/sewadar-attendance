@@ -302,7 +302,7 @@ const handleScan = useCallback(async (badge) => {
       }
     } catch (err) {
       console.error('Scan error:', err)
-      setPopupState({ type: 'not_found', badge })
+      setPopupState({ type: 'not_found', badge, error: true })
       popupOpenRef.current = true
     }
 
@@ -337,10 +337,14 @@ const handleScan = useCallback(async (badge) => {
         const { data, error } = await supabase.from('attendance_sessions').insert(record).select().single()
         if (error) {
           if (error.code === '23505') {
-            const { data: existingSession } = await supabase.rpc('get_open_session', { p_badge: sewadar.badge_number })
-            if (existingSession && existingSession.badge_number) {
-              setTimeout(() => setPopupState({ type: 'out', sewadar, openSession: existingSession }), 1600)
-              return
+            try {
+              const { data: existingSession } = await supabase.rpc('get_open_session', { p_badge: sewadar.badge_number })
+              if (existingSession && existingSession.badge_number) {
+                setTimeout(() => setPopupState({ type: 'out', sewadar, openSession: existingSession }), 1600)
+                return
+              }
+            } catch (e) {
+              console.error('Failed to get open session:', e)
             }
           }
           toast.error(error.message || 'Failed to record entry')
@@ -494,30 +498,37 @@ const handleScan = useCallback(async (badge) => {
     
     // Check for open session
     if (isOnline) {
-      const { data } = await supabase.rpc('get_open_session', { p_badge: sewadar.badge_number })
-      if (data && data.badge_number) {
-        setManualOpenSession(data)
-        
-        // Check if session is older than 12 hours
-        const inDateTime = new Date(data.in_date + 'T' + (data.in_time || '12:00') + ':00')
-        const hoursSinceIn = (now - inDateTime) / (1000 * 60 * 60)
-        
-        if (hoursSinceIn > 12) {
-          // Session is very old - show forgot_out mode
-          const nowStr = getLocalDate(now)
-          const nowTime = now.toTimeString().slice(0, 5)
-          setManualForgotOutData({ 
-            date: nowStr, 
-            time: nowTime,
-            inDate: data.in_date,
-            inTime: data.in_time
-          })
-          setManualEntryType('out')
+      try {
+        const { data } = await supabase.rpc('get_open_session', { p_badge: sewadar.badge_number })
+        if (data && data.badge_number) {
+          setManualOpenSession(data)
+          
+          // Check if session is older than 12 hours
+          const inDateTime = new Date(data.in_date + 'T' + (data.in_time || '12:00') + ':00')
+          const hoursSinceIn = (now - inDateTime) / (1000 * 60 * 60)
+          
+          if (hoursSinceIn > 12) {
+            // Session is very old - show forgot_out mode
+            const nowStr = getLocalDate(now)
+            const nowTime = now.toTimeString().slice(0, 5)
+            setManualForgotOutData({ 
+              date: nowStr, 
+              time: nowTime,
+              inDate: data.in_date,
+              inTime: data.in_time
+            })
+            setManualEntryType('out')
+          } else {
+            setManualForgotOutData(null)
+            setManualEntryType('out')
+          }
         } else {
+          setManualOpenSession(null)
           setManualForgotOutData(null)
-          setManualEntryType('out')
+          setManualEntryType('in')
         }
-      } else {
+      } catch (err) {
+        console.error('Failed to get open session:', err)
         setManualOpenSession(null)
         setManualForgotOutData(null)
         setManualEntryType('in')
@@ -582,14 +593,20 @@ const handleScan = useCallback(async (badge) => {
       if (navigator.vibrate) navigator.vibrate([40])
 
       if (isOnline) {
-        const { error } = await supabase.from('attendance_sessions').insert(record)
-        if (error) {
-          if (error.code === '23505') {
-            setManualHasSession(true)
+        try {
+          const { error } = await supabase.from('attendance_sessions').insert(record)
+          if (error) {
+            if (error.code === '23505') {
+              setManualHasSession(true)
+              return
+            }
+            toast.error(error.message || 'Failed to record manual entry')
+            console.error('Failed to insert session:', error)
             return
           }
-          toast.error(error.message || 'Failed to record manual entry')
-          console.error('Failed to insert session:', error)
+        } catch (err) {
+          toast.error('Failed to record manual entry')
+          console.error('Failed to insert session:', err)
           return
         }
         logAction(profile?.badge_number, profile?.name, 'MANUAL_IN', {
@@ -865,9 +882,9 @@ const handleScan = useCallback(async (badge) => {
             {popupState.type === 'not_found' && (
               <div className="popup-error">
                 <XCircle size={32} color="var(--error)" style={{ margin: '0 auto 12px', display: 'block' }} />
-                <div className="error-title">Badge Not Found</div>
+                <div className="error-title">{popupState.error ? 'Error' : 'Badge Not Found'}</div>
                 <div className="error-badge">{popupState.badge}</div>
-                <div className="error-msg">This badge is not registered</div>
+                <div className="error-msg">{popupState.error ? 'Could not verify badge. Check connection.' : 'This badge is not registered'}</div>
                 <button className="btn-cancel" onClick={closePopup}>Try Again</button>
               </div>
             )}

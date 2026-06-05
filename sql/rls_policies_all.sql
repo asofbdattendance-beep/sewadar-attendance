@@ -272,6 +272,21 @@ BEGIN
 END;
 $$;
 
+-- ASO Overview: Get badge status counts grouped by centre
+-- Returns aggregated counts (~123 rows) instead of fetching all 14k rows
+CREATE OR REPLACE FUNCTION public.get_aso_badge_counts()
+RETURNS TABLE(centre TEXT, badge_status TEXT, count BIGINT)
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT s.centre, s.badge_status, COUNT(*)::BIGINT
+  FROM public.sewadars s
+  WHERE s.centre IS NOT NULL
+  GROUP BY s.centre, s.badge_status
+  ORDER BY s.centre, s.badge_status
+$$;
+
 -- ============================================================
 -- TABLE: centres
 -- ============================================================

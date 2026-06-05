@@ -76,7 +76,7 @@ function GateEntryForm({ onSuccess }) {
     })
   }
 
-  const updateEntry = (id, field, value) => {
+  const updateEntry = async (id, field, value) => {
     setEntries(entries => entries.map(e => e.id === id ? { ...e, [field]: value } : e))
     
     const updatedEntry = entries.find(e => e.id === id)
@@ -86,7 +86,11 @@ function GateEntryForm({ onSuccess }) {
       setValidationErrors(prev => ({ ...prev, [id]: entryErrors }))
       
       if (selectedSewadar) {
-        checkDbOverlaps(selectedSewadar.badge_number, id, updated)
+        try {
+          await checkDbOverlaps(selectedSewadar.badge_number, id, updated)
+        } catch (e) {
+          console.error('DB overlap check error:', e)
+        }
       }
     }
   }
@@ -143,47 +147,51 @@ function GateEntryForm({ onSuccess }) {
   const checkDbOverlaps = async (badgeNumber, entryId, entry) => {
     if (!entry.inDate || !entry.outDate) return
 
-    const { data } = await supabase
-      .from('attendance_sessions')
-      .select('id, in_date, in_time, out_date, out_time, status')
-      .eq('badge_number', badgeNumber)
-      .or('status.eq.OPEN,status.eq.CLOSED')
+    try {
+      const { data } = await supabase
+        .from('attendance_sessions')
+        .select('id, in_date, in_time, out_date, out_time, status')
+        .eq('badge_number', badgeNumber)
+        .or('status.eq.OPEN,status.eq.CLOSED')
 
-    if (!data) return
+      if (!data) return
 
-    const entryIn = new Date(`${entry.inDate}T${entry.inTime || '00:00'}`)
-    const entryOut = new Date(`${entry.outDate}T${entry.outTime || '23:59'}`)
+      const entryIn = new Date(`${entry.inDate}T${entry.inTime || '00:00'}`)
+      const entryOut = new Date(`${entry.outDate}T${entry.outTime || '23:59'}`)
 
-    for (const session of data) {
-      const sessionIn = new Date(`${session.in_date}T${session.in_time || '00:00'}`)
-      const sessionOut = session.out_date 
-        ? new Date(`${session.out_date}T${session.out_time || '23:59'}`)
-        : null
+      for (const session of data) {
+        const sessionIn = new Date(`${session.in_date}T${session.in_time || '00:00'}`)
+        const sessionOut = session.out_date 
+          ? new Date(`${session.out_date}T${session.out_time || '23:59'}`)
+          : null
 
-      if (sessionOut) {
-        if (entryIn < sessionOut && entryOut > sessionIn) {
-          setDbOverlaps(prev => ({
-            ...prev,
-            [entryId]: `${session.in_date} to ${session.out_date} (CLOSED)`
-          }))
-          return
-        }
-      } else {
-        if (entryOut > sessionIn) {
-          setDbOverlaps(prev => ({
-            ...prev,
-            [entryId]: `${session.in_date} (OPEN - inside since ${session.in_time})`
-          }))
-          return
+        if (sessionOut) {
+          if (entryIn < sessionOut && entryOut > sessionIn) {
+            setDbOverlaps(prev => ({
+              ...prev,
+              [entryId]: `${session.in_date} to ${session.out_date} (CLOSED)`
+            }))
+            return
+          }
+        } else {
+          if (entryOut > sessionIn) {
+            setDbOverlaps(prev => ({
+              ...prev,
+              [entryId]: `${session.in_date} (OPEN - inside since ${session.in_time})`
+            }))
+            return
+          }
         }
       }
-    }
 
-    setDbOverlaps(prev => {
-      const next = { ...prev }
-      delete next[entryId]
-      return next
-    })
+      setDbOverlaps(prev => {
+        const next = { ...prev }
+        delete next[entryId]
+        return next
+      })
+    } catch (err) {
+      console.error('DB overlap check error:', err)
+    }
   }
 
   const searchSewadars = async (query) => {
@@ -670,21 +678,25 @@ function JathaEntryForm({ onSuccess }) {
     if (!fromDate || !toDate || sewadars.length === 0) return []
     const duplicates = []
     for (const sewadar of sewadars) {
-      const { data } = await supabase
-        .from('jatha_attendance')
-        .select(`from_date, to_date, jatha_master!jatha_id(centre_name)`)
-        .eq('badge_number', sewadar.badge_number)
-        .lte('from_date', toDate)
-        .gte('to_date', fromDate)
+      try {
+        const { data } = await supabase
+          .from('jatha_attendance')
+          .select(`from_date, to_date, jatha_master!jatha_id(centre_name)`)
+          .eq('badge_number', sewadar.badge_number)
+          .lte('from_date', toDate)
+          .gte('to_date', fromDate)
 
-      if (data && data.length > 0) {
-        duplicates.push({
-          name: sewadar.sewadar_name,
-          badge: sewadar.badge_number,
-          existingFrom: data[0].from_date,
-          existingTo: data[0].to_date,
-          destination: data[0].jatha_master?.centre_name || 'Unknown'
-        })
+        if (data && data.length > 0) {
+          duplicates.push({
+            name: sewadar.sewadar_name,
+            badge: sewadar.badge_number,
+            existingFrom: data[0].from_date,
+            existingTo: data[0].to_date,
+            destination: data[0].jatha_master?.centre_name || 'Unknown'
+          })
+        }
+      } catch (err) {
+        console.error('Duplicate check error:', err)
       }
     }
     return duplicates
@@ -694,30 +706,34 @@ function JathaEntryForm({ onSuccess }) {
     if (!fromDate || !toDate || sewadars.length === 0) return []
     const overlaps = []
     for (const sewadar of sewadars) {
-      const { data } = await supabase
-        .from('attendance_sessions')
-        .select('in_date, out_date, duty_type, is_jatha_entry')
-        .eq('badge_number', sewadar.badge_number)
-        .eq('is_jatha_entry', false)
-        .or(`status.eq.OPEN,status.eq.CLOSED`)
+      try {
+        const { data } = await supabase
+          .from('attendance_sessions')
+          .select('in_date, out_date, duty_type, is_jatha_entry')
+          .eq('badge_number', sewadar.badge_number)
+          .eq('is_jatha_entry', false)
+          .or(`status.eq.OPEN,status.eq.CLOSED`)
 
-      if (data) {
-        for (const session of data) {
-          const sessIn = new Date(session.in_date)
-          const sessOut = session.out_date ? new Date(session.out_date) : new Date()
-          const jathaFrom = new Date(fromDate)
-          const jathaTo = new Date(toDate)
+        if (data) {
+          for (const session of data) {
+            const sessIn = new Date(session.in_date)
+            const sessOut = session.out_date ? new Date(session.out_date) : new Date()
+            const jathaFrom = new Date(fromDate)
+            const jathaTo = new Date(toDate)
 
-          if (sessIn <= jathaTo && sessOut >= jathaFrom) {
-            overlaps.push({
-              name: sewadar.sewadar_name,
-              badge: sewadar.badge_number,
-              sessionDate: session.in_date,
-              dutyType: session.duty_type
-            })
-            break
+            if (sessIn <= jathaTo && sessOut >= jathaFrom) {
+              overlaps.push({
+                name: sewadar.sewadar_name,
+                badge: sewadar.badge_number,
+                sessionDate: session.in_date,
+                dutyType: session.duty_type
+              })
+              break
+            }
           }
         }
+      } catch (err) {
+        console.error('Attendance overlap check error:', err)
       }
     }
     return overlaps
