@@ -861,6 +861,31 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .submit-gate-btn:hover { background:var(--excel-green-hover); }
 .submit-gate-btn:disabled { opacity:0.6; cursor:not-allowed; }
 
+/* Overlap Report */
+.overlap-report {
+  margin-top:0; margin-bottom:12px; padding:14px; border-radius:10px;
+  background:var(--red-bg); border:1px solid var(--red);
+}
+.overlap-report-header {
+  display:flex; align-items:center; gap:8px; font-size:13px; font-weight:700;
+  color:var(--red); margin-bottom:10px;
+}
+.overlap-report-list { display:flex; flex-direction:column; gap:8px; margin-bottom:12px; }
+.overlap-report-item {
+  padding:8px 10px; background:white; border-radius:8px; border:1px solid var(--border);
+  font-size:12px;
+}
+.overlap-report-item .overlap-name { font-weight:600; margin-bottom:3px; }
+.overlap-report-item .overlap-reason { color:var(--text-secondary); line-height:1.4; }
+.overlap-report-more { font-size:11px; color:var(--text-muted); text-align:center; }
+.download-overlap-btn {
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  width:100%; padding:10px; border-radius:8px; border:1.5px solid var(--red);
+  background:white; color:var(--red); font-size:13px; font-weight:600;
+  cursor:pointer; transition:all 0.15s; font-family:'Inter',sans-serif;
+}
+.download-overlap-btn:hover { background:var(--red-bg); }
+
 .result-box {
   display:flex; align-items:flex-start; gap:12px; padding:14px; border-radius:10px;
   margin-bottom:12px;
@@ -1959,6 +1984,23 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 }
 .pagination-page:hover { background:var(--bg); color:var(--text-primary); }
 .pagination-page.active { background:var(--excel-green); color:white; }
+.pagination-ellipsis {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:32px; height:32px; font-size:14px; color:var(--text-muted);
+  user-select:none;
+}
+
+/* Load More button for card view */
+.load-more-btn {
+  display:inline-flex; align-items:center; gap:8px;
+  padding:12px 32px; border:2px dashed var(--border);
+  border-radius:12px; background:white;
+  font-size:14px; font-weight:600; color:var(--text-secondary);
+  cursor:pointer; transition:all 0.15s;
+}
+.load-more-btn:hover { border-color:var(--excel-green); color:var(--excel-green); background:var(--green-bg); }
+.load-more-btn:disabled { opacity:0.5; cursor:default; }
+.load-more-btn svg { flex-shrink:0; }
 
 /* Quick Filters */
 .quick-filters {

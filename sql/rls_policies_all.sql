@@ -609,14 +609,34 @@ CREATE POLICY logs_insert ON public.logs
 DROP FUNCTION IF EXISTS public.get_open_session(TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION public.get_open_session(p_badge TEXT)
 RETURNS JSON
-LANGUAGE sql
+LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = ''
 AS $$
-  SELECT row_to_json(s.*) AS result
-  FROM public.attendance_sessions s
-  WHERE s.badge_number = p_badge AND s.status = 'OPEN'
-  LIMIT 1;
+DECLARE
+  v_result JSON;
+BEGIN
+  -- Dual-path centre scope (matches RLS policies):
+  -- 1. Sewadar's home centre is accessible, OR
+  -- 2. Session's scan centre is accessible
+  -- (super_admin and aso bypass scope check)
+  IF public.get_user_role() IN ('super_admin', 'aso') OR EXISTS (
+    SELECT 1 FROM public.sewadars s
+    WHERE s.badge_number = p_badge
+    AND s.centre IN (SELECT public.get_user_accessible_centres())
+  ) OR EXISTS (
+    SELECT 1 FROM public.attendance_sessions sess
+    WHERE sess.badge_number = p_badge
+    AND sess.status = 'OPEN'
+    AND sess.centre IN (SELECT public.get_user_accessible_centres())
+  ) THEN
+    SELECT row_to_json(s.*) INTO v_result
+    FROM public.attendance_sessions s
+    WHERE s.badge_number = p_badge AND s.status = 'OPEN'
+    LIMIT 1;
+  END IF;
+  RETURN v_result;
+END;
 $$;
 
 -- ============================================================
@@ -648,9 +668,40 @@ BEGIN
     RAISE EXCEPTION 'OUT date must be on or after IN date';
   END IF;
 
+  -- Block future OUT dates
+  IF p_out_date > CURRENT_DATE THEN
+    RAISE EXCEPTION 'OUT date cannot be in the future';
+  END IF;
+
+  -- Validate OUT time > IN time when same date (unless super_admin)
+  IF v_in_date IS NOT NULL AND p_out_date = v_in_date AND public.get_user_role() != 'super_admin' THEN
+    IF p_out_time <= (SELECT in_time FROM public.attendance_sessions WHERE id = p_session_id) THEN
+      RAISE EXCEPTION 'OUT time must be after IN time on the same date';
+    END IF;
+  END IF;
+
   -- Block if date is locked (unless super_admin)
   IF v_in_date IS NOT NULL AND public.get_user_role() != 'super_admin' AND public.is_date_locked(v_in_date) THEN
     RAISE EXCEPTION 'Cannot close session: date is locked';
+  END IF;
+
+  -- Centre scope check (defense-in-depth for SECURITY DEFINER)
+  -- super_admin and aso bypass; others must have centre access to the session
+  IF v_in_date IS NOT NULL AND public.get_user_role() NOT IN ('super_admin', 'aso') THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM public.attendance_sessions s
+      WHERE s.id = p_session_id
+      AND (
+        s.centre IN (SELECT public.get_user_accessible_centres())
+        OR EXISTS (
+          SELECT 1 FROM public.sewadars sw
+          WHERE sw.badge_number = s.badge_number
+          AND sw.centre IN (SELECT public.get_user_accessible_centres())
+        )
+      )
+    ) THEN
+      RAISE EXCEPTION 'Not authorized to close this session';
+    END IF;
   END IF;
 
   UPDATE public.attendance_sessions
@@ -667,12 +718,105 @@ END;
 $$;
 
 -- ============================================================
--- INDEXES (performance)
+-- DENORMALIZED COLUMNS: sewadar_centre + sewadar_dept
+-- ============================================================
+-- attendance_sessions: snapshot of sewadar's home centre and department at scan time
+ALTER TABLE public.attendance_sessions DROP COLUMN IF EXISTS sewadar_centre;
+ALTER TABLE public.attendance_sessions ADD COLUMN sewadar_centre TEXT;
+ALTER TABLE public.attendance_sessions DROP COLUMN IF EXISTS sewadar_dept;
+ALTER TABLE public.attendance_sessions ADD COLUMN sewadar_dept TEXT;
+
+-- jatha_attendance: snapshot of sewadar's home centre at entry time
+ALTER TABLE public.jatha_attendance DROP COLUMN IF EXISTS sewadar_centre;
+ALTER TABLE public.jatha_attendance ADD COLUMN sewadar_centre TEXT;
+
+-- Trigger: auto-populate sewadar_centre + sewadar_dept on attendance_sessions INSERT
+CREATE OR REPLACE FUNCTION public.set_session_sewadar_details()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  SELECT centre, department INTO NEW.sewadar_centre, NEW.sewadar_dept
+  FROM public.sewadars WHERE badge_number = NEW.badge_number;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_set_session_sewadar_details ON public.attendance_sessions;
+CREATE TRIGGER trg_set_session_sewadar_details
+  BEFORE INSERT ON public.attendance_sessions
+  FOR EACH ROW
+  EXECUTE FUNCTION public.set_session_sewadar_details();
+
+-- Trigger: auto-populate sewadar_centre on jatha_attendance INSERT
+CREATE OR REPLACE FUNCTION public.set_jatha_sewadar_centre()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  SELECT centre INTO NEW.sewadar_centre
+  FROM public.sewadars WHERE badge_number = NEW.badge_number;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_set_jatha_sewadar_centre ON public.jatha_attendance;
+CREATE TRIGGER trg_set_jatha_sewadar_centre
+  BEFORE INSERT ON public.jatha_attendance
+  FOR EACH ROW
+  EXECUTE FUNCTION public.set_jatha_sewadar_centre();
+
+-- Temporarily disable overlap triggers for backfill (avoid false positives)
+ALTER TABLE public.attendance_sessions DISABLE TRIGGER trg_check_session_overlap;
+ALTER TABLE public.jatha_attendance DISABLE TRIGGER trg_check_jatha_overlap;
+
+-- One-time backfill for existing attendance_sessions rows
+UPDATE public.attendance_sessions s
+SET sewadar_centre = sw.centre, sewadar_dept = sw.department
+FROM public.sewadars sw
+WHERE s.badge_number = sw.badge_number
+  AND (s.sewadar_centre IS NULL OR s.sewadar_dept IS NULL);
+
+-- One-time backfill for existing jatha_attendance rows
+UPDATE public.jatha_attendance j
+SET sewadar_centre = sw.centre
+FROM public.sewadars sw
+WHERE j.badge_number = sw.badge_number
+  AND j.sewadar_centre IS NULL;
+
+-- Re-enable overlap triggers
+ALTER TABLE public.attendance_sessions ENABLE TRIGGER trg_check_session_overlap;
+ALTER TABLE public.jatha_attendance ENABLE TRIGGER trg_check_jatha_overlap;
+
+-- ============================================================
+-- COMPOSITE INDEXES (performance for common query patterns)
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_attendance_sessions_badge ON public.attendance_sessions(badge_number);
-CREATE INDEX IF NOT EXISTS idx_attendance_sessions_in_date ON public.attendance_sessions(in_date);
 CREATE INDEX IF NOT EXISTS idx_jatha_attendance_badge ON public.jatha_attendance(badge_number);
 CREATE INDEX IF NOT EXISTS idx_sewadars_badge ON public.sewadars(badge_number);
+
+-- Drop single-column index replaced by composite
+DROP INDEX IF EXISTS public.idx_attendance_sessions_in_date;
+
+-- Composite: date + centre + duty (most common filter combo)
+CREATE INDEX IF NOT EXISTS idx_sessions_date_centre_duty
+  ON public.attendance_sessions(in_date DESC, centre, duty_type);
+
+-- Composite: sort order for pagination (cards view cursor)
+CREATE INDEX IF NOT EXISTS idx_sessions_date_time
+  ON public.attendance_sessions(in_date DESC, in_time DESC);
+
+-- Composite: badge search + date sort
+CREATE INDEX IF NOT EXISTS idx_sessions_badge_date
+  ON public.attendance_sessions(badge_number, in_date DESC);
+
+-- Composite: jatha date range queries
+CREATE INDEX IF NOT EXISTS idx_jatha_dates
+  ON public.jatha_attendance(from_date DESC, to_date DESC);
 
 -- ============================================================
 -- FOREIGN KEY CONSTRAINTS (drop first — FKs depend on UNIQUE index)
@@ -780,6 +924,9 @@ DECLARE
   v_new_start TIMESTAMP;
   v_new_end TIMESTAMP;
 BEGIN
+  IF NEW.badge_number IS NULL THEN
+    RETURN NEW;
+  END IF;
   v_new_start := NEW.in_date + NEW.in_time;
   v_new_end := CASE
                 WHEN NEW.out_date IS NOT NULL AND NEW.out_time IS NOT NULL
@@ -829,6 +976,10 @@ SECURITY DEFINER
 SET search_path = ''
 AS $$
 BEGIN
+  IF NEW.badge_number IS NULL THEN
+    RETURN NEW;
+  END IF;
+
   -- Check overlap with other jatha_attendance for same badge
   IF EXISTS (
     SELECT 1 FROM public.jatha_attendance
@@ -862,18 +1013,222 @@ CREATE TRIGGER trg_check_jatha_overlap
   EXECUTE FUNCTION public.check_jatha_overlap();
 
 -- ============================================================
+-- OPTIMIZED RPC: Get paginated session records with all filters
+-- ============================================================
+-- Returns: JSON { records: [...], total_count, open_count, closed_count, guest_count, manual_count, gate_entry_count, has_more }
+-- p_page=0 returns ALL matching records (unlimited, for CSV export)
+-- Scoping: dual-path (centre OR badge in accessible centres) + sc_sp_user
+-- Nuke all overloads before creating the new one
+DO $$ BEGIN
+  PERFORM p.oid::regprocedure FROM pg_catalog.pg_proc p
+    WHERE p.proname = 'get_session_records' AND p.pronamespace = 'public'::regnamespace;
+  IF FOUND THEN
+    EXECUTE (
+      SELECT string_agg('DROP FUNCTION ' || p.oid::regprocedure || ' CASCADE;', ' ')
+      FROM pg_catalog.pg_proc p
+      WHERE p.proname = 'get_session_records' AND p.pronamespace = 'public'::regnamespace
+    );
+  END IF;
+END $$;
+CREATE OR REPLACE FUNCTION public.get_session_records(
+  p_page INT DEFAULT 1,
+  p_page_size INT DEFAULT 50,
+  p_date_from DATE DEFAULT NULL,
+  p_date_to DATE DEFAULT NULL,
+  p_centre TEXT DEFAULT NULL,
+  p_duty_type TEXT DEFAULT NULL,
+  p_search TEXT DEFAULT NULL,
+  p_status TEXT DEFAULT NULL,
+  p_quick_filter TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_offset INT;
+  v_result JSON;
+BEGIN
+  v_offset := CASE WHEN p_page > 0 THEN (p_page - 1) * p_page_size ELSE 0 END;
+
+  WITH scoped AS (
+    SELECT
+      s.id, s.badge_number, s.sewadar_name,
+      s.sewadar_centre, s.sewadar_dept,
+      s.centre, s.in_scanner_centre, s.duty_type, s.status,
+      s.in_date, s.in_time, s.out_date, s.out_time,
+      s.in_scanner_badge, s.in_scanner_name,
+      s.out_scanner_badge, s.out_scanner_name, s.out_scanner_centre,
+      s.is_manual, s.is_gate_entry,
+      s.entered_by_badge, s.entered_by_name,
+      s.created_at, s.updated_at,
+      CASE
+        WHEN s.sewadar_centre IS NOT NULL AND s.sewadar_centre IS DISTINCT FROM s.centre
+        THEN true ELSE false
+      END AS is_cross_scan,
+      CASE
+        WHEN s.sewadar_centre IS NOT NULL AND s.sewadar_centre IS DISTINCT FROM s.centre
+        THEN s.centre ELSE NULL
+      END AS scan_centre
+    FROM public.attendance_sessions s
+    WHERE s.in_date >= COALESCE(p_date_from, '1900-01-01'::date)
+      AND s.in_date <= COALESCE(p_date_to, '2999-12-31'::date)
+      AND (p_centre IS NULL OR s.centre = p_centre)
+      AND (p_duty_type IS NULL OR s.duty_type = p_duty_type)
+      AND (p_status IS NULL OR s.status = p_status)
+      AND (
+        p_search IS NULL
+        OR s.badge_number ILIKE '%' || p_search || '%'
+        OR s.sewadar_name ILIKE '%' || p_search || '%'
+      )
+      AND (
+        (p_quick_filter IS NULL OR p_quick_filter = '')
+        OR (p_quick_filter = 'open' AND s.status = 'OPEN')
+        OR (p_quick_filter = 'closed' AND s.status = 'CLOSED')
+        OR (p_quick_filter = 'guests' AND s.sewadar_centre IS NOT NULL AND s.sewadar_centre IS DISTINCT FROM s.centre)
+        OR (p_quick_filter = 'manual' AND s.is_manual = true AND (s.is_gate_entry IS NULL OR s.is_gate_entry = false))
+        OR (p_quick_filter = 'gate_entry' AND s.is_gate_entry = true)
+      )
+      AND (
+        s.centre IN (SELECT public.get_user_accessible_centres())
+        OR s.badge_number IN (
+          SELECT badge_number FROM public.sewadars
+          WHERE centre IN (SELECT public.get_user_accessible_centres())
+        )
+      )
+      AND (
+        public.get_user_role() != 'sc_sp_user'
+        OR s.in_scanner_centre = (SELECT centre FROM public.users WHERE auth_id = auth.uid())
+      )
+  ),
+  counts AS (
+    SELECT
+      COUNT(*) AS total_count,
+      COUNT(*) FILTER (WHERE status = 'OPEN') AS open_count,
+      COUNT(*) FILTER (WHERE status = 'CLOSED') AS closed_count,
+      COUNT(*) FILTER (WHERE sewadar_centre IS NOT NULL AND sewadar_centre IS DISTINCT FROM centre) AS guest_count,
+      COUNT(*) FILTER (WHERE is_manual = true AND (is_gate_entry IS NULL OR is_gate_entry = false)) AS manual_count,
+      COUNT(*) FILTER (WHERE is_gate_entry = true) AS gate_entry_count
+    FROM scoped
+  ),
+  ordered AS (
+    SELECT * FROM scoped
+    ORDER BY in_date DESC, in_time DESC
+    LIMIT CASE WHEN p_page > 0 THEN p_page_size ELSE NULL END
+    OFFSET CASE WHEN p_page > 0 THEN v_offset ELSE 0 END
+  )
+  SELECT json_build_object(
+    'records', COALESCE((SELECT json_agg(row_to_json(ordered.*)) FROM ordered), '[]'::json),
+    'has_more', CASE WHEN p_page > 0 THEN (SELECT COUNT(*) > v_offset + p_page_size FROM scoped) ELSE false END,
+    'total_count', (SELECT total_count FROM counts),
+    'open_count', (SELECT open_count FROM counts),
+    'closed_count', (SELECT closed_count FROM counts),
+    'guest_count', (SELECT guest_count FROM counts),
+    'manual_count', (SELECT manual_count FROM counts),
+    'gate_entry_count', (SELECT gate_entry_count FROM counts)
+  ) INTO v_result;
+
+  RETURN v_result;
+END;
+$$;
+
+-- ============================================================
+-- OPTIMIZED RPC: Get paginated jatha records with all filters
+-- ============================================================
+-- Returns: JSON { records: [...], total_count, has_more }
+-- p_page=0 returns ALL matching records (unlimited, for CSV export)
+-- Includes: jatha_type, jatha_department from jatha_master,
+--           sewadar_centre from denormalized column
+-- Nuke all overloads before creating the new one
+DO $$ BEGIN
+  PERFORM p.oid::regprocedure FROM pg_catalog.pg_proc p
+    WHERE p.proname = 'get_jatha_records' AND p.pronamespace = 'public'::regnamespace;
+  IF FOUND THEN
+    EXECUTE (
+      SELECT string_agg('DROP FUNCTION ' || p.oid::regprocedure || ' CASCADE;', ' ')
+      FROM pg_catalog.pg_proc p
+      WHERE p.proname = 'get_jatha_records' AND p.pronamespace = 'public'::regnamespace
+    );
+  END IF;
+END $$;
+CREATE OR REPLACE FUNCTION public.get_jatha_records(
+  p_page INT DEFAULT 1,
+  p_page_size INT DEFAULT 50,
+  p_date_from DATE DEFAULT NULL,
+  p_date_to DATE DEFAULT NULL,
+  p_centre TEXT DEFAULT NULL,
+  p_search TEXT DEFAULT NULL,
+  p_jatha_type TEXT DEFAULT NULL
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_offset INT;
+  v_result JSON;
+BEGIN
+  v_offset := CASE WHEN p_page > 0 THEN (p_page - 1) * p_page_size ELSE 0 END;
+
+  WITH scoped AS (
+    SELECT
+      j.id, j.badge_number, j.sewadar_name,
+      j.sewadar_centre, j.centre AS destination_centre,
+      j.from_date, j.to_date, j.remarks,
+      j.entered_by_badge, j.entered_by_name, j.entered_at,
+      jm.jatha_type, jm.department AS jatha_department,
+      j.jatha_id
+    FROM public.jatha_attendance j
+    LEFT JOIN public.jatha_master jm ON j.jatha_id = jm.id
+    WHERE j.from_date >= COALESCE(p_date_from, '1900-01-01'::date)
+      AND j.from_date <= COALESCE(p_date_to, '2999-12-31'::date)
+      AND (p_centre IS NULL OR j.centre = p_centre)
+      AND (p_jatha_type IS NULL OR jm.jatha_type = p_jatha_type)
+      AND (
+        p_search IS NULL
+        OR j.badge_number ILIKE '%' || p_search || '%'
+        OR j.sewadar_name ILIKE '%' || p_search || '%'
+      )
+      AND (
+        j.centre IN (SELECT public.get_user_accessible_centres())
+        OR j.badge_number IN (
+          SELECT badge_number FROM public.sewadars
+          WHERE centre IN (SELECT public.get_user_accessible_centres())
+        )
+      )
+      AND public.has_permission('allow_jatha')
+  ),
+  ordered AS (
+    SELECT * FROM scoped
+    ORDER BY from_date DESC, entered_at DESC
+    LIMIT CASE WHEN p_page > 0 THEN p_page_size ELSE NULL END
+    OFFSET CASE WHEN p_page > 0 THEN v_offset ELSE 0 END
+  )
+  SELECT json_build_object(
+    'records', COALESCE((SELECT json_agg(row_to_json(ordered.*)) FROM ordered), '[]'::json),
+    'has_more', CASE WHEN p_page > 0 THEN (SELECT COUNT(*) > v_offset + p_page_size FROM scoped) ELSE false END,
+    'total_count', (SELECT COUNT(*) FROM scoped)
+  ) INTO v_result;
+
+  RETURN v_result;
+END;
+$$;
+
+-- ============================================================
 -- HOW TO DEPLOY
 -- ============================================================
 -- 1. Run the entire file in Supabase SQL Editor
 -- 2. This recreates ALL helper functions, RLS policies, indexes, and constraints
 -- 3. Existing data is preserved (DDL only affects policies/functions/schema)
--- 4. New in v2.3:
---    - get_open_session(p_badge): returns current OPEN session JSON
---    - close_session(...): closes session with OUT details
---    - Indexes on badge_number and in_date for query performance
---    - UNIQUE constraint on sewadars.badge_number (zero duplicates confirmed)
---    - FK constraints (attendance_sessions, jatha_attendance → sewadars)
---    - Unique partial index + overlap triggers on attendance_sessions and jatha_attendance
+-- 4. New in v2.4:
+--    - get_session_records(): paginated, filtered, scoped session records RPC
+--    - get_jatha_records(): paginated, filtered, scoped jatha records RPC
+--    - Denormalized sewadar_centre/sewadar_dept on attendance_sessions
+--    - Denormalized sewadar_centre on jatha_attendance
+--    - Auto-populate triggers for denormalized columns
+--    - Composite indexes for query performance
 -- ============================================================
 -- VERIFICATION
 -- ============================================================
@@ -881,3 +1236,40 @@ SELECT schemaname, tablename, policyname, cmd, roles
 FROM pg_policies
 WHERE schemaname = 'public'
 ORDER BY tablename, cmd;
+
+-- -- ============================================================
+-- -- v2.5: JATHA DEDUP — Clean duplicate jatha_attendance rows
+-- -- ============================================================
+-- -- Problem: Same sewadar + same jatha + same dates inserted multiple times
+-- --   (jatha_id=15: 40x, jatha_id=27: 5-7x per sewadar)
+-- -- Root cause: Inserted before overlap trigger was deployed
+-- -- Fix: Keep lowest id per unique (badge, jatha, from, to), delete rest, add unique index
+-- --
+-- -- STEP 1: Preview duplicates before deleting
+-- -- Run this first to verify what will be removed:
+-- --   SELECT badge_number, jatha_id, from_date, to_date, COUNT(*) - 1 AS dup_count
+-- --   FROM public.jatha_attendance
+-- --   WHERE badge_number IS NOT NULL
+-- --   GROUP BY badge_number, jatha_id, from_date, to_date
+-- --   HAVING COUNT(*) > 1
+-- --   ORDER BY dup_count DESC;
+-- --
+-- STEP 2: Delete duplicates (keep lowest id per group)
+-- Disable trigger since we're cleaning, not creating new overlaps
+ALTER TABLE public.jatha_attendance DISABLE TRIGGER trg_check_jatha_overlap;
+
+DELETE FROM public.jatha_attendance ja
+WHERE ja.id NOT IN (
+  SELECT MIN(id)
+  FROM public.jatha_attendance
+  WHERE badge_number IS NOT NULL
+  GROUP BY badge_number, jatha_id, from_date, to_date
+);
+
+ALTER TABLE public.jatha_attendance ENABLE TRIGGER trg_check_jatha_overlap;
+
+-- STEP 3: Prevent future duplicates with a unique index
+DROP INDEX IF EXISTS idx_jatha_unique_entry;
+CREATE UNIQUE INDEX idx_jatha_unique_entry
+  ON public.jatha_attendance(badge_number, jatha_id, from_date, COALESCE(to_date, '1900-01-01'))
+  WHERE badge_number IS NOT NULL;

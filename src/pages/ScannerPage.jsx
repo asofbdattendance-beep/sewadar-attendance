@@ -168,7 +168,6 @@ export default function ScannerPage({ isOnline }) {
     if (!profile?.centre) return true
     const scope = [profile?.centre, ...childCentres]
     if (sewadarCentre && scope.includes(sewadarCentre)) return true
-    if (scopeDataLoaded && !specialDepts.length) return true
     if (department) {
       const deptUpper = department.trim().toUpperCase()
       if (specialDepts.includes(deptUpper)) return true
@@ -279,7 +278,7 @@ const handleScan = useCallback(async (badge) => {
         if (scannerRef.current) scannerRef.current.stop()
         popupOpenRef.current = true
 
-        const inDateTime = new Date(openSession.in_date + 'T' + (openSession.in_time || '12:00') + ':00')
+        const inDateTime = new Date(openSession.in_date + 'T' + (openSession.in_time || '12:00').slice(0, 5))
         const hoursSinceIn = (today - inDateTime) / (1000 * 60 * 60)
 
         // If OPEN session is >12 hours old, assume sewadar forgot to mark OUT
@@ -302,6 +301,7 @@ const handleScan = useCallback(async (badge) => {
       }
     } catch (err) {
       console.error('Scan error:', err)
+      toast.error('Network error — please try again')
       setPopupState({ type: 'not_found', badge, error: true })
       popupOpenRef.current = true
     }
@@ -326,7 +326,7 @@ const handleScan = useCallback(async (badge) => {
           badge_number: sewadar.badge_number,
           sewadar_name: sewadar.sewadar_name,
           centre: scanCentre,
-          duty_type: getDutyType(),
+          duty_type: getDutyType(new Date(inDate + 'T' + (inTime || '00:00'))),
           status: SESSION_STATUS.OPEN,
           in_date: inDate,
           in_time: inTime,
@@ -355,12 +355,13 @@ const handleScan = useCallback(async (badge) => {
           badge: sewadar.badge_number,
           name: sewadar.sewadar_name,
           centre: profile?.centre,
-          duty: getDutyType()
+          duty: getDutyType(new Date(inDate + 'T' + (inTime || '00:00')))
         })
         setPopupState({ type: 'success', action: 'IN', sewadar, time: formatTime12Hour(inTime) })
         fetchRecentScans()
       } catch (err) {
         console.error('Failed to insert session:', err)
+        toast.error('Failed to record entry — unexpected error')
         return
       }
     } else {
@@ -504,9 +505,9 @@ const handleScan = useCallback(async (badge) => {
           setManualOpenSession(data)
           
           // Check if session is older than 12 hours
-          const inDateTime = new Date(data.in_date + 'T' + (data.in_time || '12:00') + ':00')
+          const inDateTime = new Date(data.in_date + 'T' + (data.in_time || '12:00').slice(0, 5))
           const hoursSinceIn = (now - inDateTime) / (1000 * 60 * 60)
-          
+
           if (hoursSinceIn > 12) {
             // Session is very old - show forgot_out mode
             const nowStr = getLocalDate(now)
@@ -551,6 +552,10 @@ const handleScan = useCallback(async (badge) => {
       if (!manualEntryTime.date || !manualEntryTime.time) {
         return
       }
+      if (manualEntryTime.date && manualEntryTime.date > getLocalDate()) {
+        setManualTimeError('IN date cannot be in the future')
+        return
+      }
     } else {
       const hasTime = (manualEntryTime.date && manualEntryTime.time) || (manualForgotOutData?.date && manualForgotOutData?.time)
       if (!manualOpenSession || !hasTime) return
@@ -566,6 +571,10 @@ const handleScan = useCallback(async (badge) => {
         setManualTimeError('OUT time must be after IN time')
         return
       }
+      if (outDate && outDate > getLocalDate()) {
+        setManualTimeError('OUT date cannot be in the future')
+        return
+      }
       setManualTimeError('')
     }
 
@@ -578,7 +587,7 @@ const handleScan = useCallback(async (badge) => {
         badge_number: manualSelectedSewadar.badge_number,
         sewadar_name: manualSelectedSewadar.sewadar_name,
         centre: manualScanCtr,
-        duty_type: getDutyType(),
+        duty_type: getDutyType(new Date(manualEntryTime.date + 'T' + (manualEntryTime.time || '00:00'))),
         status: SESSION_STATUS.OPEN,
         in_date: manualEntryTime.date,
         in_time: manualEntryTime.time,
@@ -613,7 +622,7 @@ const handleScan = useCallback(async (badge) => {
           badge: manualSelectedSewadar.badge_number,
           name: manualSelectedSewadar.sewadar_name,
           centre: profile?.centre,
-          duty: getDutyType()
+          duty: getDutyType(new Date(manualEntryTime.date + 'T' + (manualEntryTime.time || '00:00')))
         })
         fetchRecentScans()
       }
