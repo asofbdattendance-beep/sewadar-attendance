@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { supabase, ROLES, SESSION_STATUS, formatDateIndian, getLocalDate } from '../lib/supabase'
+import { useState, useEffect, useRef } from 'react'
+import { supabase, ROLES, SESSION_STATUS, formatDateIndian, getLocalDate, getDutyType, formatTime12Hour } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { logAction } from '../lib/logger'
 import { useToast } from '../components/Toast'
-import { Users, Search, Plus, AlertTriangle, CheckCircle, Calendar, MapPin, Briefcase, ChevronDown, X, DoorOpen, Truck, RefreshCw, Shield } from 'lucide-react'
+import { Users, Search, Plus, AlertTriangle, CheckCircle, Calendar, MapPin, Briefcase, ChevronDown, X, DoorOpen, Truck, Shield, Download } from 'lucide-react'
+import * as XLSX from 'xlsx'
 
 const JATHA_TYPES = [
   { value: 'beas', label: 'BEAS' },
@@ -13,6 +14,22 @@ const JATHA_TYPES = [
 
 const MAX_JATHA_DAYS = 10
 
+const downloadOverlapExcel = (overlaps, type) => {
+  if (!overlaps.length) return
+  const ws = XLSX.utils.json_to_sheet(overlaps)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Overlaps')
+  const colWidths = Object.keys(overlaps[0]).map(k => ({ wch: Math.max(k.length * 2, 18) }))
+  ws['!cols'] = colWidths
+  const data = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+  const blob = new Blob([data], { type: 'application/octet-stream' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${type}_overlaps_${getLocalDate()}.xlsx`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 function GateEntryForm({ onSuccess }) {
   const { profile } = useAuth()
@@ -29,6 +46,7 @@ function GateEntryForm({ onSuccess }) {
   const [validationMsg, setValidationMsg] = useState('')
   const [allowOtherCentres, setAllowOtherCentres] = useState(false)
   const [childCentres, setChildCentres] = useState([])
+  const [submitOverlaps, setSubmitOverlaps] = useState([])
   const searchTimeout = useRef(null)
   const gateSearchTickRef = useRef(0)
 
@@ -48,6 +66,7 @@ function GateEntryForm({ onSuccess }) {
     setSubmitResult(null)
     setValidationErrors({})
     setDbOverlaps({})
+    setSubmitOverlaps([])
     setValidationMsg('')
   }
 
@@ -86,11 +105,16 @@ function GateEntryForm({ onSuccess }) {
       setValidationErrors(prev => ({ ...prev, [id]: entryErrors }))
       
       if (selectedSewadar) {
-        try {
-          await checkDbOverlaps(selectedSewadar.badge_number, id, updated)
-        } catch (e) {
-          console.error('DB overlap check error:', e)
-        }
+        const overlaps = await checkGateOverlaps(selectedSewadar.badge_number, [updated])
+        setDbOverlaps(prev => {
+          const next = { ...prev }
+          if (overlaps.overlappingIds.has(id)) {
+            next[id] = overlaps.overlaps[0]?.reason || 'Overlap detected'
+          } else {
+            delete next[id]
+          }
+          return next
+        })
       }
     }
   }
@@ -102,8 +126,14 @@ function GateEntryForm({ onSuccess }) {
     const errors = []
     if (!entry.inDate || !entry.inTime) errors.push('IN date/time required')
     if (!entry.outDate || !entry.outTime) errors.push('OUT date/time required')
+    if (entry.inDate && entry.inDate > getLocalDate()) {
+      errors.push('IN date cannot be in the future')
+    }
     if (entry.inDate && entry.outDate && entry.outDate < entry.inDate) {
       errors.push('OUT must be after IN')
+    }
+    if (entry.outDate && entry.outDate > getLocalDate()) {
+      errors.push('OUT date cannot be in the future')
     }
     if (entry.inDate && entry.outDate && entry.inDate === entry.outDate && entry.inTime && entry.outTime && entry.outTime <= entry.inTime) {
       errors.push('OUT time must be after IN time on same date')
@@ -144,54 +174,85 @@ function GateEntryForm({ onSuccess }) {
     return null
   }
 
-  const checkDbOverlaps = async (badgeNumber, entryId, entry) => {
-    if (!entry.inDate || !entry.outDate) return
+  const checkGateOverlaps = async (badgeNumber, entries) => {
+    if (!entries.length) return { overlaps: [], overlappingIds: new Set() }
 
+    const twoMonthsAgo = new Date()
+    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2)
+    const twoMonthsAgoStr = twoMonthsAgo.toISOString().split('T')[0]
+
+    let openRes, closedRes
     try {
-      const { data } = await supabase
-        .from('attendance_sessions')
-        .select('id, in_date, in_time, out_date, out_time, status')
-        .eq('badge_number', badgeNumber)
-        .or('status.eq.OPEN,status.eq.CLOSED')
+      [openRes, closedRes] = await Promise.all([
+        supabase.from('attendance_sessions')
+          .select('id, in_date, in_time, out_date, out_time, status')
+          .eq('badge_number', badgeNumber)
+          .eq('status', 'OPEN'),
+        supabase.from('attendance_sessions')
+          .select('id, in_date, in_time, out_date, out_time, status')
+          .eq('badge_number', badgeNumber)
+          .eq('status', 'CLOSED')
+          .gte('in_date', twoMonthsAgoStr)
+      ])
+    } catch (e) {
+      console.error('Overlap check query failed:', e)
+      return { overlaps: [], overlappingIds: new Set() }
+    }
 
-      if (!data) return
+    const allSessions = [...(openRes.data || []), ...(closedRes.data || [])]
+    const overlaps = []
+    const overlappingIds = new Set()
 
+    for (const entry of entries) {
       const entryIn = new Date(`${entry.inDate}T${entry.inTime || '00:00'}`)
       const entryOut = new Date(`${entry.outDate}T${entry.outTime || '23:59'}`)
 
-      for (const session of data) {
+      for (const session of allSessions) {
         const sessionIn = new Date(`${session.in_date}T${session.in_time || '00:00'}`)
-        const sessionOut = session.out_date 
+        const sessionOut = session.out_date
           ? new Date(`${session.out_date}T${session.out_time || '23:59'}`)
           : null
 
-        if (sessionOut) {
-          if (entryIn < sessionOut && entryOut > sessionIn) {
-            setDbOverlaps(prev => ({
-              ...prev,
-              [entryId]: `${session.in_date} to ${session.out_date} (CLOSED)`
-            }))
-            return
-          }
+        const isOpen = !sessionOut
+        let isOverlapping = false
+
+        if (isOpen) {
+          // OPEN session spans to infinity → overlaps if entry end is after session start
+          isOverlapping = entryOut > sessionIn
         } else {
-          if (entryOut > sessionIn) {
-            setDbOverlaps(prev => ({
-              ...prev,
-              [entryId]: `${session.in_date} (OPEN - inside since ${session.in_time})`
-            }))
-            return
-          }
+          // CLOSED session: standard interval overlap
+          isOverlapping = entryIn < sessionOut && entryOut > sessionIn
+        }
+
+        if (isOverlapping) {
+          const conflictType = isOpen ? 'OPEN' : 'CLOSED'
+          const reason = isOpen
+            ? `Already inside since ${formatTime12Hour(session.in_time)} on ${formatDateIndian(session.in_date)}`
+            : `Session from ${formatDateIndian(session.in_date)} ${formatTime12Hour(session.in_time)} to ${formatDateIndian(session.out_date)} ${formatTime12Hour(session.out_time)} overlaps`
+
+          overlaps.push({
+            entryId: entry.id,
+            sewadarName: selectedSewadar?.sewadar_name || '',
+            badgeNumber,
+            entryInDate: formatDateIndian(entry.inDate),
+            entryInTime: formatTime12Hour(entry.inTime),
+            entryOutDate: formatDateIndian(entry.outDate),
+            entryOutTime: formatTime12Hour(entry.outTime),
+            conflictType,
+            conflictInDate: formatDateIndian(session.in_date),
+            conflictInTime: formatTime12Hour(session.in_time),
+            conflictOutDate: session.out_date ? formatDateIndian(session.out_date) : '—',
+            conflictOutTime: session.out_time ? formatTime12Hour(session.out_time) : '—',
+            conflictStatus: session.status,
+            reason
+          })
+          overlappingIds.add(entry.id)
+          break // first overlap per entry is enough
         }
       }
-
-      setDbOverlaps(prev => {
-        const next = { ...prev }
-        delete next[entryId]
-        return next
-      })
-    } catch (err) {
-      console.error('DB overlap check error:', err)
     }
+
+    return { overlaps, overlappingIds }
   }
 
   const searchSewadars = async (query) => {
@@ -228,6 +289,7 @@ function GateEntryForm({ onSuccess }) {
   const handleSearchChange = (e) => {
     const val = e.target.value
     setSearchTerm(val)
+    if (val.length > 0) setSubmitOverlaps([])
 
     if (searchTimeout.current) clearTimeout(searchTimeout.current)
     searchTimeout.current = setTimeout(() => searchSewadars(val), 300)
@@ -240,6 +302,7 @@ function GateEntryForm({ onSuccess }) {
     setEntries([])
     setValidationErrors({})
     setDbOverlaps({})
+    setSubmitOverlaps([])
 
     const today = getLocalDate()
     setEntries([{
@@ -286,14 +349,19 @@ function GateEntryForm({ onSuccess }) {
       return { errors, msg: firstError }
     }
     
-    // Check DB overlaps from state
-    const overlapKeys = Object.keys(dbOverlaps)
-    if (overlapKeys.length > 0) {
-      return { errors: dbOverlaps, msg: 'Overlaps with existing sessions' }
-    }
-
     setValidationMsg('')
     return null
+  }
+
+  const checkLockDates = async () => {
+    const uniqueDates = [...new Set(entries.flatMap(e => [e.inDate, e.outDate].filter(Boolean)))]
+    for (const dateStr of uniqueDates) {
+      const { data } = await supabase.rpc('is_date_locked', { p_date: dateStr })
+      if (data === true) {
+        return { locked: true, date: dateStr }
+      }
+    }
+    return { locked: false }
   }
 
   const submitEntries = async () => {
@@ -303,46 +371,41 @@ function GateEntryForm({ onSuccess }) {
       return
     }
 
+    // Check lock dates
+    const lockCheck = await checkLockDates()
+    if (lockCheck.locked) {
+      toast.error(`Cannot submit: ${formatDateIndian(lockCheck.date)} is in a locked period`)
+      return
+    }
+
     setSubmitting(true)
     setSubmitResult(null)
+    setSubmitOverlaps([])
 
     try {
-      // Fresh overlap check immediately before insert (race condition prevention)
-      const { data: freshSessions } = await supabase
-        .from('attendance_sessions')
-        .select('id, in_date, in_time, out_date, out_time, status')
-        .eq('badge_number', selectedSewadar.badge_number)
-        .or('status.eq.OPEN,status.eq.CLOSED')
+      // Fresh overlap check using the 2-phase approach
+      const { overlaps, overlappingIds } = await checkGateOverlaps(
+        selectedSewadar.badge_number, entries
+      )
 
-      if (freshSessions) {
-        for (const entry of entries) {
-          const entryIn = new Date(`${entry.inDate}T${entry.inTime || '00:00'}`)
-          const entryOut = new Date(`${entry.outDate}T${entry.outTime || '23:59'}`)
+      const validEntries = entries.filter(e => !overlappingIds.has(e.id))
 
-          for (const session of freshSessions) {
-            const sessionIn = new Date(`${session.in_date}T${session.in_time || '00:00'}`)
-            const sessionOut = session.out_date
-              ? new Date(`${session.out_date}T${session.out_time || '23:59'}`)
-              : null
-
-            if (sessionOut) {
-              if (entryIn < sessionOut && entryOut > sessionIn) {
-                throw new Error(`Session overlap: ${session.in_date} to ${session.out_date}`)
-              }
-            } else {
-              if (entryOut > sessionIn) {
-                throw new Error(`Session conflict: ${session.in_date} (OPEN - inside since ${session.in_time})`)
-              }
-            }
-          }
-        }
+      if (validEntries.length === 0) {
+        // All entries have overlaps − nothing to save
+        setSubmitOverlaps(overlaps)
+        toast.error('All entries have overlaps. Download the overlap report for details.')
+        setSubmitting(false)
+        return
       }
 
-      const records = entries.map(entry => ({
+      // Insert only valid entries
+      const records = validEntries.map(entry => ({
         badge_number: selectedSewadar.badge_number,
         sewadar_name: selectedSewadar.sewadar_name,
         centre: profile?.centre || selectedSewadar.centre || 'UNKNOWN',
-        duty_type: entry.inDate === entry.outDate ? 'DAILY' : 'WATCH_AND_WARD',
+        duty_type: entry.inDate === entry.outDate
+          ? getDutyType(new Date(entry.inDate + 'T' + (entry.inTime || '00:00')))
+          : 'WATCH_AND_WARD',
         status: SESSION_STATUS.CLOSED,
         in_date: entry.inDate,
         in_time: entry.inTime,
@@ -361,29 +424,47 @@ function GateEntryForm({ onSuccess }) {
         updated_at: new Date().toISOString(),
       }))
 
-      const { data, error: insertError } = await supabase
+      const { error: insertError } = await supabase
         .from('attendance_sessions')
         .insert(records)
-        .select('id')
 
       if (insertError) throw insertError
 
-      const firstEntry = entries[0]
-      toast.success(`${records.length} entries added!`)
+      const firstEntry = validEntries[0]
+      const dutyTypeUsed = firstEntry.inDate === firstEntry.outDate
+        ? getDutyType(new Date(firstEntry.inDate + 'T' + (firstEntry.inTime || '00:00')))
+        : 'WATCH_AND_WARD'
+
       logAction(profile?.badge_number, profile?.name, 'GATE_ENTRY', { 
         count: records.length, 
         centre: profile?.centre || selectedSewadar.centre || 'UNKNOWN',
-        duty_type: firstEntry.inDate === firstEntry.outDate ? 'DAILY' : 'WATCH_AND_WARD',
+        duty_type: dutyTypeUsed,
         from_date: firstEntry.inDate,
         to_date: firstEntry.outDate
       })
-      setSubmitResult({ success: true, count: records.length })
-      setValidationErrors({})
-      setValidationMsg('')
-      setTimeout(() => {
-        resetForm()
-        setSubmitResult(null)
-      }, 2000)
+
+      if (overlappingIds.size > 0) {
+        // Partial success
+        setSubmitOverlaps(overlaps)
+        setSubmitResult({ success: true, count: records.length, skipped: overlappingIds.size })
+        setValidationErrors({})
+        setValidationMsg('')
+        toast.success(`${records.length} entries saved. ${overlappingIds.size} skipped due to overlap.`)
+        setTimeout(() => {
+          resetForm()
+          setSubmitResult(null)
+          setSubmitOverlaps([])
+        }, 5000)
+      } else {
+        toast.success(`${records.length} entries added!`)
+        setSubmitResult({ success: true, count: records.length })
+        setValidationErrors({})
+        setValidationMsg('')
+        setTimeout(() => {
+          resetForm()
+          setSubmitResult(null)
+        }, 2000)
+      }
 
     } catch (err) {
       toast.error(err.message || 'Failed to save entries')
@@ -404,6 +485,28 @@ function GateEntryForm({ onSuccess }) {
         <div className="overlap-warning">
           <AlertTriangle size={16} />
           <span>{validationMsg}</span>
+        </div>
+      )}
+
+      {submitOverlaps.length > 0 && (
+        <div className="overlap-report" style={{ marginBottom: '1rem' }}>
+          <div className="overlap-report-header">
+            <AlertTriangle size={16} />
+            <span>{submitOverlaps.length} entr{submitOverlaps.length > 1 ? 'ies' : 'y'} skipped due to overlap</span>
+          </div>
+          <div className="overlap-report-list">
+            {submitOverlaps.slice(0, 5).map((o, i) => (
+              <div key={i} className="overlap-report-item">
+                <div className="overlap-reason">{o.reason}</div>
+              </div>
+            ))}
+            {submitOverlaps.length > 5 && (
+              <div className="overlap-report-more">...and {submitOverlaps.length - 5} more</div>
+            )}
+          </div>
+          <button className="download-overlap-btn" onClick={() => downloadOverlapExcel(submitOverlaps, 'gate')}>
+            <Download size={14} /> Download Overlap Report (.xlsx)
+          </button>
         </div>
       )}
 
@@ -485,7 +588,7 @@ function GateEntryForm({ onSuccess }) {
               <div className="entry-grid">
                 <div className="entry-field">
                   <label>IN DATE</label>
-                  <input type="date" value={entry.inDate} onChange={e => updateEntry(entry.id, 'inDate', e.target.value)} />
+                  <input type="date" value={entry.inDate} max={getLocalDate()} onChange={e => updateEntry(entry.id, 'inDate', e.target.value)} />
                 </div>
                 <div className="entry-field">
                   <label>IN TIME</label>
@@ -493,7 +596,7 @@ function GateEntryForm({ onSuccess }) {
                 </div>
                 <div className="entry-field">
                   <label>OUT DATE</label>
-                  <input type="date" value={entry.outDate} min={entry.inDate} onChange={e => updateEntry(entry.id, 'outDate', e.target.value)} />
+                  <input type="date" value={entry.outDate} min={entry.inDate} max={getLocalDate()} onChange={e => updateEntry(entry.id, 'outDate', e.target.value)} />
                 </div>
                 <div className="entry-field">
                   <label>OUT TIME</label>
@@ -529,6 +632,7 @@ function GateEntryForm({ onSuccess }) {
               <><CheckCircle size={18} /> Submit {entries.length} Entry/Entries</>
             )}
           </button>
+
         </>
       )}
     </div>
@@ -547,6 +651,7 @@ function JathaEntryForm({ onSuccess }) {
   const [submitResult, setSubmitResult] = useState(null)
   const [warnings, setWarnings] = useState([])
   const [fetchError, setFetchError] = useState('')
+  const [jathaOverlaps, setJathaOverlaps] = useState([])
 
   const [sewadars, setSewadars] = useState([])
   const [searchTerm, setSearchTerm] = useState('')
@@ -581,6 +686,8 @@ function JathaEntryForm({ onSuccess }) {
     setToDate('')
     setSubmitResult(null)
     setWarnings([])
+    setJathaOverlaps([])
+    setRemarks('')
     setFetchError('')
   }
 
@@ -643,6 +750,7 @@ function JathaEntryForm({ onSuccess }) {
   const handleSearchChange = (e) => {
     const val = e.target.value
     setSearchTerm(val)
+    setJathaOverlaps([])
     if (searchTimeout.current) clearTimeout(searchTimeout.current)
     searchTimeout.current = setTimeout(() => searchSewadars(val), 300)
   }
@@ -675,68 +783,95 @@ function JathaEntryForm({ onSuccess }) {
   }
 
   const checkForDuplicates = async () => {
-    if (!fromDate || !toDate || sewadars.length === 0) return []
-    const duplicates = []
-    for (const sewadar of sewadars) {
-      try {
-        const { data } = await supabase
-          .from('jatha_attendance')
-          .select(`from_date, to_date, jatha_master!jatha_id(centre_name)`)
-          .eq('badge_number', sewadar.badge_number)
-          .lte('from_date', toDate)
-          .gte('to_date', fromDate)
+    if (!fromDate || !toDate || sewadars.length === 0) return { overlaps: [], overlappingIds: new Set() }
+    const badgeNumbers = sewadars.map(s => s.badge_number)
+    try {
+      const { data } = await supabase
+        .from('jatha_attendance')
+        .select(`badge_number, from_date, to_date, jatha_master!jatha_id(centre_name)`)
+        .in('badge_number', badgeNumbers)
+        .lte('from_date', toDate)
+        .gte('to_date', fromDate)
 
-        if (data && data.length > 0) {
-          duplicates.push({
-            name: sewadar.sewadar_name,
-            badge: sewadar.badge_number,
-            existingFrom: data[0].from_date,
-            existingTo: data[0].to_date,
-            destination: data[0].jatha_master?.centre_name || 'Unknown'
-          })
-        }
-      } catch (err) {
-        console.error('Duplicate check error:', err)
+      const sewadarMap = {}
+      sewadars.forEach(s => { sewadarMap[s.badge_number] = s })
+
+      const overlaps = []
+      const overlappingIds = new Set()
+      for (const row of data || []) {
+        const sewadar = sewadarMap[row.badge_number]
+        if (!sewadar) continue
+        const exists = overlaps.some(o => o.badge === row.badge_number)
+        if (exists) continue
+        overlaps.push({
+          name: sewadar.sewadar_name,
+          badge: sewadar.badge_number,
+          existingFrom: row.from_date,
+          existingTo: row.to_date,
+          destination: row.jatha_master?.centre_name || 'Unknown',
+          type: 'JATHA_DUPLICATE'
+        })
+        overlappingIds.add(row.badge_number)
       }
+      return { overlaps, overlappingIds }
+    } catch (err) {
+      console.error('Duplicate check error:', err)
+      return { overlaps: [], overlappingIds: new Set() }
     }
-    return duplicates
   }
 
   const checkForAttendanceOverlap = async () => {
-    if (!fromDate || !toDate || sewadars.length === 0) return []
-    const overlaps = []
-    for (const sewadar of sewadars) {
-      try {
-        const { data } = await supabase
-          .from('attendance_sessions')
-          .select('in_date, out_date, duty_type, is_jatha_entry')
-          .eq('badge_number', sewadar.badge_number)
-          .eq('is_jatha_entry', false)
-          .or(`status.eq.OPEN,status.eq.CLOSED`)
+    if (!fromDate || !toDate || sewadars.length === 0) return { overlaps: [], overlappingIds: new Set() }
+    const badgeNumbers = sewadars.map(s => s.badge_number)
+    try {
+      const { data } = await supabase
+        .from('attendance_sessions')
+        .select('badge_number, in_date, out_date, duty_type')
+        .in('badge_number', badgeNumbers)
+        .or(`status.eq.OPEN,status.eq.CLOSED`)
 
-        if (data) {
-          for (const session of data) {
-            const sessIn = new Date(session.in_date)
-            const sessOut = session.out_date ? new Date(session.out_date) : new Date()
-            const jathaFrom = new Date(fromDate)
-            const jathaTo = new Date(toDate)
+      const sewadarMap = {}
+      sewadars.forEach(s => { sewadarMap[s.badge_number] = s })
+      const jathaFrom = new Date(fromDate)
+      const jathaTo = new Date(toDate)
 
-            if (sessIn <= jathaTo && sessOut >= jathaFrom) {
-              overlaps.push({
-                name: sewadar.sewadar_name,
-                badge: sewadar.badge_number,
-                sessionDate: session.in_date,
-                dutyType: session.duty_type
-              })
-              break
-            }
+      const overlaps = []
+      const overlappingIds = new Set()
+      for (const session of data || []) {
+        const sewadar = sewadarMap[session.badge_number]
+        if (!sewadar) continue
+        const sessIn = new Date(session.in_date)
+        const sessOut = session.out_date ? new Date(session.out_date) : new Date()
+
+        if (sessIn <= jathaTo && sessOut >= jathaFrom) {
+          if (!overlappingIds.has(session.badge_number)) {
+            overlaps.push({
+              name: sewadar.sewadar_name,
+              badge: sewadar.badge_number,
+              sessionDate: session.in_date,
+              dutyType: session.duty_type,
+              type: 'SESSION_OVERLAP'
+            })
+            overlappingIds.add(session.badge_number)
           }
         }
-      } catch (err) {
-        console.error('Attendance overlap check error:', err)
+      }
+      return { overlaps, overlappingIds }
+    } catch (err) {
+      console.error('Attendance overlap check error:', err)
+      return { overlaps: [], overlappingIds: new Set() }
+    }
+  }
+
+  const checkJathaLockDates = async () => {
+    const datesToCheck = [fromDate, toDate].filter(Boolean)
+    for (const dateStr of datesToCheck) {
+      const { data } = await supabase.rpc('is_date_locked', { p_date: dateStr })
+      if (data === true) {
+        return dateStr
       }
     }
-    return overlaps
+    return null
   }
 
   const validateAndCheck = async () => {
@@ -744,33 +879,44 @@ function JathaEntryForm({ onSuccess }) {
     if (dateError) return { error: dateError }
     if (sewadars.length === 0) return { error: 'Please add at least one sewadar' }
 
-    const duplicates = await checkForDuplicates()
-    const overlaps = await checkForAttendanceOverlap()
+    const lockedDate = await checkJathaLockDates()
+    if (lockedDate) return { error: `Cannot submit: ${formatDateIndian(lockedDate)} is in a locked period` }
 
-    const allWarnings = []
-    if (duplicates.length > 0) {
-      duplicates.forEach(d => {
-        allWarnings.push({
-          type: 'error',
-          message: `${d.name} already has a jatha entry (${d.destination}) from ${formatDateIndian(d.existingFrom)} to ${formatDateIndian(d.existingTo)}`
-        })
-      })
-    }
-    if (overlaps.length > 0) {
-      overlaps.forEach(o => {
-        allWarnings.push({
-          type: 'warning',
-          message: `${o.name} has ${o.dutyType} attendance on ${formatDateIndian(o.sessionDate)}`
-        })
-      })
-    }
-    return { warnings: allWarnings }
+    const [dupResult, sessResult] = await Promise.all([
+      checkForDuplicates(),
+      checkForAttendanceOverlap()
+    ])
+
+    const allOverlapIds = new Set([...dupResult.overlappingIds, ...sessResult.overlappingIds])
+    const allOverlaps = [...dupResult.overlaps, ...sessResult.overlaps]
+
+    const validSewadars = sewadars.filter(s => !allOverlapIds.has(s.badge_number))
+    const skippedSewadars = sewadars.filter(s => allOverlapIds.has(s.badge_number))
+
+    return { validSewadars, skippedSewadars, overlaps: allOverlaps, overlappingIds: allOverlapIds }
+  }
+
+  const buildJathaOverlapExcelData = (overlaps) => {
+    return overlaps.map(o => ({
+      'Sewadar Name': o.name,
+      'Badge Number': o.badge,
+      'Jatha Centre': selectedJatha?.centre_name || '',
+      'Jatha Type': jathaType,
+      'From Date': formatDateIndian(fromDate),
+      'To Date': formatDateIndian(toDate),
+      'Conflict Type': o.type === 'JATHA_DUPLICATE' ? 'Jatha Duplicate' : 'Gate Session',
+      'Conflict Detail': o.type === 'JATHA_DUPLICATE'
+        ? `Already in jatha: ${o.destination} from ${formatDateIndian(o.existingFrom)} to ${formatDateIndian(o.existingTo)}`
+        : `Has ${o.dutyType} attendance on ${formatDateIndian(o.sessionDate)}`,
+      'Reason': o.type === 'JATHA_DUPLICATE'
+        ? `Overlapping jatha entry detected at ${o.destination}`
+        : `Overlapping gate session detected on ${formatDateIndian(o.sessionDate)}`
+    }))
   }
 
   const submitJathaAttendance = async () => {
     if (!selectedJatha) { toast.error('Please select a jatha'); return }
     
-    // Check required remarks for jatha_home
     if (jathaType === 'jatha_home' && !remarks?.trim()) {
       toast.error('Remarks is required for Jatha Home')
       return
@@ -779,15 +925,9 @@ function JathaEntryForm({ onSuccess }) {
     const result = await validateAndCheck()
     if (result.error) { toast.error(result.error); return }
 
-    if (result.warnings && result.warnings.length > 0) {
-      const hasErrors = result.warnings.some(w => w.type === 'error')
-      if (hasErrors) {
-        setWarnings(result.warnings)
-        toast.error('Cannot submit: Duplicate jatha entries found')
-        return
-      }
-      setWarnings(result.warnings)
-      toast.error('Cannot submit: Please resolve warnings first')
+    if (result.overlappingIds.size > 0 && result.validSewadars.length === 0) {
+      setJathaOverlaps(result.overlaps)
+      toast.error('All sewadars have overlaps. Download the overlap report for details.')
       return
     }
 
@@ -795,7 +935,7 @@ function JathaEntryForm({ onSuccess }) {
     setSubmitResult(null)
 
     try {
-      const records = sewadars.map(sewadar => ({
+      const records = result.validSewadars.map(sewadar => ({
         jatha_id: selectedJatha.id,
         badge_number: sewadar.badge_number,
         sewadar_name: sewadar.sewadar_name,
@@ -807,13 +947,12 @@ function JathaEntryForm({ onSuccess }) {
         entered_by_name: profile.name,
       }))
 
-      const { data, error: insertError } = await supabase
+      const { error: insertError } = await supabase
         .from('jatha_attendance')
         .insert(records)
-        .select('id')
 
       if (insertError) throw insertError
-      toast.success(`${records.length} sewadars added to jatha!`)
+
       logAction(profile?.badge_number, profile?.name, 'JATHA_ENTRY', {
         count: records.length,
         jatha_id: selectedJatha?.id,
@@ -822,9 +961,21 @@ function JathaEntryForm({ onSuccess }) {
         from_date: fromDate,
         to_date: toDate
       })
-      setSubmitResult({ success: true, count: records.length })
-      setTimeout(() => { resetForm(); setSubmitResult(null) }, 2000)
 
+      if (result.overlappingIds.size > 0) {
+        setJathaOverlaps(result.overlaps)
+        setSubmitResult({ success: true, count: records.length, skipped: result.overlappingIds.size })
+        toast.success(`${records.length} sewadars added. ${result.overlappingIds.size} skipped due to overlap.`)
+        setTimeout(() => {
+          resetForm()
+          setSubmitResult(null)
+          setJathaOverlaps([])
+        }, 5000)
+      } else {
+        toast.success(`${records.length} sewadars added to jatha!`)
+        setSubmitResult({ success: true, count: records.length })
+        setTimeout(() => { resetForm(); setSubmitResult(null) }, 2000)
+      }
     } catch (err) {
       toast.error(err.message || 'Failed to save entries')
       setSubmitResult({ success: false, error: err.message })
@@ -849,7 +1000,7 @@ function JathaEntryForm({ onSuccess }) {
       <div className="duty-filters">
         {JATHA_TYPES.map(type => (
           <button key={type.value} className={`chip ${jathaType === type.value ? 'active' : ''}`}
-            onClick={() => { setJathaType(type.value); setSelectedJatha(null) }}>
+            onClick={() => { setJathaType(type.value); setSelectedJatha(null); setJathaOverlaps([]) }}>
             {type.label}
           </button>
         ))}
@@ -962,12 +1113,12 @@ function JathaEntryForm({ onSuccess }) {
                     <div className="entry-field">
                       <label>FROM DATE</label>
                       <input type="date" value={fromDate} max={getLocalDate()}
-                        onChange={e => { setFromDate(e.target.value); setWarnings([]) }} />
+                        onChange={e => { setFromDate(e.target.value); setWarnings([]); setJathaOverlaps([]) }} />
                     </div>
                     <div className="entry-field">
                       <label>TO DATE</label>
                       <input type="date" value={toDate} min={fromDate} max={getLocalDate()}
-                        onChange={e => { setToDate(e.target.value); setWarnings([]) }} />
+                        onChange={e => { setToDate(e.target.value); setWarnings([]); setJathaOverlaps([]) }} />
                     </div>
                   </div>
 
@@ -1007,11 +1158,40 @@ function JathaEntryForm({ onSuccess }) {
                     {submitting ? <><div className="spinner" style={{ width: 18, height: 18 }} /> Saving...</> :
                       <><CheckCircle size={18} /> Mark {sewadars.length} Sewadar(s) for Jatha</>}
                   </button>
+
                 </div>
               )}
             </>
           )}
         </>
+      )}
+
+      {jathaOverlaps.length > 0 && (
+        <div className="overlap-report">
+          <div className="overlap-report-header">
+            <AlertTriangle size={16} />
+            <span>{jathaOverlaps.length} sewadar(s) skipped due to overlap</span>
+          </div>
+          <div className="overlap-report-list">
+            {jathaOverlaps.slice(0, 5).map((o, i) => (
+              <div key={i} className="overlap-report-item">
+                <div className="overlap-name">{o.name} ({o.badge})</div>
+                <div className="overlap-reason">
+                  {o.type === 'JATHA_DUPLICATE'
+                    ? `Already in jatha at ${o.destination} (${formatDateIndian(o.existingFrom)} to ${formatDateIndian(o.existingTo)})`
+                    : `${o.dutyType} session on ${formatDateIndian(o.sessionDate)} overlaps`
+                  }
+                </div>
+              </div>
+            ))}
+            {jathaOverlaps.length > 5 && (
+              <div className="overlap-report-more">...and {jathaOverlaps.length - 5} more</div>
+            )}
+          </div>
+          <button className="download-overlap-btn" onClick={() => downloadOverlapExcel(buildJathaOverlapExcelData(jathaOverlaps), 'jatha')}>
+            <Download size={14} /> Download Overlap Report (.xlsx)
+          </button>
+        </div>
       )}
     </div>
   )
