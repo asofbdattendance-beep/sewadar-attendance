@@ -9,3 +9,5 @@ certs/
 supabase/.temp/
 *.pem
 AGENTS.md
+Dump - Excel Sheets
+scripts
