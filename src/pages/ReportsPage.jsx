@@ -986,7 +986,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       const userCentre = profile?.centre
       let query = supabase
         .from('jatha_attendance')
-        .select('badge_number, sewadar_name, sewadar_centre, from_date, to_date, remarks, jatha_id, jatha_master!inner(jatha_type, department)')
+        .select('badge_number, sewadar_name, sewadar_centre, from_date, to_date, remarks, jatha_id, jatha_master!inner(jatha_type, department, centre_name)')
         .gte('from_date', jathaFrom)
         .lte('from_date', jathaTo)
         .order('from_date', { ascending: false })
@@ -1002,11 +1002,11 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       const isAso = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
       let headers, rows
       if (isAso) {
-        headers = ['Date', 'Badge Number', 'Name', 'Home Centre', 'Jatha Type', 'Department', 'Remarks']
+        headers = ['Date', 'Badge Number', 'Name', 'Home Centre', 'Destination', 'Jatha Type', 'Department', 'Remarks']
         rows = []
         for (const j of records) {
           if (!j.from_date || !j.to_date) {
-            rows.push(['', j.badge_number, j.sewadar_name, j.sewadar_centre || '', j.jatha_master?.jatha_type || '', j.jatha_master?.department || '', j.remarks || ''])
+            rows.push(['', j.badge_number, j.sewadar_name, j.sewadar_centre || '', j.jatha_master?.centre_name || '', j.jatha_master?.jatha_type || '', j.jatha_master?.department || '', j.remarks || ''])
             continue
           }
           const from = new Date(j.from_date + 'T12:00:00')
@@ -1014,12 +1014,12 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           const cursor = new Date(from)
           while (cursor <= to) {
             const dateStr = cursor.toISOString().slice(0, 10)
-            rows.push([dateStr, j.badge_number, j.sewadar_name, j.sewadar_centre || '', j.jatha_master?.jatha_type || '', j.jatha_master?.department || '', j.remarks || ''])
+            rows.push([dateStr, j.badge_number, j.sewadar_name, j.sewadar_centre || '', j.jatha_master?.centre_name || '', j.jatha_master?.jatha_type || '', j.jatha_master?.department || '', j.remarks || ''])
             cursor.setDate(cursor.getDate() + 1)
           }
         }
       } else {
-        headers = ['Badge Number', 'Name', 'Home Centre', 'Jatha Type', 'Department', 'From Date', 'To Date', 'Days', 'Remarks']
+        headers = ['Badge Number', 'Name', 'Home Centre', 'Destination', 'Jatha Type', 'Department', 'From Date', 'To Date', 'Days', 'Remarks']
         rows = records.map(j => {
           const from = new Date(j.from_date + 'T12:00:00')
           const to = new Date(j.to_date + 'T12:00:00')
@@ -1028,6 +1028,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
             j.badge_number,
             j.sewadar_name,
             j.sewadar_centre || '',
+            j.jatha_master?.centre_name || '',
             j.jatha_master?.jatha_type || '',
             j.jatha_master?.department || '',
             j.from_date,

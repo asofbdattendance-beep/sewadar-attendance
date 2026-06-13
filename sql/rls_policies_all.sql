@@ -1151,6 +1151,7 @@ BEGIN
       j.from_date, j.to_date, j.remarks,
       j.entered_by_badge, j.entered_by_name, j.entered_at,
       jm.jatha_type, jm.department AS jatha_department,
+      jm.centre_name AS destination_centre,
       j.jatha_id
     FROM public.jatha_attendance j
     LEFT JOIN public.jatha_master jm ON j.jatha_id = jm.id
