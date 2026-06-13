@@ -3,7 +3,7 @@ import { supabase, ROLES, formatDateIndian, formatTime12Hour, getLocalDate } fro
 import { useAuth } from '../context/AuthContext'
 import { 
   ChevronDown, ChevronRight, ChevronUp, Calendar, Download, FileSpreadsheet, FileText, 
-  Users, UserCheck, Clock, AlertTriangle, UserX, Building, MapPin, RefreshCw, Settings, CheckCircle
+  Users, UserCheck, Clock, AlertTriangle, UserX, Building, MapPin, RefreshCw, Settings, CheckCircle, Truck
 } from 'lucide-react'
 
 const REPORTS = {
@@ -24,6 +24,15 @@ const REPORTS = {
     icon: Users,
     subReports: [
       { id: 'aso_overview', label: 'Overview', icon: Calendar },
+    ]
+  },
+  DOWNLOADS: {
+    id: 'downloads',
+    label: 'Downloads',
+    icon: Download,
+    subReports: [
+      { id: 'daily_attendance', label: 'Daily Attendance', icon: Calendar, description: 'Daily attendance record showing duty type (DAILY/SATSCAN/NIGHT) for each sewadar across selected dates' },
+      { id: 'jatha_attendance_report', label: 'Jatha Attendance', icon: Truck, description: 'Jatha attendance record showing destination and duration for each sewadar across selected dates' },
     ]
   }
 }
@@ -314,6 +323,8 @@ export default function ReportsPage() {
   const [lateThreshold, setLateThreshold] = useState(LATE_THRESHOLD_DEFAULT)
   const [showSettings, setShowSettings] = useState(false)
   const [asoTreeData, setAsoTreeData] = useState([])
+  const [centresList, setCentresList] = useState([])
+  const [centreFilter, setCentreFilter] = useState('')
 
   const currentCategory = Object.values(REPORTS).find(c => c.id === activeCategory)
   const currentSubReports = currentCategory?.subReports || []
@@ -390,6 +401,12 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   }, [activeReport, dateFrom, dateTo, lateThreshold, profile])
 
   useEffect(() => { fetchReport() }, [fetchReport])
+
+  useEffect(() => {
+    supabase.rpc('get_user_accessible_centres').then(({ data }) => {
+      setCentresList((data || []).map(r => ({ name: r.centre_name })))
+    }).catch(() => {})
+  }, [])
 
   // Query builders
   const buildSewadarQuery = (query) => {
@@ -904,9 +921,134 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     setAsoTreeData(rootCentres)
   }
 
+  // Download handlers for Downloads tab
+  const [dailyFrom, setDailyFrom] = useState(getLocalDate())
+  const [dailyTo, setDailyTo] = useState(getLocalDate())
+  const [jathaFrom, setJathaFrom] = useState(getLocalDate())
+  const [jathaTo, setJathaTo] = useState(getLocalDate())
+  const [downloading, setDownloading] = useState(null)
+
+  const escapeCsv = (val) => {
+    if (val === null || val === undefined) return ''
+    const str = String(val)
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+      return `"${str.replace(/"/g, '""')}"`
+    }
+    return str
+  }
+
+  const downloadDailyCSV = async () => {
+    setDownloading('daily')
+    try {
+      const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
+      const userCentre = profile?.centre
+      let query = supabase
+        .from('attendance_sessions')
+        .select('badge_number, sewadar_name, sewadar_centre, sewadar_dept, duty_type, in_date, in_time, out_date, out_time, status, centre')
+        .gte('in_date', dailyFrom)
+        .lte('in_date', dailyTo)
+        .order('in_date', { ascending: false })
+        .order('in_time', { ascending: false })
+        .limit(10000)
+
+      if (centreFilter) {
+        query = query.ilike('centre', centreFilter)
+      }
+
+      const { data: sessions } = await query
+      if (!sessions || sessions.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }
+
+      const headers = ['Date', 'Badge Number', 'Name', 'Home Centre', 'Department', 'Duty Type', 'IN Time', 'OUT Time', 'Status']
+      const rows = sessions.map(s => [
+        s.in_date,
+        s.badge_number,
+        s.sewadar_name,
+        s.sewadar_centre || s.centre || '',
+        s.sewadar_dept || '',
+        s.duty_type || '',
+        s.in_time || '',
+        s.out_time || '',
+        s.status || '',
+      ])
+
+      const csv = [headers.join(','), ...rows.map(r => r.map(escapeCsv).join(','))].join('\n')
+      downloadFile(csv, `daily_attendance_${dailyFrom}_to_${dailyTo}.csv`, 'text/csv')
+    } catch (err) {
+      console.error('Download error:', err)
+    }
+    setDownloading(null)
+  }
+
+  const downloadJathaCSV = async () => {
+    setDownloading('jatha')
+    try {
+      const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
+      const userCentre = profile?.centre
+      let query = supabase
+        .from('jatha_attendance')
+        .select('badge_number, sewadar_name, sewadar_centre, from_date, to_date, remarks, jatha_id, jatha_master!inner(jatha_type, department)')
+        .gte('from_date', jathaFrom)
+        .lte('from_date', jathaTo)
+        .order('from_date', { ascending: false })
+        .limit(10000)
+
+      if (centreFilter) {
+        query = query.ilike('sewadar_centre', centreFilter)
+      }
+
+      const { data: records } = await query
+      if (!records || records.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }
+
+      const isAso = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
+      let headers, rows
+      if (isAso) {
+        headers = ['Date', 'Badge Number', 'Name', 'Home Centre', 'Jatha Type', 'Department', 'Remarks']
+        rows = []
+        for (const j of records) {
+          if (!j.from_date || !j.to_date) {
+            rows.push(['', j.badge_number, j.sewadar_name, j.sewadar_centre || '', j.jatha_master?.jatha_type || '', j.jatha_master?.department || '', j.remarks || ''])
+            continue
+          }
+          const from = new Date(j.from_date + 'T12:00:00')
+          const to = new Date(j.to_date + 'T12:00:00')
+          const cursor = new Date(from)
+          while (cursor <= to) {
+            const dateStr = cursor.toISOString().slice(0, 10)
+            rows.push([dateStr, j.badge_number, j.sewadar_name, j.sewadar_centre || '', j.jatha_master?.jatha_type || '', j.jatha_master?.department || '', j.remarks || ''])
+            cursor.setDate(cursor.getDate() + 1)
+          }
+        }
+      } else {
+        headers = ['Badge Number', 'Name', 'Home Centre', 'Jatha Type', 'Department', 'From Date', 'To Date', 'Days', 'Remarks']
+        rows = records.map(j => {
+          const from = new Date(j.from_date + 'T12:00:00')
+          const to = new Date(j.to_date + 'T12:00:00')
+          const days = j.from_date && j.to_date ? Math.floor((to - from) / (1000 * 60 * 60 * 24)) + 1 : ''
+          return [
+            j.badge_number,
+            j.sewadar_name,
+            j.sewadar_centre || '',
+            j.jatha_master?.jatha_type || '',
+            j.jatha_master?.department || '',
+            j.from_date,
+            j.to_date,
+            days,
+            j.remarks || '',
+          ]
+        })
+      }
+
+      const csv = [headers.join(','), ...rows.map(r => r.map(escapeCsv).join(','))].join('\n')
+      downloadFile(csv, `jatha_attendance_${jathaFrom}_to_${jathaTo}.csv`, 'text/csv')
+    } catch (err) {
+      console.error('Download error:', err)
+    }
+    setDownloading(null)
+  }
+
   // Export handlers
   const handleExport = (format, mode = 'detailed') => {
-    if (activeReport !== 'aso_overview' && reportData.length === 0) return
+    if (activeReport !== 'aso_overview' && activeReport !== 'daily_attendance' && activeReport !== 'jatha_attendance_report' && reportData.length === 0) return
 
     let headers, rows
 
@@ -1070,21 +1212,25 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
         </div>
       </div>
 
-      {/* Date Range */}
+      {/* Date Range / Centre Filter */}
       <div className="report-filters">
-        <DateRangePicker
-          dateFrom={['late_coming', 'aso_overview'].includes(activeReport) ? dateFrom : today}
-          dateTo={['late_coming', 'aso_overview'].includes(activeReport) ? dateTo : today}
-          onDateFromChange={(val) => ['late_coming', 'aso_overview'].includes(activeReport) && setDateFrom(val)}
-          onDateToChange={(val) => setDateTo(val)}
-          singleDate={!['late_coming', 'aso_overview'].includes(activeReport)}
-        />
-        <div className="export-btn-group">
-          <ExportDropdown onExport={handleExport} loading={loading} label="Export" description="Centre + Sub Centre" />
-          {activeReport === 'aso_overview' && (
-            <ExportDropdown onExport={(format) => handleExport(format, 'summary')} loading={loading} label="Summary" description="Parent centres only" />
-          )}
-        </div>
+        {activeCategory === 'downloads' ? <span /> : (
+          <>
+            <DateRangePicker
+              dateFrom={['late_coming', 'aso_overview'].includes(activeReport) ? dateFrom : today}
+              dateTo={['late_coming', 'aso_overview'].includes(activeReport) ? dateTo : today}
+              onDateFromChange={(val) => ['late_coming', 'aso_overview'].includes(activeReport) && setDateFrom(val)}
+              onDateToChange={(val) => setDateTo(val)}
+              singleDate={!['late_coming', 'aso_overview'].includes(activeReport)}
+            />
+            <div className="export-btn-group">
+              <ExportDropdown onExport={handleExport} loading={loading} label="Export" description="Centre + Sub Centre" />
+              {activeReport === 'aso_overview' && (
+                <ExportDropdown onExport={(format) => handleExport(format, 'summary')} loading={loading} label="Summary" description="Parent centres only" />
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Main Tabs */}
@@ -1094,87 +1240,163 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
         tabs={Object.values(REPORTS).filter(t => t.id !== 'aso' || profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO)}
       />
 
-      {/* Sub Tabs */}
-      <SubReportTabs
-        activeSub={activeReport}
-        onSubChange={handleSubReportChange}
-        subReports={currentSubReports}
-      />
+      {activeCategory === 'downloads' ? (
+        <div className="downloads-content">
+          {/* Daily Attendance Download */}
+          <div className="download-card">
+            <div className="download-card-header">
+              <Calendar size={20} />
+              <div>
+                <h3>Daily Duty Report</h3>
+                <p className="download-desc">Daily attendance record showing duty type (DAILY/SATSCAN/NIGHT) for each sewadar across selected dates</p>
+              </div>
+            </div>
+            <div className="download-card-body">
+              <div className="drow centre-row">
+                <MapPin size={15} />
+                <select value={centreFilter} onChange={e => setCentreFilter(e.target.value)}>
+                  <option value="">All Centres (in scope)</option>
+                  {centresList.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                </select>
+              </div>
+              <div className="drow date-row">
+                <div className="dfield">
+                  <label>From</label>
+                  <input type="date" value={dailyFrom} onChange={e => setDailyFrom(e.target.value)} />
+                </div>
+                <span className="dsep">to</span>
+                <div className="dfield">
+                  <label>To</label>
+                  <input type="date" value={dailyTo} min={dailyFrom} onChange={e => setDailyTo(e.target.value)} />
+                </div>
+                <button className="dl-btn" onClick={downloadDailyCSV} disabled={downloading === 'daily'}>
+                  <Download size={16} />
+                  {downloading === 'daily' ? 'Downloading...' : 'Download CSV'}
+                </button>
+              </div>
+            </div>
+          </div>
 
-      {/* Report Title */}
-      <div className="report-title-bar">
-        <h3>{getReportTitle()}</h3>
-        <span className="report-count">{reportData.length} records</span>
-      </div>
-
-      {/* Summary Cards */}
-      {Object.keys(reportSummary).length > 0 && (
-        <div className="report-summary-grid">
-          {activeReport === 'present' && (
-            <>
-              <SummaryCard title="Present" value={reportSummary.total} icon={UserCheck} color="green" />
-              <SummaryCard title="PERMANENT" value={reportSummary.permanent} icon={CheckCircle} color="blue" />
-              <SummaryCard title="OPEN" value={reportSummary.open} icon={Users} color="gold" />
-            </>
-          )}
-          {activeReport === 'absenteeism' && (
-            <>
-              <SummaryCard title="Absent" value={reportSummary.total} icon={UserX} color="red" />
-              <SummaryCard title="PERMANENT" value={reportSummary.permanent} icon={CheckCircle} color="blue" />
-              <SummaryCard title="OPEN" value={reportSummary.open} icon={Users} color="gold" />
-            </>
-          )}
-          {activeReport === 'currently_inside' && (
-            <SummaryCard title="Currently Inside" value={reportSummary.total} icon={UserCheck} color="green" />
-          )}
-          {activeReport === 'gate_summary' && (
-            <>
-              <SummaryCard title="Total Records" value={reportSummary.total} icon={Clock} color="blue" />
-              <SummaryCard title="Closed" value={reportSummary.closed} icon={CheckCircle} color="green" />
-              <SummaryCard title="Open" value={reportSummary.open} icon={AlertTriangle} color="orange" />
-            </>
-          )}
-          {activeReport === 'late_coming' && (
-            <SummaryCard title="Late Comers" value={reportSummary.total} icon={AlertTriangle} color="orange" />
-          )}
-          {activeReport === 'missing_out' && (
-            <SummaryCard title="Missing OUT" value={reportSummary.total} icon={AlertTriangle} color="red" />
-          )}
-          {(activeReport === 'weekly_summary') && (
-            <>
-              <SummaryCard title="Days" value={reportSummary.totalDays} icon={Calendar} color="blue" />
-              <SummaryCard title="Total Present" value={reportSummary.totalPresent} icon={Users} color="green" />
-            </>
-          )}
-          {activeReport === 'department_wise' && (
-            <SummaryCard title="Departments" value={reportSummary.totalDepts} icon={Building} color="blue" />
-          )}
-          {activeReport === 'centre_wise' && (
-            <SummaryCard title="Centres" value={reportSummary.totalCentres} icon={MapPin} color="blue" />
-          )}
-          {activeReport === 'aso_overview' && (
-            <>
-              <SummaryCard title="Root Centres" value={reportSummary.totalRoots} icon={Building} color="blue" />
-              <SummaryCard title="Total Centres" value={reportSummary.totalCentres} icon={MapPin} color="green" />
-            </>
-          )}
+          {/* Jatha Attendance Download */}
+          <div className="download-card">
+            <div className="download-card-header">
+              <Truck size={20} />
+              <div>
+                <h3>Jatha Duty Report</h3>
+                <p className="download-desc">Jatha attendance record showing destination and duration for each sewadar across selected dates</p>
+              </div>
+            </div>
+            <div className="download-card-body">
+              <div className="drow centre-row">
+                <MapPin size={15} />
+                <select value={centreFilter} onChange={e => setCentreFilter(e.target.value)}>
+                  <option value="">All Centres (in scope)</option>
+                  {centresList.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                </select>
+              </div>
+              <div className="drow date-row">
+                <div className="dfield">
+                  <label>From</label>
+                  <input type="date" value={jathaFrom} onChange={e => setJathaFrom(e.target.value)} />
+                </div>
+                <span className="dsep">to</span>
+                <div className="dfield">
+                  <label>To</label>
+                  <input type="date" value={jathaTo} min={jathaFrom} onChange={e => setJathaTo(e.target.value)} />
+                </div>
+                <button className="dl-btn" onClick={downloadJathaCSV} disabled={downloading === 'jatha'}>
+                  <Download size={16} />
+                  {downloading === 'jatha' ? 'Downloading...' : 'Download CSV'}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
-      )}
-
-      {/* Report Content */}
-      {loading ? (
-        <div className="report-loading">
-          <RefreshCw size={24} className="spin" />
-          <p>Loading report...</p>
-        </div>
-      ) : activeReport === 'aso_overview' ? (
-        <AsoOverviewTree centres={asoTreeData} loading={false} />
       ) : (
-        <ReportTable
-          headers={getTableHeaders()}
-          rows={reportData}
-          emptyMessage="No data available for selected filters"
-        />
+        <>
+          {/* Sub Tabs */}
+          <SubReportTabs
+            activeSub={activeReport}
+            onSubChange={handleSubReportChange}
+            subReports={currentSubReports}
+          />
+
+          {/* Report Title */}
+          <div className="report-title-bar">
+            <h3>{getReportTitle()}</h3>
+            <span className="report-count">{reportData.length} records</span>
+          </div>
+
+          {/* Summary Cards */}
+          {Object.keys(reportSummary).length > 0 && (
+            <div className="report-summary-grid">
+              {activeReport === 'present' && (
+                <>
+                  <SummaryCard title="Present" value={reportSummary.total} icon={UserCheck} color="green" />
+                  <SummaryCard title="PERMANENT" value={reportSummary.permanent} icon={CheckCircle} color="blue" />
+                  <SummaryCard title="OPEN" value={reportSummary.open} icon={Users} color="gold" />
+                </>
+              )}
+              {activeReport === 'absenteeism' && (
+                <>
+                  <SummaryCard title="Absent" value={reportSummary.total} icon={UserX} color="red" />
+                  <SummaryCard title="PERMANENT" value={reportSummary.permanent} icon={CheckCircle} color="blue" />
+                  <SummaryCard title="OPEN" value={reportSummary.open} icon={Users} color="gold" />
+                </>
+              )}
+              {activeReport === 'currently_inside' && (
+                <SummaryCard title="Currently Inside" value={reportSummary.total} icon={UserCheck} color="green" />
+              )}
+              {activeReport === 'gate_summary' && (
+                <>
+                  <SummaryCard title="Total Records" value={reportSummary.total} icon={Clock} color="blue" />
+                  <SummaryCard title="Closed" value={reportSummary.closed} icon={CheckCircle} color="green" />
+                  <SummaryCard title="Open" value={reportSummary.open} icon={AlertTriangle} color="orange" />
+                </>
+              )}
+              {activeReport === 'late_coming' && (
+                <SummaryCard title="Late Comers" value={reportSummary.total} icon={AlertTriangle} color="orange" />
+              )}
+              {activeReport === 'missing_out' && (
+                <SummaryCard title="Missing OUT" value={reportSummary.total} icon={AlertTriangle} color="red" />
+              )}
+              {(activeReport === 'weekly_summary') && (
+                <>
+                  <SummaryCard title="Days" value={reportSummary.totalDays} icon={Calendar} color="blue" />
+                  <SummaryCard title="Total Present" value={reportSummary.totalPresent} icon={Users} color="green" />
+                </>
+              )}
+              {activeReport === 'department_wise' && (
+                <SummaryCard title="Departments" value={reportSummary.totalDepts} icon={Building} color="blue" />
+              )}
+              {activeReport === 'centre_wise' && (
+                <SummaryCard title="Centres" value={reportSummary.totalCentres} icon={MapPin} color="blue" />
+              )}
+              {activeReport === 'aso_overview' && (
+                <>
+                  <SummaryCard title="Root Centres" value={reportSummary.totalRoots} icon={Building} color="blue" />
+                  <SummaryCard title="Total Centres" value={reportSummary.totalCentres} icon={MapPin} color="green" />
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Report Content */}
+          {loading ? (
+            <div className="report-loading">
+              <RefreshCw size={24} className="spin" />
+              <p>Loading report...</p>
+            </div>
+          ) : activeReport === 'aso_overview' ? (
+            <AsoOverviewTree centres={asoTreeData} loading={false} />
+          ) : (
+            <ReportTable
+              headers={getTableHeaders()}
+              rows={reportData}
+              emptyMessage="No data available for selected filters"
+            />
+          )}
+        </>
       )}
 
       {/* Settings Modal */}

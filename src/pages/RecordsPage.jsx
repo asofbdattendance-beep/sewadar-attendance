@@ -95,13 +95,6 @@ function JathaCard({ session, onDelete }) {
             </div>
           </div>
           <div className="jatha-detail">
-            <MapPin size={14} />
-            <div>
-              <span className="jatha-detail-label">Destination</span>
-              <span className="jatha-detail-value">{session.centre || 'Unknown'}</span>
-            </div>
-          </div>
-          <div className="jatha-detail">
             <Briefcase size={14} />
             <div>
               <span className="jatha-detail-label">Department</span>
@@ -272,7 +265,7 @@ function JathaTable({ records, onDelete }) {
       <table className="records-table">
         <thead>
           <tr>
-            <th>Badge</th><th>Name</th><th>Sewadar Centre</th><th>Destination</th><th>Type</th><th>Department</th><th>From Date</th><th>To Date</th><th>Days</th><th>Remarks</th><th>Entered By</th><th style={{width:50}}></th>
+            <th>Badge</th><th>Name</th><th>Sewadar Centre</th><th>Type</th><th>Department</th><th>From Date</th><th>To Date</th><th>Days</th><th>Remarks</th><th>Entered By</th><th style={{width:50}}></th>
           </tr>
         </thead>
         <tbody>
@@ -281,7 +274,6 @@ function JathaTable({ records, onDelete }) {
               <td className="cell-badge">{r.badge_number || 'N/A'}</td>
               <td className="cell-name">{r.sewadar_name || 'Unknown'}</td>
               <td className="cell-centre">{r.sewadar_centre || '-'}</td>
-              <td className="cell-centre">{r.centre || '-'}</td>
               <td><span className={`type-pill ${r.jatha_type}`}>{getJathaTypeLabel(r.jatha_type)}</span></td>
               <td className="cell-centre">{r.jatha_department || '-'}</td>
               <td className="cell-date">{formatDateIndian(r.from_date)}</td>
@@ -421,7 +413,6 @@ export default function RecordsPage() {
         duty_type: 'JATHA',
         in_date: r.from_date,
         out_date: r.to_date,
-        centre: r.destination_centre,
         sewadar_centre: r.sewadar_centre || 'Unknown',
         jatha_type: r.jatha_type,
         jatha_department: r.jatha_department,
@@ -564,7 +555,8 @@ export default function RecordsPage() {
       })
       records = (data?.records || []).map(r => ({
         ...r, duty_type: 'JATHA', in_date: r.from_date, out_date: r.to_date,
-        centre: r.destination_centre, jatha_type: r.jatha_type, jatha_department: r.jatha_department,
+        sewadar_centre: r.sewadar_centre,
+        jatha_type: r.jatha_type, jatha_department: r.jatha_department,
       }))
     }
 
@@ -579,9 +571,9 @@ export default function RecordsPage() {
         r.in_scanner_name || 'Admin', r.out_scanner_name || ''
       ])
     } else {
-      headers = ['Badge', 'Name', 'Sewadar Centre', 'Destination', 'Type', 'Department', 'From Date', 'To Date', 'Remarks', 'Entered By']
+      headers = ['Badge', 'Name', 'Sewadar Centre', 'Type', 'Department', 'From Date', 'To Date', 'Remarks', 'Entered By']
       rows = records.map(r => [
-        r.badge_number, `"${r.sewadar_name}"`, r.sewadar_centre || '', r.centre || '',
+        r.badge_number, `"${r.sewadar_name}"`, r.sewadar_centre || '',
         getJathaTypeLabel(r.jatha_type), r.jatha_department || '',
         r.in_date, r.out_date, r.remarks || '', r.entered_by_name || ''
       ])
