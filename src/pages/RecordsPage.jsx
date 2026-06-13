@@ -88,26 +88,26 @@ function JathaCard({ session, onDelete }) {
       <div className="jatha-record-body">
         <div className="jatha-destination-dept">
           <div className="jatha-detail">
-            <MapPin size={14} />
-            <div>
-              <span className="jatha-detail-label">Home Centre</span>
-              <span className="jatha-detail-value">{session.sewadar_centre || 'Unknown'}</span>
+              <MapPin size={14} />
+              <div>
+                <span className="jatha-detail-label">Home Centre</span>
+                <span className="jatha-detail-value">{session.sewadar_centre || 'Unknown'}</span>
+              </div>
             </div>
-          </div>
-          <div className="jatha-detail">
-            <MapPin size={14} />
-            <div>
-              <span className="jatha-detail-label">Destination</span>
-              <span className="jatha-detail-value">{session.centre || 'Unknown'}</span>
+            <div className="jatha-detail">
+              <MapPin size={14} />
+              <div>
+                <span className="jatha-detail-label">Destination</span>
+                <span className="jatha-detail-value">{session.destination_centre || 'Unknown'}</span>
+              </div>
             </div>
-          </div>
-          <div className="jatha-detail">
-            <Briefcase size={14} />
-            <div>
-              <span className="jatha-detail-label">Department</span>
-              <span className="jatha-detail-value">{session.jatha_department || 'Jatha'}</span>
+            <div className="jatha-detail">
+              <Briefcase size={14} />
+              <div>
+                <span className="jatha-detail-label">Department</span>
+                <span className="jatha-detail-value">{session.jatha_department || 'Jatha'}</span>
+              </div>
             </div>
-          </div>
         </div>
         <div className="jatha-date-range">
           <Calendar size={14} />
@@ -281,7 +281,7 @@ function JathaTable({ records, onDelete }) {
               <td className="cell-badge">{r.badge_number || 'N/A'}</td>
               <td className="cell-name">{r.sewadar_name || 'Unknown'}</td>
               <td className="cell-centre">{r.sewadar_centre || '-'}</td>
-              <td className="cell-centre">{r.centre || '-'}</td>
+              <td className="cell-centre">{r.destination_centre || '-'}</td>
               <td><span className={`type-pill ${r.jatha_type}`}>{getJathaTypeLabel(r.jatha_type)}</span></td>
               <td className="cell-centre">{r.jatha_department || '-'}</td>
               <td className="cell-date">{formatDateIndian(r.from_date)}</td>
@@ -421,8 +421,8 @@ export default function RecordsPage() {
         duty_type: 'JATHA',
         in_date: r.from_date,
         out_date: r.to_date,
-        centre: r.destination_centre,
         sewadar_centre: r.sewadar_centre || 'Unknown',
+        destination_centre: r.destination_centre || 'Unknown',
         jatha_type: r.jatha_type,
         jatha_department: r.jatha_department,
       }))
@@ -564,7 +564,9 @@ export default function RecordsPage() {
       })
       records = (data?.records || []).map(r => ({
         ...r, duty_type: 'JATHA', in_date: r.from_date, out_date: r.to_date,
-        centre: r.destination_centre, jatha_type: r.jatha_type, jatha_department: r.jatha_department,
+        sewadar_centre: r.sewadar_centre,
+        destination_centre: r.destination_centre,
+        jatha_type: r.jatha_type, jatha_department: r.jatha_department,
       }))
     }
 
@@ -581,7 +583,8 @@ export default function RecordsPage() {
     } else {
       headers = ['Badge', 'Name', 'Sewadar Centre', 'Destination', 'Type', 'Department', 'From Date', 'To Date', 'Remarks', 'Entered By']
       rows = records.map(r => [
-        r.badge_number, `"${r.sewadar_name}"`, r.sewadar_centre || '', r.centre || '',
+        r.badge_number, `"${r.sewadar_name}"`, r.sewadar_centre || '',
+        r.destination_centre || '',
         getJathaTypeLabel(r.jatha_type), r.jatha_department || '',
         r.in_date, r.out_date, r.remarks || '', r.entered_by_name || ''
       ])

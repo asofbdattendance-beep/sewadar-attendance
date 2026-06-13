@@ -44,7 +44,7 @@ BEGIN
 
   -- aso has read-only permissions
   IF v_role = 'aso' THEN
-    RETURN p_perm_key IN ('allow_dashboard', 'allow_records', 'allow_reports');
+    RETURN p_perm_key IN ('allow_dashboard', 'allow_records', 'allow_reports', 'allow_jatha');
   END IF;
 
   -- Other roles: check the permissions JSONB column
@@ -325,42 +325,20 @@ CREATE POLICY jatha_write ON public.jatha_master
 -- ============================================================
 -- TABLE: jatha_attendance
 -- ============================================================
--- READ: records where either the destination centre (jatha_master.centre_name)
---   OR the sewadar's home centre is in the user's accessible centres
--- WRITE (incl. DELETE): SUPER_ADMIN can do all;
---   ADMIN / CENTRE_USER can modify records for their accessible centres' sewadars
+-- READ/WRITE: scoped by sewadar's home centre via badge_number only
+--   (destination centre column removed — was always blank for most records)
 ALTER TABLE public.jatha_attendance ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS jatha_att_read ON public.jatha_attendance;
 DROP POLICY IF EXISTS jatha_att_write ON public.jatha_attendance;
 
--- Add centre column (destination centre, captured at entry time for scoping)
-ALTER TABLE public.jatha_attendance DROP COLUMN IF EXISTS centre;
-ALTER TABLE public.jatha_attendance ADD COLUMN centre TEXT;
-
--- Backfill centre from jatha_master for existing records
--- (disable overlap trigger since we're just populating a new column)
-ALTER TABLE public.jatha_attendance DISABLE TRIGGER trg_check_jatha_overlap;
-ALTER TABLE public.attendance_sessions DISABLE TRIGGER trg_check_session_overlap;
-
-UPDATE public.jatha_attendance ja
-SET centre = jm.centre_name
-FROM public.jatha_master jm
-WHERE ja.jatha_id = jm.id AND ja.centre IS NULL;
-
-ALTER TABLE public.jatha_attendance ENABLE TRIGGER trg_check_jatha_overlap;
-ALTER TABLE public.attendance_sessions ENABLE TRIGGER trg_check_session_overlap;
-
 CREATE POLICY jatha_att_read ON public.jatha_attendance
   FOR SELECT TO authenticated
   USING (
     public.has_permission('allow_jatha')
-    AND (
-      centre IN (SELECT public.get_user_accessible_centres())
-      OR badge_number IN (
-        SELECT badge_number FROM public.sewadars
-        WHERE centre IN (SELECT public.get_user_accessible_centres())
-      )
+    AND badge_number IN (
+      SELECT badge_number FROM public.sewadars
+      WHERE centre IN (SELECT public.get_user_accessible_centres())
     )
   );
 
@@ -372,12 +350,9 @@ CREATE POLICY jatha_att_write ON public.jatha_attendance
       public.get_user_role() = 'super_admin'
       OR (
         public.get_user_role() IN ('admin', 'centre_user')
-        AND (
-          centre IN (SELECT public.get_user_accessible_centres())
-          OR badge_number IN (
-            SELECT badge_number FROM public.sewadars
-            WHERE centre IN (SELECT public.get_user_accessible_centres())
-          )
+        AND badge_number IN (
+          SELECT badge_number FROM public.sewadars
+          WHERE centre IN (SELECT public.get_user_accessible_centres())
         )
       )
     )
@@ -389,12 +364,9 @@ CREATE POLICY jatha_att_write ON public.jatha_attendance
       public.get_user_role() = 'super_admin'
       OR (
         public.get_user_role() IN ('admin', 'centre_user')
-        AND (
-          centre IN (SELECT public.get_user_accessible_centres())
-          OR badge_number IN (
-            SELECT badge_number FROM public.sewadars
-            WHERE centre IN (SELECT public.get_user_accessible_centres())
-          )
+        AND badge_number IN (
+          SELECT badge_number FROM public.sewadars
+          WHERE centre IN (SELECT public.get_user_accessible_centres())
         )
       )
     )
@@ -1074,7 +1046,7 @@ BEGIN
     FROM public.attendance_sessions s
     WHERE s.in_date >= COALESCE(p_date_from, '1900-01-01'::date)
       AND s.in_date <= COALESCE(p_date_to, '2999-12-31'::date)
-      AND (p_centre IS NULL OR s.centre = p_centre)
+      AND (p_centre IS NULL OR LOWER(TRIM(s.centre)) = LOWER(TRIM(p_centre)))
       AND (p_duty_type IS NULL OR s.duty_type = p_duty_type)
       AND (p_status IS NULL OR s.status = p_status)
       AND (
@@ -1175,27 +1147,27 @@ BEGIN
   WITH scoped AS (
     SELECT
       j.id, j.badge_number, j.sewadar_name,
-      j.sewadar_centre, j.centre AS destination_centre,
+      j.sewadar_centre,
       j.from_date, j.to_date, j.remarks,
       j.entered_by_badge, j.entered_by_name, j.entered_at,
       jm.jatha_type, jm.department AS jatha_department,
+      jm.centre_name AS destination_centre,
       j.jatha_id
     FROM public.jatha_attendance j
     LEFT JOIN public.jatha_master jm ON j.jatha_id = jm.id
     WHERE j.from_date >= COALESCE(p_date_from, '1900-01-01'::date)
       AND j.from_date <= COALESCE(p_date_to, '2999-12-31'::date)
-      AND (p_centre IS NULL OR j.centre = p_centre)
+      AND (p_centre IS NULL OR LOWER(REGEXP_REPLACE(j.sewadar_centre, '^\s+|\s+$', '', 'g')) = LOWER(REGEXP_REPLACE(p_centre, '^\s+|\s+$', '', 'g')))
       AND (p_jatha_type IS NULL OR jm.jatha_type = p_jatha_type)
       AND (
         p_search IS NULL
         OR j.badge_number ILIKE '%' || p_search || '%'
         OR j.sewadar_name ILIKE '%' || p_search || '%'
       )
-      AND (
-        j.centre IN (SELECT public.get_user_accessible_centres())
-        OR j.badge_number IN (
-          SELECT badge_number FROM public.sewadars
-          WHERE centre IN (SELECT public.get_user_accessible_centres())
+      AND j.badge_number IN (
+        SELECT badge_number FROM public.sewadars
+        WHERE LOWER(REGEXP_REPLACE(centre, '^\s+|\s+$', '', 'g')) IN (
+          SELECT LOWER(REGEXP_REPLACE(centre_name, '^\s+|\s+$', '', 'g')) FROM public.get_user_accessible_centres()
         )
       )
       AND public.has_permission('allow_jatha')
@@ -1273,3 +1245,15 @@ DROP INDEX IF EXISTS idx_jatha_unique_entry;
 CREATE UNIQUE INDEX idx_jatha_unique_entry
   ON public.jatha_attendance(badge_number, jatha_id, from_date, COALESCE(to_date, '1900-01-01'))
   WHERE badge_number IS NOT NULL;
+
+-- ============================================================
+-- v2.6: Jatha centre filter — home-centre only; removed destination column
+-- ============================================================
+-- Changes:
+--   1. Removed jatha_attendance.centre column (destination was always blank)
+--   2. get_jatha_records: filters by j.sewadar_centre (home centre)
+--   3. RLS jatha_att policies: removed centre IN (...) path, home-centre only
+--   4. Frontend INSERT: removed centre from payload
+--   5. UI/CSV: removed Destination column from JathaCard/JathaTable/exports
+--   6. All comparisons use REGEXP_REPLACE(..., '^\s+|\s+$', '', 'g') for
+--      robust whitespace stripping (\r, \n, \t, spaces)

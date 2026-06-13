@@ -11,3 +11,4 @@ supabase/.temp/
 AGENTS.md
 Dump - Excel Sheets
 scripts
+.env.tmp

@@ -1499,6 +1499,64 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .report-sub-tab:hover { border-color:var(--excel-green); color:var(--excel-green); }
 .report-sub-tab.active { background:var(--excel-green); color:white; border-color:var(--excel-green); }
 
+/* Downloads tab */
+.downloads-content {
+  padding:16px; display:flex; flex-direction:column; gap:16px;
+}
+.download-card {
+  background:white; border:1px solid var(--border); border-radius:12px; overflow:hidden;
+}
+.download-card-header {
+  display:flex; align-items:flex-start; gap:12px;
+  padding:16px; border-bottom:1px solid var(--border);
+  background:var(--bg);
+}
+.download-card-header h3 {
+  margin:0; font-size:15px; font-weight:700; color:var(--text-primary);
+}
+.download-desc {
+  margin:4px 0 0; font-size:12px; color:var(--text-muted); line-height:1.4;
+}
+.download-card-body {
+  padding:16px;
+}
+.drow {
+  display:flex; align-items:center; gap:8px;
+}
+.centre-row {
+  margin-bottom:14px;
+}
+.centre-row select {
+  padding:7px 10px; border:1px solid var(--border); border-radius:8px;
+  font-size:13px; background:white; color:var(--text-primary); min-width:160px;
+}
+.centre-row select:focus { outline:none; border-color:var(--excel-green); }
+.date-row {
+  gap:10px; flex-wrap:wrap;
+}
+.dfield {
+  display:flex; flex-direction:column; gap:2px;
+}
+.dfield label {
+  font-size:9px; font-weight:600; color:var(--text-muted); text-transform:uppercase;
+}
+.dfield input {
+  padding:8px 10px; border:1px solid var(--border); border-radius:8px;
+  font-size:13px; font-family:'Inter',sans-serif; background:var(--bg); min-width:130px;
+}
+.dfield input:focus { outline:none; border-color:var(--excel-green); background:white; }
+.dsep {
+  color:var(--text-muted); font-size:12px; margin-top:14px;
+}
+.dl-btn {
+  display:flex; align-items:center; gap:7px; padding:8px 18px;
+  background:var(--excel-green); color:white; border:none; border-radius:8px;
+  font-size:13px; font-weight:600; cursor:pointer; margin-top:14px;
+  transition:background 0.15s; white-space:nowrap;
+}
+.dl-btn:hover { background:var(--excel-green-hover); }
+.dl-btn:disabled { opacity:0.5; cursor:not-allowed; }
+
 .report-title-bar {
   display:flex; align-items:center; justify-content:space-between;
   padding:16px 16px 8px;

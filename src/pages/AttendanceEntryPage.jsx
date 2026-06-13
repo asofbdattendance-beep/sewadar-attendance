@@ -941,7 +941,6 @@ function JathaEntryForm({ onSuccess }) {
         sewadar_name: sewadar.sewadar_name,
         from_date: fromDate,
         to_date: toDate,
-        centre: selectedJatha.centre_name,
         remarks: remarks?.trim() || null,
         entered_by_badge: profile.badge_number,
         entered_by_name: profile.name,
