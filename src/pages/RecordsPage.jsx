@@ -493,10 +493,9 @@ export default function RecordsPage() {
       if (profile?.role !== ROLES.SUPER_ADMIN) {
         const recordDate = table === 'attendance_sessions' ? deletedRecord.in_date : deletedRecord.from_date
         if (recordDate) {
-          const recordMonth = new Date(recordDate + 'T12:00:00')
-          const now = new Date()
-          if (recordMonth.getFullYear() < now.getFullYear() || (recordMonth.getFullYear() === now.getFullYear() && recordMonth.getMonth() < now.getMonth())) {
-            toast.error('Cannot delete entries from previous months')
+          const { data: locked } = await supabase.rpc('is_date_locked', { p_date: recordDate })
+          if (locked) {
+            toast.error('Cannot delete entries from locked period')
             return
           }
         }
