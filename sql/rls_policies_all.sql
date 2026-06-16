@@ -150,20 +150,23 @@ SET search_path = ''
 AS $$
 DECLARE
   v_lock_date DATE;
+  v_prev_month_first DATE;
 BEGIN
+  -- Permanent rolling window: records before the 1st of the previous month are always locked
+  v_prev_month_first := (date_trunc('month', CURRENT_DATE - interval '1 month'))::DATE;
+  IF p_date < v_prev_month_first THEN
+    RETURN TRUE;
+  END IF;
+
+  -- Check lock date from settings
   SELECT value::DATE INTO v_lock_date FROM public.settings WHERE key = 'lock_date';
 
-  -- No lock date set
-  IF v_lock_date IS NULL THEN
+  -- No lock date set or lock hasn't activated yet
+  IF v_lock_date IS NULL OR CURRENT_DATE <= v_lock_date THEN
     RETURN FALSE;
   END IF;
 
-  -- Lock hasn't activated yet (current date is on or before lock date)
-  IF CURRENT_DATE <= v_lock_date THEN
-    RETURN FALSE;
-  END IF;
-
-  -- Lock is active: lock records from months before the current month
+  -- Lock is active: additionally lock records from months before the current month
   RETURN date_trunc('month', p_date) < date_trunc('month', CURRENT_DATE);
 END;
 $$;
@@ -336,9 +339,15 @@ CREATE POLICY jatha_att_read ON public.jatha_attendance
   FOR SELECT TO authenticated
   USING (
     public.has_permission('allow_jatha')
-    AND badge_number IN (
-      SELECT badge_number FROM public.sewadars
-      WHERE centre IN (SELECT public.get_user_accessible_centres())
+    AND (
+      sewadar_centre IN (SELECT public.get_user_accessible_centres())
+      OR (
+        sewadar_centre IS NULL
+        AND badge_number IN (
+          SELECT badge_number FROM public.sewadars
+          WHERE centre IN (SELECT public.get_user_accessible_centres())
+        )
+      )
     )
   );
 
@@ -349,10 +358,16 @@ CREATE POLICY jatha_att_write ON public.jatha_attendance
     AND (
       public.get_user_role() = 'super_admin'
       OR (
-        public.get_user_role() IN ('admin', 'centre_user')
-        AND badge_number IN (
-          SELECT badge_number FROM public.sewadars
-          WHERE centre IN (SELECT public.get_user_accessible_centres())
+        public.get_user_role() = 'admin'
+        AND (
+          sewadar_centre IN (SELECT public.get_user_accessible_centres())
+          OR (
+            sewadar_centre IS NULL
+            AND badge_number IN (
+              SELECT badge_number FROM public.sewadars
+              WHERE centre IN (SELECT public.get_user_accessible_centres())
+            )
+          )
         )
       )
     )
@@ -363,10 +378,16 @@ CREATE POLICY jatha_att_write ON public.jatha_attendance
     AND (
       public.get_user_role() = 'super_admin'
       OR (
-        public.get_user_role() IN ('admin', 'centre_user')
-        AND badge_number IN (
-          SELECT badge_number FROM public.sewadars
-          WHERE centre IN (SELECT public.get_user_accessible_centres())
+        public.get_user_role() = 'admin'
+        AND (
+          sewadar_centre IN (SELECT public.get_user_accessible_centres())
+          OR (
+            sewadar_centre IS NULL
+            AND badge_number IN (
+              SELECT badge_number FROM public.sewadars
+              WHERE centre IN (SELECT public.get_user_accessible_centres())
+            )
+          )
         )
       )
     )
@@ -449,7 +470,7 @@ CREATE POLICY sessions_delete ON public.attendance_sessions
     (
       public.get_user_role() = 'super_admin'
       OR (
-        public.get_user_role() IN ('admin', 'centre_user')
+        public.get_user_role() = 'admin'
         AND centre IN (SELECT public.get_user_accessible_centres())
       )
     )
@@ -699,8 +720,71 @@ ALTER TABLE public.attendance_sessions DROP COLUMN IF EXISTS sewadar_dept;
 ALTER TABLE public.attendance_sessions ADD COLUMN sewadar_dept TEXT;
 
 -- jatha_attendance: snapshot of sewadar's home centre at entry time
+-- Must drop policies first because they reference sewadar_centre
+DROP POLICY IF EXISTS jatha_att_read ON public.jatha_attendance;
+DROP POLICY IF EXISTS jatha_att_write ON public.jatha_attendance;
 ALTER TABLE public.jatha_attendance DROP COLUMN IF EXISTS sewadar_centre;
 ALTER TABLE public.jatha_attendance ADD COLUMN sewadar_centre TEXT;
+
+-- Recreate policies (matching the definitions above)
+CREATE POLICY jatha_att_read ON public.jatha_attendance
+  FOR SELECT TO authenticated
+  USING (
+    public.has_permission('allow_jatha')
+    AND (
+      sewadar_centre IN (SELECT public.get_user_accessible_centres())
+      OR (
+        sewadar_centre IS NULL
+        AND badge_number IN (
+          SELECT badge_number FROM public.sewadars
+          WHERE centre IN (SELECT public.get_user_accessible_centres())
+        )
+      )
+    )
+  );
+
+CREATE POLICY jatha_att_write ON public.jatha_attendance
+  FOR ALL TO authenticated
+  USING (
+    public.has_permission('allow_jatha')
+    AND (
+      public.get_user_role() = 'super_admin'
+      OR (
+        public.get_user_role() = 'admin'
+        AND (
+          sewadar_centre IN (SELECT public.get_user_accessible_centres())
+          OR (
+            sewadar_centre IS NULL
+            AND badge_number IN (
+              SELECT badge_number FROM public.sewadars
+              WHERE centre IN (SELECT public.get_user_accessible_centres())
+            )
+          )
+        )
+      )
+    )
+    AND (public.get_user_role() = 'super_admin' OR from_date IS NULL OR NOT public.is_date_locked(from_date))
+  )
+  WITH CHECK (
+    public.has_permission('allow_jatha')
+    AND (
+      public.get_user_role() = 'super_admin'
+      OR (
+        public.get_user_role() = 'admin'
+        AND (
+          sewadar_centre IN (SELECT public.get_user_accessible_centres())
+          OR (
+            sewadar_centre IS NULL
+            AND badge_number IN (
+              SELECT badge_number FROM public.sewadars
+              WHERE centre IN (SELECT public.get_user_accessible_centres())
+            )
+          )
+        )
+      )
+    )
+    AND (public.get_user_role() = 'super_admin' OR from_date IS NULL OR NOT public.is_date_locked(from_date))
+  );
 
 -- Trigger: auto-populate sewadar_centre + sewadar_dept on attendance_sessions INSERT
 CREATE OR REPLACE FUNCTION public.set_session_sewadar_details()
@@ -1164,13 +1248,12 @@ BEGIN
         OR j.badge_number ILIKE '%' || p_search || '%'
         OR j.sewadar_name ILIKE '%' || p_search || '%'
       )
-      AND j.badge_number IN (
-        SELECT badge_number FROM public.sewadars
-        WHERE LOWER(REGEXP_REPLACE(centre, '^\s+|\s+$', '', 'g')) IN (
+      AND (
+        j.sewadar_centre IS NOT NULL
+        AND LOWER(REGEXP_REPLACE(j.sewadar_centre, '^\s+|\s+$', '', 'g')) IN (
           SELECT LOWER(REGEXP_REPLACE(centre_name, '^\s+|\s+$', '', 'g')) FROM public.get_user_accessible_centres()
         )
       )
-      AND public.has_permission('allow_jatha')
   ),
   ordered AS (
     SELECT * FROM scoped
