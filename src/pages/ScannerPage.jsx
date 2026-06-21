@@ -318,6 +318,11 @@ const handleScan = useCallback(async (badge) => {
     const inTime = customTime?.time || now.toTimeString().slice(0, 5)
     const scanCentre = popupState.scanCentre || profile?.centre || sewadar.centre || 'UNKNOWN'
 
+    if (inDate > getLocalDate(new Date())) {
+      toast.error('Cannot scan IN with a future date')
+      return
+    }
+
     if (navigator.vibrate) navigator.vibrate([40])
 
     if (isOnline) {
