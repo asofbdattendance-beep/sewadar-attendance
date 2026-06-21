@@ -968,6 +968,39 @@ CREATE UNIQUE INDEX idx_one_open_per_badge
   WHERE status = 'OPEN';
 
 -- ============================================================
+-- TRIGGER: Prevent future-dated attendance sessions
+-- (Gate entries and scans cannot have in_date > today)
+-- Super admin bypasses this restriction
+-- Jatha entries are NOT affected — they can be future-dated
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.prevent_future_session()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  IF NEW.in_date > CURRENT_DATE AND public.get_user_role() != 'super_admin' THEN
+    RAISE EXCEPTION 'Cannot create attendance session with a future date';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_prevent_future_session ON public.attendance_sessions;
+CREATE TRIGGER trg_prevent_future_session
+  BEFORE INSERT OR UPDATE ON public.attendance_sessions
+  FOR EACH ROW
+  EXECUTE FUNCTION public.prevent_future_session();
+
+-- ============================================================
+-- CLEANUP: Delete existing future-dated attendance sessions
+-- (These were entered in error before the trigger existed)
+-- ============================================================
+DELETE FROM public.attendance_sessions
+WHERE in_date > CURRENT_DATE;
+
+-- ============================================================
 -- TRIGGER: Prevent overlapping attendance sessions
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.check_session_overlap()
