@@ -1373,3 +1373,102 @@ CREATE UNIQUE INDEX idx_jatha_unique_entry
 --   5. UI/CSV: removed Destination column from JathaCard/JathaTable/exports
 --   6. All comparisons use REGEXP_REPLACE(..., '^\s+|\s+$', '', 'g') for
 --      robust whitespace stripping (\r, \n, \t, spaces)
+
+-- ============================================================
+-- TABLE: jatha_schedules (header)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.jatha_schedules (
+  id BIGSERIAL PRIMARY KEY,
+  schedule_type TEXT NOT NULL CHECK (schedule_type IN ('bhati', 'specific')),
+  title TEXT NOT NULL,
+  month INT CHECK (month BETWEEN 1 AND 12),
+  year INT,
+  from_date DATE,
+  to_date DATE,
+  location TEXT,
+  created_by UUID REFERENCES public.users(auth_id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================
+-- TABLE: jatha_schedule_entries (row-level allocations)
+-- Must be created BEFORE jatha_schedules RLS policies since
+-- jatha_schedules_read references it in a subquery
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.jatha_schedule_entries (
+  id BIGSERIAL PRIMARY KEY,
+  schedule_id BIGINT NOT NULL REFERENCES public.jatha_schedules(id) ON DELETE CASCADE,
+  day_of_week INT CHECK (day_of_week BETWEEN 0 AND 6),
+  department TEXT,
+  jatha_type TEXT,
+  date DATE,
+  centre TEXT NOT NULL,
+  count INT NOT NULL DEFAULT 1 CHECK (count >= 0),
+  created_by UUID REFERENCES public.users(auth_id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Add jatha_type column to existing tables (idempotent)
+DO $$ BEGIN
+  ALTER TABLE public.jatha_schedule_entries ADD COLUMN IF NOT EXISTS jatha_type TEXT;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+ALTER TABLE public.jatha_schedule_entries ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS jatha_schedule_entries_read ON public.jatha_schedule_entries;
+DROP POLICY IF EXISTS jatha_schedule_entries_write ON public.jatha_schedule_entries;
+
+CREATE POLICY jatha_schedule_entries_read ON public.jatha_schedule_entries
+  FOR SELECT TO authenticated
+  USING (
+    public.get_user_role() IN ('super_admin', 'aso')
+    OR centre IN (SELECT public.get_user_accessible_centres())
+  );
+
+CREATE POLICY jatha_schedule_entries_write ON public.jatha_schedule_entries
+  FOR ALL TO authenticated
+  USING (
+    public.get_user_role() = 'super_admin'
+    OR (
+      centre IN (SELECT public.get_user_accessible_centres())
+      AND public.has_permission('allow_jatha')
+    )
+  )
+  WITH CHECK (
+    public.get_user_role() = 'super_admin'
+    OR (
+      centre IN (SELECT public.get_user_accessible_centres())
+      AND public.has_permission('allow_jatha')
+    )
+  );
+
+DROP INDEX IF EXISTS idx_jatha_schedule_entries_schedule;
+CREATE INDEX idx_jatha_schedule_entries_schedule ON public.jatha_schedule_entries(schedule_id);
+
+DROP INDEX IF EXISTS idx_jatha_schedule_entries_centre;
+CREATE INDEX idx_jatha_schedule_entries_centre ON public.jatha_schedule_entries(centre);
+
+-- Now enable RLS + create policies for jatha_schedules
+-- (jatha_schedule_entries table exists so subquery works)
+ALTER TABLE public.jatha_schedules ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS jatha_schedules_read ON public.jatha_schedules;
+DROP POLICY IF EXISTS jatha_schedules_write ON public.jatha_schedules;
+
+CREATE POLICY jatha_schedules_read ON public.jatha_schedules
+  FOR SELECT TO authenticated
+  USING (
+    public.get_user_role() IN ('super_admin', 'aso')
+    OR EXISTS (
+      SELECT 1 FROM public.jatha_schedule_entries e
+      WHERE e.schedule_id = id
+      AND e.centre IN (SELECT public.get_user_accessible_centres())
+    )
+  );
+
+CREATE POLICY jatha_schedules_write ON public.jatha_schedules
+  FOR ALL TO authenticated
+  USING (public.get_user_role() = 'super_admin')
+  WITH CHECK (public.get_user_role() = 'super_admin');

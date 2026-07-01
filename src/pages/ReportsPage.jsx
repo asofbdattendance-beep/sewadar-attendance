@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase, ROLES, formatDateIndian, formatTime12Hour, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import ScheduleManager from './reports/ScheduleManager'
 import { 
   ChevronDown, ChevronRight, ChevronUp, Calendar, Download, FileSpreadsheet, FileText, 
-  Users, UserCheck, Clock, AlertTriangle, UserX, Building, MapPin, RefreshCw, Settings, CheckCircle, Truck
+  Users, UserCheck, Clock, AlertTriangle, UserX, Building, MapPin, RefreshCw, Settings, CheckCircle, Truck,
+  Plus, Grid3X3, Save, X
 } from 'lucide-react'
 
 const REPORTS = {
@@ -33,6 +35,14 @@ const REPORTS = {
     subReports: [
       { id: 'daily_attendance', label: 'Daily Attendance', icon: Calendar, description: 'Daily attendance record showing duty type (DAILY/SATSCAN/NIGHT) for each sewadar across selected dates' },
       { id: 'jatha_attendance_report', label: 'Jatha Attendance', icon: Truck, description: 'Jatha attendance record showing destination and duration for each sewadar across selected dates' },
+    ]
+  },
+  SCHEDULES: {
+    id: 'schedules',
+    label: 'Schedules',
+    icon: Calendar,
+    subReports: [
+      { id: 'manage', label: 'Jatha Schedules', icon: Grid3X3 },
     ]
   }
 }
@@ -303,7 +313,7 @@ function AsoOverviewTree({ centres, loading }) {
 }
 
 export default function ReportsPage() {
-  const { profile } = useAuth()
+  const { profile, hasPermission } = useAuth()
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   
@@ -1215,7 +1225,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
       {/* Date Range / Centre Filter */}
       <div className="report-filters">
-        {activeCategory === 'downloads' ? <span /> : (
+        {activeCategory === 'downloads' || activeCategory === 'schedules' ? <span /> : (
           <>
             <DateRangePicker
               dateFrom={['late_coming', 'aso_overview'].includes(activeReport) ? dateFrom : today}
@@ -1238,7 +1248,11 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       <ReportTabs
         activeTab={activeCategory}
         onTabChange={handleCategoryChange}
-        tabs={Object.values(REPORTS).filter(t => t.id !== 'aso' || profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO)}
+        tabs={Object.values(REPORTS).filter(t => {
+          if (t.id === 'aso' && profile?.role !== ROLES.SUPER_ADMIN && profile?.role !== ROLES.ASO) return false
+          if (t.id === 'schedules' && !hasPermission('allow_jatha')) return false
+          return true
+        })}
       />
 
       {activeCategory === 'downloads' ? (
@@ -1313,6 +1327,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
             </div>
           </div>
         </div>
+      ) : activeCategory === 'schedules' ? (
+        <ScheduleManager profile={profile} />
       ) : (
         <>
           {/* Sub Tabs */}

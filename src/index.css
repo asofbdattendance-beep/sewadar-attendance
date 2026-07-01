@@ -2095,3 +2095,440 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .chip-dot.major { background:var(--purple); }
 .chip-dot.home { background:var(--green); }
 
+/* ========== MONTHLY PLANNER ========== */
+.planner-section {
+  margin-top:24px;
+}
+.planner-header {
+  display:flex; align-items:center; justify-content:space-between;
+  margin-bottom:4px;
+}
+.planner-header h3 {
+  font-size:17px; font-weight:700; color:var(--text-primary);
+  display:flex; align-items:center; gap:8px;
+}
+.planner-print-all {
+  display:flex; align-items:center; gap:6px;
+  padding:8px 16px; border:1px solid var(--border); border-radius:8px;
+  background:white; color:var(--text-secondary); font-size:13px; font-weight:600;
+  cursor:pointer; transition:all 0.15s;
+}
+.planner-print-all:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.planner-subtitle {
+  font-size:12px; color:var(--text-muted); margin-bottom:16px;
+}
+
+.planner-month {
+  background:white; border:1px solid var(--border); border-radius:12px;
+  overflow:hidden; margin-bottom:20px;
+}
+.planner-month-title {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:14px 18px; background:var(--bg);
+  border-bottom:1px solid var(--border);
+}
+.planner-month-label {
+  font-size:16px; font-weight:700; color:var(--text-primary);
+}
+.planner-month-count {
+  display:flex; gap:8px;
+}
+.planner-type-badge {
+  font-size:10px; font-weight:700; padding:3px 10px; border-radius:5px;
+  text-transform:uppercase; letter-spacing:0.04em;
+}
+.planner-type-badge.bhati { background:rgba(33,115,70,0.1); color:var(--excel-green); }
+.planner-type-badge.specific { background:rgba(37,99,235,0.1); color:var(--blue); }
+
+.planner-calendar {
+  width:100%; border-collapse:collapse; table-layout:fixed;
+}
+.planner-calendar thead th {
+  background:var(--excel-green); color:white;
+  padding:10px 6px; font-size:12px; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.06em;
+  text-align:center; border:1px solid var(--excel-green-hover);
+}
+.planner-calendar tbody td {
+  border:1px solid var(--border); vertical-align:top;
+  padding:6px; height:90px; width:14.28%;
+  background:white; transition:background 0.1s;
+}
+.planner-calendar tbody td.empty { background:var(--bg-secondary); }
+
+.planner-date {
+  font-size:13px; font-weight:700; color:var(--text-primary);
+  margin-bottom:4px;
+}
+.planner-tag {
+  font-size:10px; padding:2px 6px; margin:2px 0;
+  border-radius:4px; display:flex; justify-content:space-between; align-items:center;
+  line-height:1.4; cursor:default;
+}
+.bhati-tag { background:rgba(33,115,70,0.08); }
+.specific-tag { background:rgba(37,99,235,0.08); }
+.planner-tag-label {
+  color:var(--text-primary); font-weight:600;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:10px;
+}
+.planner-tag-count {
+  color:inherit; font-weight:700; font-size:11px;
+  flex-shrink:0; margin-left:4px;
+}
+.bhati-tag .planner-tag-count { color:var(--excel-green); }
+.specific-tag .planner-tag-count { color:var(--blue); }
+.planner-type-hint {
+  font-size:8px; font-weight:800; text-transform:uppercase;
+  background:rgba(0,0,0,0.08); padding:0 4px; border-radius:3px;
+  margin-right:3px; letter-spacing:0.04em;
+}
+.planner-dept-label {
+  font-size:9px; opacity:0.65; margin-left:2px; font-weight:500;
+}
+
+.planner-legend {
+  display:flex; flex-wrap:wrap; gap:12px; align-items:center;
+  margin-top:16px; font-size:12px; color:var(--text-light);
+  border-top:1px solid var(--border); padding-top:12px;
+}
+.planner-legend strong { font-weight:700; color:var(--text); }
+.planner-legend-item { display:inline-flex; align-items:center; gap:4px; }
+.type-badge-plan {
+  font-size:9px; font-weight:700; padding:1px 6px; border-radius:4px;
+  text-transform:uppercase; letter-spacing:0.03em;
+}
+.bhati-badge-plan { background:rgba(33,115,70,0.12); color:var(--excel-green); }
+.special-badge-plan { background:rgba(37,99,235,0.12); color:var(--blue); }
+
+@media print {
+  @page { size:landscape; margin:0.3in; }
+  html, body { width:100%; height:100%; margin:0; padding:0; }
+  * { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+
+  .navbar, .bottom-nav, .bottom-nav-item,
+  .toast-container, .toast,
+  .header, .header h2, .refresh-btn, .status-row, .header-date,
+  .report-filters, .report-main-tabs, .report-tab,
+  .report-sub-tabs, .report-sub-tab,
+  .report-title-bar, .report-count,
+  .downloads-content,
+  .schedules-refresh, .schedule-card,
+  .planner-print-all, .planner-header h3 svg,
+  .records-tabs, .records-tab,
+  .records-toolbar, .search-box-v2, .btn-icon,
+  .pinned-filter-bar, .filters-panel, .quick-filters,
+  .pull-refresh,
+  .scanner-status-bar, .manual-entry-btn, .scanner-processing,
+  .popup-overlay, .popup-card,
+  .tab-container, .tab-btn,
+  .superadmin-tabs, .superadmin-toolbar,
+  .modal-overlay, .modal-content { display:none !important; }
+
+  .planner-section { display:block !important; margin:0; padding:0; width:100%; max-width:100%; }
+  .planner-header h3 { font-size:20px; margin:0; }
+  .planner-subtitle { margin:4px 0 12px; font-size:13px; }
+  .planner-month { break-inside:avoid; border:1px solid #bbb; margin-bottom:16px; page-break-after:always; }
+  .planner-month:last-child { page-break-after:auto; }
+  .planner-month-title { padding:8px 12px; }
+  .planner-month-label { font-size:16px; }
+  .planner-calendar { width:100%; }
+  .planner-calendar tbody td { height:auto; min-height:70px; padding:4px; }
+  .planner-calendar thead th { font-size:11px; padding:6px; }
+  .planner-date { font-size:13px; font-weight:700; }
+  .planner-tag { font-size:8px; padding:1px 4px; margin:1px 0; }
+  .planner-type-hint { font-size:7px; }
+  .planner-legend { margin-top:8px; font-size:11px; }
+  .planner-type-badge { font-size:9px; }
+}
+
+/* ========== CENTRE SCHEDULE VIEW ========== */
+.centre-schedule {
+  display:flex; flex-direction:column; gap:20px;
+}
+.centre-schedule-month {
+  background:white; border:1px solid var(--border); border-radius:12px; overflow:hidden;
+}
+.centre-schedule-heading {
+  font-size:15px; font-weight:700; color:var(--excel-green);
+  padding:14px 16px; background:var(--bg);
+  border-bottom:1px solid var(--border);
+  text-align:center; letter-spacing:0.02em;
+}
+.centre-schedule-days {
+  display:flex; flex-direction:column;
+}
+.centre-schedule-day {
+  padding:12px 16px;
+  border-bottom:1px solid var(--border);
+}
+.centre-schedule-day:last-child { border-bottom:none; }
+.centre-day-label {
+  font-size:13px; font-weight:700; color:var(--text-primary);
+  margin-bottom:8px; text-transform:uppercase; letter-spacing:0.03em;
+}
+.centre-dept-list {
+  display:flex; flex-direction:column; gap:4px;
+  padding-left:8px;
+}
+.centre-dept-row {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:4px 8px; border-radius:6px;
+  font-size:13px;
+}
+.centre-dept-row:hover { background:var(--bg); }
+.centre-dept-name {
+  color:var(--text-primary); font-weight:500;
+}
+.centre-dept-count {
+  color:var(--excel-green); font-weight:700; font-size:15px;
+  background:rgba(33,115,70,0.08); padding:2px 12px; border-radius:6px;
+}
+
+/* ========== SCHEDULES PAGE ========== */
+.schedules-container {
+  padding:16px;
+}
+.schedules-header {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;
+  margin-bottom:8px;
+}
+.schedules-header h3 {
+  font-size:15px; font-weight:700; color:var(--text-primary);
+}
+.schedules-actions {
+  display:flex; gap:8px;
+}
+.schedules-actions .btn {
+  padding:8px 14px; font-size:12px; min-height:36px;
+}
+.schedules-refresh {
+  display:flex; justify-content:flex-end; margin-bottom:12px;
+}
+.schedules-refresh .icon-btn {
+  width:30px; height:30px;
+}
+.schedules-refresh .spin { animation:spin 1s linear infinite; }
+
+.schedules-list {
+  display:flex; flex-direction:column; gap:10px;
+}
+
+.schedule-card {
+  background:white; border:1px solid var(--border); border-radius:12px; overflow:hidden;
+}
+.schedule-card-header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:12px 16px; cursor:pointer; gap:12px;
+  transition:background 0.1s;
+}
+.schedule-card-header:hover { background:var(--bg); }
+.schedule-card-info {
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap; flex:1; min-width:0;
+}
+.schedule-type-badge {
+  font-size:9px; font-weight:700; padding:3px 8px; border-radius:4px;
+  text-transform:uppercase; letter-spacing:0.05em; white-space:nowrap;
+  background:rgba(33,115,70,0.1); color:var(--excel-green);
+}
+.schedule-type-badge.specific {
+  background:rgba(37,99,235,0.1); color:var(--blue);
+}
+.schedule-dept-chips {
+  font-size:10px; color:var(--text-muted); white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; max-width:200px;
+}
+.schedule-card-title {
+  font-size:14px; font-weight:600; color:var(--text-primary);
+}
+.schedule-card-meta {
+  font-size:11px; color:var(--text-muted);
+}
+.schedule-specific-location {
+  font-size:13px; font-weight:700; color:var(--text-primary); white-space:nowrap;
+}
+.schedule-specific-dept {
+  font-size:10px; font-weight:500; color:var(--text-muted);
+  background:rgba(37,99,235,0.08); padding:2px 6px; border-radius:4px;
+}
+.schedule-card-actions {
+  display:flex; align-items:center; gap:8px; flex-shrink:0;
+}
+.schedule-total-count {
+  font-size:11px; font-weight:600; color:var(--text-secondary);
+  background:var(--bg); padding:3px 10px; border-radius:8px; white-space:nowrap;
+}
+.schedule-delete-btn {
+  display:flex; align-items:center; justify-content:center;
+  width:28px; height:28px; border:none; background:none;
+  color:var(--text-muted); cursor:pointer; border-radius:6px;
+  transition:all 0.15s;
+}
+.schedule-delete-btn:hover { background:var(--red-bg); color:var(--error); }
+
+.schedule-card-body {
+  padding:0 16px 12px; border-top:1px solid var(--border);
+  background:var(--bg-secondary);
+}
+.schedule-empty {
+  padding:16px; text-align:center; color:var(--text-muted); font-size:13px;
+}
+
+.schedule-entry-table {
+  width:100%; border-collapse:collapse; font-size:12px; margin-top:8px;
+}
+.schedule-entry-table th {
+  text-align:left; padding:8px 10px;
+  font-size:10px; font-weight:600; color:var(--text-muted);
+  text-transform:uppercase; letter-spacing:0.05em;
+  border-bottom:1px solid var(--border);
+}
+.schedule-entry-table td {
+  padding:6px 10px; border-bottom:1px solid var(--border);
+  color:var(--text-primary);
+}
+.schedule-entry-table tbody tr:last-child td { border-bottom:none; }
+.schedule-entry-table tfoot td {
+  padding:8px 10px; font-size:11px;
+  border-top:2px solid var(--border-strong);
+  background:var(--bg);
+}
+.sched-num-col { text-align:center; width:60px; }
+.centre-total {
+  font-size:11px; color:var(--text-secondary); padding:1px 0;
+}
+
+/* Schedule Summary Dashboard */
+.schedule-summary {
+  display:flex; gap:10px; margin:8px 0 4px; flex-wrap:wrap;
+}
+.summary-stat {
+  display:flex; flex-direction:column; align-items:center; gap:2px;
+  flex:1; min-width:80px; padding:10px 8px;
+  background:white; border:1px solid var(--border); border-radius:10px;
+}
+.summary-stat .stat-value {
+  font-size:20px; font-weight:800; color:var(--text-primary); line-height:1;
+}
+.summary-stat .stat-label {
+  font-size:9px; font-weight:600; color:var(--text-muted);
+  text-transform:uppercase; letter-spacing:0.04em;
+}
+.summary-stat.bhati-stat { border-color:rgba(33,115,70,0.2); background:rgba(33,115,70,0.04); }
+.summary-stat.bhati-stat .stat-value { color:var(--excel-green); }
+.summary-stat.specific-stat { border-color:rgba(37,99,235,0.2); background:rgba(37,99,235,0.04); }
+.summary-stat.specific-stat .stat-value { color:var(--blue); }
+.summary-stat.pending-stat { border-color:rgba(234,179,8,0.25); background:rgba(234,179,8,0.05); }
+.summary-stat.pending-stat .stat-value { color:rgb(202,138,4); }
+
+.pending-months-bar {
+  display:flex; gap:6px; flex-wrap:wrap; margin:0 0 12px;
+}
+.pending-chip {
+  font-size:10px; font-weight:600; padding:3px 10px; border-radius:12px;
+  background:rgba(234,179,8,0.1); color:rgb(180,120,0); border:1px solid rgba(234,179,8,0.2);
+}
+
+/* Bhati Week Grid (new design) */
+.schedule-modal {
+  max-width:650px !important;
+}
+.schedule-form-row {
+  display:flex; gap:12px; margin-bottom:14px; flex-wrap:wrap;
+}
+.schedule-field {
+  display:flex; flex-direction:column; gap:4px; flex:1; min-width:120px;
+}
+.schedule-field label {
+  font-size:10px; font-weight:600; color:var(--text-muted); text-transform:uppercase;
+}
+.schedule-field input,
+.schedule-field select {
+  padding:8px 10px; border:1px solid var(--border); border-radius:8px;
+  font-size:13px; font-family:'Inter',sans-serif; background:white;
+}
+.schedule-field input:focus,
+.schedule-field select:focus { outline:none; border-color:var(--excel-green); }
+
+.bhati-week-grid {
+  display:flex; flex-direction:column; gap:10px;
+  max-height:420px; overflow-y:auto;
+  padding-right:4px;
+}
+.bhati-day-section {
+  background:var(--bg-secondary); border-radius:8px; border:1px solid var(--border); padding:8px 10px;
+}
+.bhati-day-header {
+  display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;
+}
+.bhati-day-label {
+  font-size:12px; font-weight:700; color:var(--text-primary); text-transform:uppercase; letter-spacing:0.03em;
+}
+.bhati-add-row-btn {
+  display:flex; align-items:center; gap:4px;
+  padding:4px 10px; border:1px dashed var(--border-strong); border-radius:6px;
+  background:white; color:var(--excel-green); font-size:11px; font-weight:600;
+  cursor:pointer; transition:all 0.15s;
+}
+.bhati-add-row-btn:hover { border-color:var(--excel-green); background:rgba(33,115,70,0.05); }
+.bhati-day-empty {
+  font-size:11px; color:var(--text-muted); padding:4px 0; text-align:center;
+}
+.bhati-row {
+  display:flex; align-items:center; gap:8px; margin-bottom:5px;
+}
+.bhati-row select {
+  flex:1; min-width:0;
+  padding:5px 8px; border:1px solid var(--border); border-radius:6px;
+  font-size:12px; font-family:'Inter',sans-serif; background:white;
+}
+.bhati-row select:focus { outline:none; border-color:var(--excel-green); }
+.bhati-centre-label {
+  flex:1; display:flex; align-items:center; gap:5px;
+  font-size:12px; font-weight:600; color:var(--text-primary);
+}
+.bhati-centre-label svg { color:var(--excel-green); flex-shrink:0; }
+.bhati-remove-btn {
+  display:flex; align-items:center; justify-content:center;
+  width:26px; height:26px; border:none; background:none;
+  color:var(--text-muted); cursor:pointer; border-radius:5px;
+  transition:all 0.15s; flex-shrink:0;
+}
+.bhati-remove-btn:hover { background:var(--red-bg); color:var(--error); }
+
+.sched-count-input {
+  width:55px; padding:5px 6px; border:1px solid var(--border);
+  border-radius:6px; font-size:12px; text-align:center;
+  font-family:'Inter',sans-serif; background:white; flex-shrink:0;
+}
+.sched-count-input:focus { outline:none; border-color:var(--excel-green); }
+.bhati-count-display {
+  width:55px; padding:5px 6px; font-size:13px; font-weight:700; text-align:center;
+  color:var(--text-primary); flex-shrink:0;
+}
+
+/* Bhati department tabs inside card */
+.bhati-dept-tabs {
+  display:flex; gap:4px; margin-bottom:10px; flex-wrap:wrap;
+}
+.bhati-dept-tab {
+  padding:5px 12px; border:1px solid var(--border); border-radius:14px;
+  background:white; font-size:11px; font-weight:600; color:var(--text-secondary);
+  cursor:pointer; transition:all 0.15s;
+}
+.bhati-dept-tab:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.bhati-dept-tab.active { background:var(--excel-green); color:white; border-color:var(--excel-green); }
+
+/* Save bar inside card */
+.bhati-save-bar {
+  padding:10px 0 0; display:flex; justify-content:flex-end;
+  border-top:1px solid var(--border); margin-top:10px;
+}
+
+/* Specific schedule centre list (replaces old grid) */
+.specific-rows {
+  display:flex; flex-direction:column; gap:6px;
+  max-height:350px; overflow-y:auto;
+  border:1px solid var(--border); border-radius:8px; padding:10px;
+}
+
