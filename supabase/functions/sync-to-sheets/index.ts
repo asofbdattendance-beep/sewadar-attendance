@@ -1,4 +1,3 @@
-import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { google } from 'npm:googleapis@126'
 
 const SHEET_ID_DATA = Deno.env.get('SHEET_ID_DATA')!
@@ -26,7 +25,7 @@ async function append(sheetId: string, values: string[]) {
   })
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   try {
     const { type, table, record, old_record } = await req.json()
 

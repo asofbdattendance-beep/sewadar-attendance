@@ -3,7 +3,7 @@ import { supabase, ROLES, ROLE_LABELS } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import { logAction } from '../lib/logger'
-import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search, Copy, CheckCircle, UserPlus, FileText, ChevronRight, ChevronDown, Calendar } from 'lucide-react'
+import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search, Copy, CheckCircle, UserPlus, FileText, ChevronRight, ChevronDown, Calendar, AlertTriangle, UserCheck } from 'lucide-react'
 
 const TABLES = [
   { id: 'centres', label: 'Centres', icon: MapPin, 
@@ -221,6 +221,7 @@ export default function SuperAdminPage() {
   const [generatedPassword, setGeneratedPassword] = useState('')
   const [showSuccess, setShowSuccess] = useState(false)
   const [successData, setSuccessData] = useState(null)
+  const [authCreationFailed, setAuthCreationFailed] = useState(false)
   const [expandedLog, setExpandedLog] = useState(null)
   const [lockDate, setLockDate] = useState('')
   const [newLockDate, setNewLockDate] = useState('')
@@ -393,6 +394,56 @@ export default function SuperAdminPage() {
     }
   }
 
+  const [creatingAuthId, setCreatingAuthId] = useState(null)
+
+  const handleCreateAuthUser = async (row) => {
+    if (!canWrite) { toast.error('You do not have write access'); return }
+    const pwd = row.temp_password
+    if (!pwd) { toast.error('No temp_password set for this user'); return }
+    if (row.auth_id) { toast.info('Auth user already exists'); return }
+
+    setCreatingAuthId(row.id)
+    const showManualFallback = (msg) => {
+      const sql = `-- Run this in Supabase Dashboard SQL Editor:\n-- 1. Copy the new user ID from Authentication → Users after creating\n-- 2. Run: UPDATE public.users SET auth_id = 'USER_ID_HERE', temp_password = NULL WHERE email = '${row.email}';`
+      toast.warning(
+        msg + ' You can also create the user manually:\n' +
+        '1. Go to Supabase Dashboard → Authentication → Users → Add User\n' +
+        '2. Email: ' + row.email + ', Password: ' + pwd + ', Auto-confirm: ON\n' +
+        '3. Copy the new user ID and run in SQL Editor:\n' +
+        `UPDATE public.users SET auth_id = 'USER_ID_HERE', temp_password = NULL WHERE email = '${row.email}';`
+      )
+    }
+
+    try {
+      const { error: fnError } = await supabase.functions.invoke('create-auth-user', {
+        body: {
+          email: row.email,
+          password: pwd,
+          user_metadata: {
+            badge_number: row.badge_number,
+            name: row.name,
+            role: row.role,
+            centre: row.centre
+          }
+        }
+      })
+      if (fnError) {
+        console.error('Auth user creation failed:', fnError)
+        let detail = ''
+        try { const body = await fnError.context.json(); detail = body?.error || '' } catch {}
+        showManualFallback(detail || 'Auth account could not be created.')
+      } else {
+        toast.success('Auth account created!')
+        fetchData('users')
+      }
+    } catch (fnErr) {
+      console.error('Auth function call failed:', fnErr)
+      showManualFallback('Edge function call failed.')
+    } finally {
+      setCreatingAuthId(null)
+    }
+  }
+
   const handleSubmit = async (e) => {
     if (e) e.preventDefault()
     if (!canWrite) { toast.error('You do not have write access'); return }
@@ -463,6 +514,8 @@ export default function SuperAdminPage() {
         logAction(profile?.badge_number, profile?.name, 'USER_CREATED', { name: formData.name, email: formData.email, badge: formData.badge_number, role: formData.role, centre: formData.centre })
         const pwd = generatedPassword || generatePassword(formData.centre, formData.badge_number)
 
+        let authFailed = false
+        let authErrorMsg = ''
         try {
           const { error: fnError } = await supabase.functions.invoke('create-auth-user', {
             body: {
@@ -478,15 +531,20 @@ export default function SuperAdminPage() {
           })
           if (fnError) {
             console.error('Auth user creation failed:', fnError)
-            toast.warning('Auth account could not be created. The user may not be able to log in.')
+            authFailed = true
+            try { const body = await fnError.context.json(); authErrorMsg = body?.error || '' } catch {}
+            toast.warning('Auth account could not be created: ' + (authErrorMsg || 'edge function error'))
           } else {
             toast.success('Auth account created')
           }
         } catch (fnErr) {
           console.error('Auth function call failed:', fnErr)
-          toast.warning('Auth account could not be created. The user may not be able to log in.')
+          authFailed = true
+          authErrorMsg = fnErr.message || ''
+          toast.warning('Auth account could not be created. Check that the edge function is deployed.')
         }
 
+        setAuthCreationFailed(authFailed)
         setSuccessData({
           name: formData.name,
           email: formData.email,
@@ -651,14 +709,15 @@ export default function SuperAdminPage() {
               {currentTable.columns.filter(col => activeTable !== 'logs' || col !== 'details').map(col => (
                 <th key={col}>{col.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</th>
               ))}
-              {activeTable !== 'logs' && canWrite && <th style={{ width: 80 }}>Actions</th>}
+              {activeTable === 'users' && <th style={{ width: 110 }}>Auth Status</th>}
+              {activeTable !== 'logs' && canWrite && <th style={{ width: 110 }}>Actions</th>}
             </tr>
           </thead>
           <tbody>
             {loading[activeTable] ? (
               <SkeletonRow cols={currentTable.columns.length} />
             ) : filteredData.length === 0 ? (
-              <tr><td colSpan={currentTable.columns.length + (activeTable !== 'logs' && canWrite ? 1 : 0)} style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>
+              <tr><td colSpan={currentTable.columns.length + (activeTable === 'users' ? 1 : 0) + (activeTable !== 'logs' && canWrite ? 1 : 0)} style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>
                 {search ? 'No matching records' : 'No data yet'}
               </td></tr>
             ) : (
@@ -718,6 +777,32 @@ export default function SuperAdminPage() {
                         )}
                       </td>
                     ))}
+                    {activeTable === 'users' && (
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {row.auth_id ? (
+                          <span style={{ color: 'var(--excel-green)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <UserCheck size={14} /> Linked
+                          </span>
+                        ) : row.temp_password ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ color: 'var(--orange)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 3 }}>
+                              <AlertTriangle size={13} /> Pending
+                            </span>
+                            <button
+                              className="btn-icon"
+                              onClick={() => handleCreateAuthUser(row)}
+                              disabled={creatingAuthId === row.id}
+                              title="Create Supabase Auth user"
+                              style={{ color: 'var(--excel-green)' }}
+                            >
+                              <UserPlus size={14} />
+                            </button>
+                          </div>
+                        ) : (
+                          <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>—</span>
+                        )}
+                      </td>
+                    )}
                     {activeTable !== 'logs' && canWrite && (
                       <td>
                         <div className="action-btns">
@@ -766,6 +851,30 @@ export default function SuperAdminPage() {
               <CheckCircle size={48} />
               <h3>User Created Successfully</h3>
             </div>
+            {authCreationFailed && (
+              <div style={{ background: 'var(--orange-bg)', border: '1px solid var(--orange)', borderRadius: 'var(--radius)', padding: '12px 16px', marginBottom: 16, fontSize: 13, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: 1, color: 'var(--orange)' }} />
+                <div>
+                  <strong style={{ color: 'var(--text-primary)' }}>Auth account not created</strong>
+                  <p style={{ margin: '4px 0 0', color: 'var(--text-muted)' }}>
+                    The user was added to the database but <strong>cannot log in yet</strong> because the auth account creation failed.
+                    Go to the <strong>Users</strong> tab, find this user, and click the <strong>Create Auth</strong> button to retry.
+                    If the button also fails, create the auth user manually in Supabase Dashboard:
+                  </p>
+                  <ol style={{ margin: '8px 0 0', paddingLeft: 20, color: 'var(--text-muted)', lineHeight: 1.8 }}>
+                    <li>Go to <strong>Supabase Dashboard → Authentication → Users → Add User</strong></li>
+                    <li>Email: <code style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3, fontSize: 12 }}>{successData.email}</code></li>
+                    <li>Password: <code style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3, fontSize: 12 }}>{successData.password}</code></li>
+                    <li>Auto-Confirm email: <strong>ON</strong></li>
+                    <li>After creating, copy the new user's ID and run in SQL Editor:<br />
+                      <code style={{ background: 'var(--bg)', padding: '3px 6px', borderRadius: 3, fontSize: 11, wordBreak: 'break-all' }}>
+                        UPDATE public.users SET auth_id = 'paste-user-id-here', temp_password = NULL WHERE email = '{successData.email}';
+                      </code>
+                    </li>
+                  </ol>
+                </div>
+              </div>
+            )}
 
             <div className="user-success-details">
               <div className="user-success-row"><span>Name</span><strong>{successData.name}</strong></div>

@@ -1,4 +1,3 @@
-import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { google } from 'npm:googleapis@126'
 
 const SHEET_IDS = {
@@ -83,7 +82,7 @@ async function archiveOne(
   console.log(`Cleared ${label}`)
 }
 
-serve(async () => {
+Deno.serve(async () => {
   try {
     await Promise.all([
       archiveOne(SHEET_IDS.DATA, ARCHIVE_SHEET_IDS.DATA, 'Live Data'),

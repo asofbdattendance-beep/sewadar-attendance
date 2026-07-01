@@ -1,5 +1,4 @@
-import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,7 +10,6 @@ function decodeJWTPayload(token: string): Record<string, unknown> | null {
   try {
     const parts = token.split('.')
     if (parts.length !== 3) return null
-    // Convert base64url to base64
     let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
     while (b64.length % 4) b64 += '='
     return JSON.parse(atob(b64))
@@ -20,7 +18,7 @@ function decodeJWTPayload(token: string): Record<string, unknown> | null {
   }
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -33,7 +31,6 @@ serve(async (req) => {
     })
   }
 
-  // Extract caller's JWT from Authorization header (auto-sent by supabase-js SDK)
   const authHeader = req.headers.get('Authorization') || ''
   const token = authHeader.replace('Bearer ', '')
   if (!token) {
@@ -52,7 +49,6 @@ serve(async (req) => {
     })
   }
 
-  // Verify caller is a super_admin using service-role client
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -80,15 +76,41 @@ serve(async (req) => {
     })
   }
 
-  const { data, error } = await supabase.auth.admin.createUser({
+  const { data: createData, error: createError } = await supabase.auth.admin.createUser({
     email,
     password,
     email_confirm: true,
     user_metadata
   })
 
-  if (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
+  if (createError) {
+    const { data: userList } = await supabase.auth.admin.listUsers()
+    const existing = userList?.users?.find(u => u.email === email)
+    if (existing) {
+      await supabase.auth.admin.updateUserById(existing.id, {
+        password,
+        email_confirm: true,
+        user_metadata
+      }).then(() => {}).catch(() => {})
+
+      const { error: linkError } = await supabase
+        .from('users')
+        .update({ auth_id: existing.id, temp_password: null })
+        .eq('email', email)
+
+      if (linkError) {
+        return new Response(JSON.stringify({ error: 'Auth user exists but link failed. Create manually in Supabase Dashboard.' }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        })
+      }
+
+      return new Response(JSON.stringify({ user_id: existing.id, linked: true }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    return new Response(JSON.stringify({ error: createError.message }), {
       status: 400,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })
@@ -96,20 +118,19 @@ serve(async (req) => {
 
   const { error: updateError } = await supabase
     .from('users')
-    .update({ auth_id: data.user.id, temp_password: null })
+    .update({ auth_id: createData.user.id, temp_password: null })
     .eq('email', email)
 
   if (updateError) {
     console.error('Failed to update user with auth_id:', updateError)
-    // Roll back: delete the auth user we just created
-    await supabase.auth.admin.deleteUser(data.user.id)
+    await supabase.auth.admin.deleteUser(createData.user.id)
     return new Response(JSON.stringify({ error: 'Failed to link auth user to profile' }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })
   }
 
-  return new Response(JSON.stringify({ user_id: data.user.id }), {
+  return new Response(JSON.stringify({ user_id: createData.user.id }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   })
 })
