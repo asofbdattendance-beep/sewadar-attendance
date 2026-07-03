@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, ROLES, getLocalDate } from '../../lib/supabase'
 import { Calendar, Plus, Grid3X3, MapPin, RefreshCw, Trash2, X, ChevronDown, ChevronUp, Save, Edit3 } from 'lucide-react'
 
+import CentreMonthlyPlanner from '../../components/reports/CentreMonthlyPlanner'
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const DAYS_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -737,154 +739,6 @@ function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrit
   )
 }
 
-const DEPT_COLORS = [
-  '#217346', '#C0392B', '#2980B9', '#F39C12', '#8E44AD',
-  '#16A085', '#D35400', '#2C3E50', '#27AE60', '#E74C3C',
-  '#3498DB', '#F1C40F', '#9B59B6', '#1ABC9C', '#E67E22',
-  '#34495E', '#2ECC71', '#F39C12', '#7F8C8D', '#2980B9'
-]
-function getDeptColor(dept) {
-  let h = 0
-  for (let i = 0; i < (dept || '').length; i++) h = ((h << 5) - h) + dept.charCodeAt(i)
-  return DEPT_COLORS[Math.abs(h) % DEPT_COLORS.length]
-}
-
-function getDaysInMonth(year, month) {
-  return new Date(year, month, 0).getDate()
-}
-function getFirstDayOfMonth(year, month) {
-  return new Date(year, month - 1, 1).getDay()
-}
-
-function CentreMonthlyPlanner({ bhatiEntries, specificEntries, loading }) {
-  const months = {}
-
-  for (const e of bhatiEntries) {
-    const key = `${e.year}-${e.month}`
-    if (!months[key]) months[key] = { year: e.year, month: e.month, label: `${MONTHS[e.month - 1]} ${e.year}`, bhati: {}, specific: [] }
-    if (!months[key].bhati[e.day_of_week]) months[key].bhati[e.day_of_week] = []
-    months[key].bhati[e.day_of_week].push({ department: e.department, count: e.count, jatha_type: e.jatha_type || 'major_centre', centre: e.centre, is_allocation: !!e.is_allocation })
-  }
-
-  for (const e of specificEntries) {
-    const s = e.jatha_schedules
-    if (!s || !s.from_date || !s.to_date) continue
-    const fromMonth = parseInt(s.from_date.split('-')[1])
-    const fromYear = parseInt(s.from_date.split('-')[0])
-    const toMonth = parseInt(s.to_date.split('-')[1])
-    const toYear = parseInt(s.to_date.split('-')[0])
-    for (let y = fromYear; y <= toYear; y++) {
-      const startM = y === fromYear ? fromMonth : 1
-      const endM = y === toYear ? toMonth : 12
-      for (let m = startM; m <= endM; m++) {
-        const key = `${y}-${m}`
-        if (!months[key]) months[key] = { year: y, month: m, label: `${MONTHS[m - 1]} ${y}`, bhati: {}, specific: [] }
-        months[key].specific.push({
-          from_date: s.from_date,
-          to_date: s.to_date,
-          location: s.location || s.title || '',
-          title: s.title || '',
-          department: e.department,
-          centre: e.centre,
-          count: e.count
-        })
-      }
-    }
-  }
-
-  const sortedMonths = Object.values(months).sort((a, b) => b.year - a.year || b.month - a.month)
-
-  if (loading) return <div className="report-loading"><RefreshCw size={24} className="spin" /><p>Loading planner...</p></div>
-  if (sortedMonths.length === 0) return null
-
-  return (
-    <div className="planner-section">
-      <div className="planner-header">
-        <h3><Calendar size={20} /> Monthly Planner</h3>
-        <button className="planner-print-all" onClick={() => window.print()}>🖨️ Print / PDF</button>
-      </div>
-      <p className="planner-subtitle">Consolidated schedule showing all Bhati duties and special events</p>
-
-      {sortedMonths.map(m => {
-        const monthKey = `${m.year}-${String(m.month).padStart(2, '0')}`
-        const daysInMonth = getDaysInMonth(m.year, m.month)
-        const firstDay = getFirstDayOfMonth(m.year, m.month)
-        const weeks = []
-        let date = 1
-        for (let w = 0; date <= daysInMonth; w++) {
-          const week = []
-          for (let d = 0; d < 7; d++) {
-            if ((w === 0 && d < (firstDay === 0 ? 6 : firstDay - 1)) || date > daysInMonth) {
-              week.push(null)
-            } else {
-              week.push(date++)
-            }
-          }
-          if (week.some(d => d !== null)) weeks.push(week)
-        }
-
-        const getSpecificForDate = (day) => {
-          const dateStr = `${m.year}-${String(m.month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-          return m.specific.filter(s => s.from_date <= dateStr && s.to_date >= dateStr)
-        }
-
-        return (
-          <div key={monthKey} className="planner-month">
-            <div className="planner-month-title">
-              <span className="planner-month-label">{m.label}</span>
-              <span className="planner-month-count">
-                {Object.values(m.bhati).flat().length > 0 && <span className="planner-type-badge bhati">{Object.values(m.bhati).flat().length} duties</span>}
-                {m.specific.length > 0 && <span className="planner-type-badge specific">{m.specific.length} events</span>}
-              </span>
-            </div>
-            <table className="planner-calendar">
-              <thead>
-                <tr><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th></tr>
-              </thead>
-              <tbody>
-                {weeks.map((week, wi) => (
-                  <tr key={wi}>
-                    {week.map((day, di) => {
-                      if (day === null) return <td key={di} className="planner-cell empty" />
-                      const jsDay = di + 1
-                      const dayIdx = jsDay % 7
-                      const bhatiItems = m.bhati[dayIdx] || []
-                      const specificItems = getSpecificForDate(day)
-                      const isEmpty = bhatiItems.length === 0 && specificItems.length === 0
-                      return (
-                        <td key={di} className={`planner-cell ${isEmpty ? 'empty' : ''}`}>
-                          <div className="planner-date">{day}</div>
-                          {bhatiItems.map((item, i) => (
-                            <div key={`b-${i}`} className="planner-tag bhati-tag" title={`${item.jatha_type} - ${item.department}`} style={{ borderLeftColor: getDeptColor(item.department) }}>
-                              <span className="planner-tag-label"><span className="planner-type-hint">{item.jatha_type === 'major_centre' ? 'Bhati' : item.jatha_type}</span>{item.department}</span>
-                              <span className="planner-tag-count">{item.count}</span>
-                            </div>
-                          ))}
-                          {specificItems.map((s, i) => (
-                            <div key={`s-${i}`} className="planner-tag specific-tag" title={`${s.location} - ${s.department || ''}`} style={{ borderLeftColor: getDeptColor(s.department || s.location) }}>
-                              <span className="planner-tag-label">{s.location}{s.department ? <span className="planner-dept-label">{s.department}</span> : null}</span>
-                              <span className="planner-tag-count">{s.count}</span>
-                            </div>
-                          ))}
-                        </td>
-                      )
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )
-      })}
-      <div className="planner-legend">
-        <strong>Abbreviations:</strong>
-        <span className="planner-legend-item"><span className="type-badge-plan bhati-badge-plan">Bhati</span> Major Centre duty</span>
-        <span className="planner-legend-item"><span className="type-badge-plan special-badge-plan">Special</span> One-off / event duty</span>
-      </div>
-    </div>
-  )
-}
-
 export default function ScheduleManager({ profile }) {
   const [loading, setLoading] = useState(true)
   const [schedules, setSchedules] = useState([])
@@ -1045,7 +899,7 @@ export default function ScheduleManager({ profile }) {
         </div>
       )}
 
-      <CentreMonthlyPlanner bhatiEntries={consolidatedEntries} specificEntries={specificConsolidated} loading={loading && schedules.length === 0} />
+      <CentreMonthlyPlanner profile={profile} />
 
       {canCreate && (
         <>
