@@ -1432,14 +1432,16 @@ CREATE POLICY jatha_schedule_entries_write ON public.jatha_schedule_entries
   USING (
     public.get_user_role() = 'super_admin'
     OR (
-      centre IN (SELECT public.get_user_accessible_centres())
+      public.get_user_role() IN ('admin', 'aso')
+      AND centre IN (SELECT public.get_user_accessible_centres())
       AND public.has_permission('allow_jatha')
     )
   )
   WITH CHECK (
     public.get_user_role() = 'super_admin'
     OR (
-      centre IN (SELECT public.get_user_accessible_centres())
+      public.get_user_role() IN ('admin', 'aso')
+      AND centre IN (SELECT public.get_user_accessible_centres())
       AND public.has_permission('allow_jatha')
     )
   );
@@ -1449,6 +1451,53 @@ CREATE INDEX idx_jatha_schedule_entries_schedule ON public.jatha_schedule_entrie
 
 DROP INDEX IF EXISTS idx_jatha_schedule_entries_centre;
 CREATE INDEX idx_jatha_schedule_entries_centre ON public.jatha_schedule_entries(centre);
+
+-- TABLE: jatha_schedule_allocations (soft distribution overlay, parent entry untouched)
+CREATE TABLE IF NOT EXISTS public.jatha_schedule_allocations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  entry_id BIGINT NOT NULL REFERENCES public.jatha_schedule_entries(id) ON DELETE CASCADE,
+  centre TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  created_by UUID REFERENCES auth.users(id)
+);
+
+ALTER TABLE public.jatha_schedule_allocations ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS jatha_schedule_allocations_read ON public.jatha_schedule_allocations;
+CREATE POLICY jatha_schedule_allocations_read ON public.jatha_schedule_allocations
+  FOR SELECT TO authenticated
+  USING (
+    centre IN (SELECT public.get_user_accessible_centres())
+    OR entry_id IN (
+      SELECT id FROM public.jatha_schedule_entries
+      WHERE centre IN (SELECT public.get_user_accessible_centres())
+    )
+  );
+
+DROP POLICY IF EXISTS jatha_schedule_allocations_write ON public.jatha_schedule_allocations;
+CREATE POLICY jatha_schedule_allocations_write ON public.jatha_schedule_allocations
+  FOR ALL TO authenticated
+  USING (
+    public.has_permission('allow_jatha')
+    AND entry_id IN (
+      SELECT id FROM public.jatha_schedule_entries
+      WHERE centre IN (SELECT public.get_user_accessible_centres())
+    )
+  )
+  WITH CHECK (
+    public.has_permission('allow_jatha')
+    AND entry_id IN (
+      SELECT id FROM public.jatha_schedule_entries
+      WHERE centre IN (SELECT public.get_user_accessible_centres())
+    )
+  );
+
+DROP INDEX IF EXISTS idx_jatha_schedule_allocations_entry;
+CREATE INDEX idx_jatha_schedule_allocations_entry ON public.jatha_schedule_allocations(entry_id);
+
+DROP INDEX IF EXISTS idx_jatha_schedule_allocations_centre;
+CREATE INDEX idx_jatha_schedule_allocations_centre ON public.jatha_schedule_allocations(centre);
 
 -- Now enable RLS + create policies for jatha_schedules
 -- (jatha_schedule_entries table exists so subquery works)
@@ -1470,5 +1519,17 @@ CREATE POLICY jatha_schedules_read ON public.jatha_schedules
 
 CREATE POLICY jatha_schedules_write ON public.jatha_schedules
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin')
-  WITH CHECK (public.get_user_role() = 'super_admin');
+  USING (
+    public.get_user_role() = 'super_admin'
+    OR (
+      public.get_user_role() IN ('admin', 'aso')
+      AND public.has_permission('allow_jatha')
+    )
+  )
+  WITH CHECK (
+    public.get_user_role() = 'super_admin'
+    OR (
+      public.get_user_role() IN ('admin', 'aso')
+      AND public.has_permission('allow_jatha')
+    )
+  );

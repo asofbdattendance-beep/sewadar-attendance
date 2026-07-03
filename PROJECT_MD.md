@@ -98,12 +98,7 @@ Both values from Supabase Dashboard → Project Settings → API.
 3. Deploy edge function: `npx supabase functions deploy create-auth-user`
 4. Set env var `INTERNAL_SECRET` in Supabase Dashboard → Edge Functions → create-auth-user
 
-**Note:** Two RPC functions (`get_open_session`, `close_session`) exist only in the live database. Extract them before deploying to a new project:
-```sql
--- Get these from your existing Supabase DB's SQL editor
-CREATE OR REPLACE FUNCTION public.get_open_session(p_badge TEXT) ...
-CREATE OR REPLACE FUNCTION public.close_session(p_session_id BIGINT, p_out_date DATE, ...) ...
-```
+> **Note:** `get_open_session` and `close_session` RPC functions are now included in `sql/rls_policies_all.sql` (lines 603, 640). The SQL file is the single source of truth.
 
 ### 2.5 Running Locally
 
@@ -402,10 +397,8 @@ Called from frontend via `supabase.rpc()`:
 | `get_sewadar_by_badge(p_badge TEXT)` | ✅ `rls_policies_all.sql:93` | Returns full sewadar record, bypasses RLS |
 | `search_sewadars_all(p_term TEXT)` | ✅ `rls_policies_all.sql:111` | Searches all sewadars by name/badge, 3-char minimum, bypasses RLS |
 | `get_sewadar_details(p_badge_numbers TEXT[])` | ✅ `rls_policies_all.sql:77` | Returns centre + department for records page |
-| `get_open_session(p_badge TEXT)` | ❌ DB only | Returns current OPEN session for a badge |
-| `close_session(p_session_id, ...)` | ❌ DB only | Updates session with OUT data, closes it |
-
-**Important:** `get_open_session` and `close_session` are called from ScannerPage but are NOT in `sql/rls_policies_all.sql`. On a fresh deploy, extract these from the existing Supabase database.
+| `get_open_session(p_badge TEXT)` | ✅ `rls_policies_all.sql:603` | Returns current OPEN session for a badge |
+| `close_session(p_session_id, ...)` | ✅ `rls_policies_all.sql:640` | Updates session with OUT data, closes it |
 
 ---
 
@@ -599,7 +592,7 @@ Logs viewable in ASO Panel (read-only, super_admin/aso only).
 2. **No photo capture**: Sewadar photos not implemented.
 3. **No batch operations**: Cannot delete/export multiple records at once.
 4. **No session timeout**: No auto-logout after inactivity.
-5. **get_open_session/close_session not in repo SQL**: Must be extracted from live DB for fresh deploys.
+5. ~~**get_open_session/close_session not in repo SQL**~~ ✅ Now included in `sql/rls_policies_all.sql` (lines 603, 640).
 6. **Centre geo-coordinates**: Latitude/longitude for 41 centres were defined in `sql/enable_geo.sql` (removed). Coordinates are already stored in the DB. If re-seeding is needed, extract from the `centres` table.
 7. **RLS policy severity**: `has_permission()` functions are SECURITY DEFINER — if they fail or return NULL, access is silently denied. Always test with a non-super_admin account after deploying role changes.
 

@@ -77,9 +77,9 @@ export function AuthProvider({ children }) {
 
   // Helper function to check permission
   const hasPermission = (permKey) => {
-    // super_admin bypasses all permission checks
-    if (profile?.role === ROLES.SUPER_ADMIN) {
-      return true
+    if (profile?.role === ROLES.SUPER_ADMIN) return true
+    if (profile?.role === ROLES.ASO) {
+      return ['allow_dashboard', 'allow_records', 'allow_reports', 'allow_jatha'].includes(permKey)
     }
     return !!permissions[permKey]
   }

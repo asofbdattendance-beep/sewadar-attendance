@@ -83,7 +83,7 @@ function BhatiSchedulerModal({ open, onClose, onSave, centres }) {
           .eq('department', selectedDept)
           .limit(1)
         if (existingEntries && existingEntries.length > 0) {
-          alert(`A Bhati schedule already exists for ${selectedDept} — ${MONTHS[month - 1]} ${year}`)
+          alert(`A Bhati schedule already exists for ${selectedDept} — ${MONTHS[month - 1]} ${year}. Edit the existing schedule to add or modify entries.`)
           setSaving(false)
           return
         }
@@ -323,18 +323,45 @@ function SpecificSchedulerModal({ open, onClose, onSave, centres }) {
   )
 }
 
-function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite }) {
+function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, canCreate }) {
   const entriesRef = useRef([])
   const newRowsRef = useRef({})
+  const distRef = useRef({})
+  const newDistRef = useRef({})
+  const savedDistRef = useRef({})
   const [saving, setSaving] = useState(false)
   const [changed, setChanged] = useState(false)
   const [renderTick, setRenderTick] = useState(0)
+  const [childMap, setChildMap] = useState({})
 
   useEffect(() => {
     entriesRef.current = [...entries]
     newRowsRef.current = {}
+    newDistRef.current = {}
     setChanged(false)
     setRenderTick(t => t + 1)
+    supabase.from('centres').select('name, parent_centre').then(({ data }) => {
+      const map = {}
+      for (const c of (data || [])) {
+        if (c.parent_centre) {
+          if (!map[c.parent_centre]) map[c.parent_centre] = []
+          map[c.parent_centre].push(c.name)
+        }
+      }
+      setChildMap(map)
+    })
+    const entryIds = entries.map(e => e.id)
+    if (entryIds.length > 0) {
+      supabase.from('jatha_schedule_allocations').select('*').in('entry_id', entryIds).then(({ data }) => {
+        const saved = {}
+        for (const a of (data || [])) {
+          if (!saved[a.entry_id]) saved[a.entry_id] = {}
+          saved[a.entry_id][a.centre] = a.count
+        }
+        savedDistRef.current = saved
+        setRenderTick(t => t + 1)
+      })
+    }
   }, [entries])
 
   const updateCount = (entryId, val) => {
@@ -350,6 +377,39 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite }) 
     else onRefresh()
   }
 
+  const toggleDistEntry = (entryId) => {
+    const entry = entriesRef.current.find(e => e.id === entryId)
+    if (!entry) return
+    const children = childMap[entry.centre] || []
+    if (children.length === 0) return
+    const cur = distRef.current[entryId]
+    if (cur) {
+      const next = { ...distRef.current }
+      delete next[entryId]
+      distRef.current = next
+    } else {
+      const saved = savedDistRef.current[entryId]
+      if (saved) {
+        distRef.current = { ...distRef.current, [entryId]: { ...saved } }
+      } else {
+        const dist = {}
+        for (const child of children) dist[child] = 0
+        distRef.current = { ...distRef.current, [entryId]: dist }
+      }
+    }
+    setChanged(true)
+    setRenderTick(t => t + 1)
+  }
+
+  const updateDistChild = (entryId, child, val) => {
+    const existing = distRef.current[entryId] || savedDistRef.current[entryId] || {}
+    const cur = { ...existing }
+    cur[child] = Math.max(0, parseInt(val) || 0)
+    distRef.current = { ...distRef.current, [entryId]: cur }
+    setChanged(true)
+    setRenderTick(t => t + 1)
+  }
+
   const addNewRow = (dayIdx) => {
     const rows = [...(newRowsRef.current[dayIdx] || []), { centre: '', count: 1 }]
     newRowsRef.current = { ...newRowsRef.current, [dayIdx]: rows }
@@ -360,6 +420,12 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite }) 
   const updateNewRow = (dayIdx, rowIdx, field, value) => {
     const rows = [...(newRowsRef.current[dayIdx] || [])]
     rows[rowIdx] = { ...rows[rowIdx], [field]: value }
+    if (field === 'centre') {
+      delete rows[rowIdx]._dist
+      const nd = { ...newDistRef.current }
+      if (nd[dayIdx]) { delete nd[dayIdx][rowIdx]; if (Object.keys(nd[dayIdx]).length === 0) delete nd[dayIdx] }
+      newDistRef.current = nd
+    }
     newRowsRef.current = { ...newRowsRef.current, [dayIdx]: rows }
     setRenderTick(t => t + 1)
   }
@@ -370,6 +436,39 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite }) 
     if (rows.length === 0) delete next[dayIdx]
     else next[dayIdx] = rows
     newRowsRef.current = next
+    const nd = { ...newDistRef.current }
+    if (nd[dayIdx]) { delete nd[dayIdx][rowIdx]; if (Object.keys(nd[dayIdx]).length === 0) delete nd[dayIdx] }
+    newDistRef.current = nd
+    setChanged(true)
+    setRenderTick(t => t + 1)
+  }
+
+  const toggleNewDist = (dayIdx, rowIdx) => {
+    const row = (newRowsRef.current[dayIdx] || [])[rowIdx]
+    if (!row) return
+    const children = childMap[row.centre] || []
+    if (children.length === 0) return
+    const nd = { ...newDistRef.current }
+    if (!nd[dayIdx]) nd[dayIdx] = {}
+    const cur = nd[dayIdx][rowIdx]
+    if (cur) {
+      delete nd[dayIdx][rowIdx]
+      if (Object.keys(nd[dayIdx]).length === 0) delete nd[dayIdx]
+    } else {
+      const dist = {}
+      for (const child of children) dist[child] = 0
+      nd[dayIdx][rowIdx] = dist
+    }
+    newDistRef.current = nd
+    setChanged(true)
+    setRenderTick(t => t + 1)
+  }
+
+  const updateNewDistChild = (dayIdx, rowIdx, child, val) => {
+    const nd = { ...newDistRef.current }
+    if (!nd[dayIdx]) nd[dayIdx] = {}
+    nd[dayIdx][rowIdx] = { ...(nd[dayIdx][rowIdx] || {}), [child]: Math.max(0, parseInt(val) || 0) }
+    newDistRef.current = nd
     setChanged(true)
     setRenderTick(t => t + 1)
   }
@@ -378,32 +477,74 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite }) 
     setSaving(true)
     try {
       const localEntries = entriesRef.current
-      const newRows = newRowsRef.current
+      const localDist = distRef.current
+      const localNewRows = newRowsRef.current
+      const localNewDist = newDistRef.current
+      const { data: { user } } = await supabase.auth.getUser()
 
-      const updates = localEntries.filter(e => e.count > 0)
-      for (const e of updates) {
-        const { error } = await supabase.from('jatha_schedule_entries').update({ count: e.count }).eq('id', e.id)
-        if (error) { alert('Failed to update: ' + error.message); console.error(error) }
-      }
-
-      const hasNewRows = Object.values(newRows).some(r => r.some(x => x.centre && x.count > 0))
-      if (hasNewRows) {
-        const { data: { user } } = await supabase.auth.getUser()
-        const inserts = []
-        for (const [dayIdx, rows] of Object.entries(newRows)) {
-          for (const r of rows) {
-            if (r.centre && r.count > 0) {
-              inserts.push({ schedule_id: schedule.id, day_of_week: Number(dayIdx), department: activeDept, centre: r.centre, count: r.count, created_by: user?.id })
-            }
+      for (const e of localEntries) {
+        const dist = localDist[e.id]
+        if (dist && Object.values(dist).some(v => v > 0)) {
+          const childSum = Object.values(dist).reduce((s, v) => s + v, 0)
+          if (childSum > e.count) {
+            alert(`Distribution for ${e.centre} sums to ${childSum}, exceeds available ${e.count}`)
+            setSaving(false); return
+          }
+          await supabase.from('jatha_schedule_allocations').delete().eq('entry_id', e.id)
+          const allocRows = Object.entries(dist).filter(([,c]) => c > 0).map(([child, count]) => ({
+            entry_id: e.id, centre: child, count, created_by: user?.id
+          }))
+          if (allocRows.length > 0) {
+            const { error } = await supabase.from('jatha_schedule_allocations').insert(allocRows)
+            if (error) alert('Failed to save distribution: ' + error.message)
           }
         }
-        if (inserts.length > 0) {
-          const { error } = await supabase.from('jatha_schedule_entries').insert(inserts)
-          if (error) { alert('Failed to add entries: ' + error.message); console.error(error) }
+      }
+
+      for (const [dayIdx, rows] of Object.entries(localNewRows)) {
+        for (let ri = 0; ri < rows.length; ri++) {
+          const r = rows[ri]
+          if (!r.centre || !r.count > 0) continue
+          const d = Number(dayIdx)
+          const { data: existing } = await supabase
+            .from('jatha_schedule_entries')
+            .select('id')
+            .eq('schedule_id', schedule.id)
+            .eq('day_of_week', d)
+            .eq('department', activeDept)
+            .eq('centre', r.centre)
+            .maybeSingle()
+          let entryId
+          if (existing) {
+            entryId = existing.id
+          } else {
+            const { data: ins, error } = await supabase.from('jatha_schedule_entries').insert({
+              schedule_id: schedule.id, day_of_week: d, department: activeDept, centre: r.centre, count: r.count, created_by: user?.id
+            }).select('id').single()
+            if (error) { alert('Failed to add entry: ' + error.message); continue }
+            entryId = ins.id
+          }
+          const dist = localNewDist[dayIdx]?.[ri]
+          if (dist && Object.values(dist).some(v => v > 0)) {
+            const childSum = Object.values(dist).reduce((s, v) => s + v, 0)
+            if (childSum > r.count) {
+              alert(`Distribution for ${r.centre} sums to ${childSum}, exceeds ${r.count}`)
+              setSaving(false); return
+            }
+            await supabase.from('jatha_schedule_allocations').delete().eq('entry_id', entryId)
+            const allocRows = Object.entries(dist).filter(([,c]) => c > 0).map(([child, count]) => ({
+              entry_id: entryId, centre: child, count, created_by: user?.id
+            }))
+            if (allocRows.length > 0) {
+              await supabase.from('jatha_schedule_allocations').insert(allocRows)
+            }
+          }
         }
       }
 
       newRowsRef.current = {}
+      newDistRef.current = {}
+      distRef.current = {}
       setChanged(false)
       setRenderTick(t => t + 1)
       onRefresh()
@@ -455,7 +596,7 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite }) 
             <div key={dayIdx} className="bhati-day-section">
               <div className="bhati-day-header">
                 <span className="bhati-day-label">{DAYS_FULL[dayIdx]}</span>
-                {canWrite && (
+                {canCreate && (
                   <button className="bhati-add-row-btn" onClick={() => addNewRow(dayIdx)}>
                     <Plus size={14} /> Add
                   </button>
@@ -465,29 +606,63 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite }) 
                 <p className="bhati-day-empty">—</p>
               ) : (
                 <>
-                  {dayEntries.map(e => (
-                    <div key={e.id} className="bhati-row">
+                  {dayEntries.map(e => {
+                    const children = childMap[e.centre] || []
+                    const hasDist = distRef.current[e.id] !== undefined || savedDistRef.current[e.id] !== undefined
+                    const dist = distRef.current[e.id] || savedDistRef.current[e.id]
+                    const childSum = dist ? Object.values(dist).reduce((s, v) => s + v, 0) : 0
+                    return (
+                    <div key={e.id} className={`bhati-row ${hasDist ? 'has-distribute' : ''}`}>
                       <span className="bhati-centre-label"><MapPin size={12} /> {e.centre}</span>
-                      {canWrite ? (
-                        <input type="number" min="0" className="sched-count-input" value={e.count} onChange={val => updateCount(e.id, val.target.value)} />
-                      ) : (
-                        <span className="bhati-count-display">{e.count}</span>
+                      <span className="bhati-count-display">{e.count}</span>
+                      {canWrite && children.length > 0 && (
+                        <button className={`bhati-dist-btn ${hasDist ? 'active' : ''}`} onClick={() => toggleDistEntry(e.id)} title="Distribute to child centres">⬇</button>
                       )}
-                      {canWrite && (
+                      {canCreate && (
                         <button className="bhati-remove-btn" onClick={() => deleteEntry(e.id)}><Trash2 size={14} /></button>
                       )}
+                      {hasDist && (
+                        <div className="bhati-dist-children">
+                          {children.map(child => (
+                            <div key={child} className="bhati-dist-child">
+                              <span className="bhati-dist-child-name">{child}</span>
+                              <input type="number" min="0" className="sched-count-input dist-input" value={dist[child] || 0} onChange={ev => updateDistChild(e.id, child, ev.target.value)} />
+                            </div>
+                          ))}
+                          <div className="bhati-dist-sum"><span>Total</span><span className={childSum !== e.count ? 'mismatch' : ''}>{childSum} / {e.count}</span></div>
+                        </div>
+                      )}
                     </div>
-                  ))}
-                  {canWrite && dayNewRows.map((r, ri) => (
-                    <div key={`new-${ri}`} className="bhati-row">
+                  )})}
+                  {canWrite && dayNewRows.map((r, ri) => {
+                    const children = childMap[r.centre] || []
+                    const hasDist = newDistRef.current[dayIdx]?.[ri] !== undefined
+                    const dist = newDistRef.current[dayIdx]?.[ri]
+                    const childSum = dist ? Object.values(dist).reduce((s, v) => s + v, 0) : 0
+                    return (
+                    <div key={`new-${ri}`} className={`bhati-row ${hasDist ? 'has-distribute' : ''}`}>
                       <select value={r.centre} onChange={e => updateNewRow(dayIdx, ri, 'centre', e.target.value)}>
                         <option value="">Select centre...</option>
                         {centres.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                       </select>
                       <input type="number" min="1" className="sched-count-input" value={r.count} onChange={e => updateNewRow(dayIdx, ri, 'count', Math.max(1, parseInt(e.target.value) || 1))} />
+                      {children.length > 0 && (
+                        <button className={`bhati-dist-btn ${hasDist ? 'active' : ''}`} onClick={() => toggleNewDist(dayIdx, ri)} title="Distribute to child centres">⬇</button>
+                      )}
                       <button className="bhati-remove-btn" onClick={() => removeNewRow(dayIdx, ri)}><X size={14} /></button>
+                      {hasDist && (
+                        <div className="bhati-dist-children">
+                          {children.map(child => (
+                            <div key={child} className="bhati-dist-child">
+                              <span className="bhati-dist-child-name">{child}</span>
+                              <input type="number" min="0" className="sched-count-input dist-input" value={dist[child] || 0} onChange={ev => updateNewDistChild(dayIdx, ri, child, ev.target.value)} />
+                            </div>
+                          ))}
+                          <div className="bhati-dist-sum"><span>Total</span><span className={childSum !== r.count ? 'mismatch' : ''}>{childSum} / {r.count}</span></div>
+                        </div>
+                      )}
                     </div>
-                  ))}
+                  )})}
                 </>
               )}
             </div>
@@ -506,7 +681,7 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite }) 
   )
 }
 
-function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrite }) {
+function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrite, canCreate }) {
   const [expanded, setExpanded] = useState(false)
   const isBhati = schedule.schedule_type === 'bhati'
   const totalCount = entries.reduce((s, e) => s + (e.count || 0), 0)
@@ -531,7 +706,7 @@ function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrit
         <div className="schedule-card-actions">
           <span className="schedule-total-count">{totalCount} Sewadars</span>
           {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-          {canWrite && (
+          {canCreate && (
             <button className="schedule-delete-btn" onClick={e => { e.stopPropagation(); onDelete(schedule.id) }} title="Delete schedule">
               <Trash2 size={14} />
             </button>
@@ -543,7 +718,7 @@ function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrit
           {entries.length === 0 ? (
             <p className="schedule-empty">No entries</p>
           ) : isBhati ? (
-            <BhatiScheduleView schedule={schedule} entries={entries} centres={centres} onRefresh={onRefresh} canWrite={canWrite} />
+            <BhatiScheduleView schedule={schedule} entries={entries} centres={centres} onRefresh={onRefresh} canWrite={canWrite} canCreate={canCreate} />
           ) : (
             <table className="schedule-entry-table">
               <thead>
@@ -562,6 +737,18 @@ function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrit
   )
 }
 
+const DEPT_COLORS = [
+  '#217346', '#C0392B', '#2980B9', '#F39C12', '#8E44AD',
+  '#16A085', '#D35400', '#2C3E50', '#27AE60', '#E74C3C',
+  '#3498DB', '#F1C40F', '#9B59B6', '#1ABC9C', '#E67E22',
+  '#34495E', '#2ECC71', '#F39C12', '#7F8C8D', '#2980B9'
+]
+function getDeptColor(dept) {
+  let h = 0
+  for (let i = 0; i < (dept || '').length; i++) h = ((h << 5) - h) + dept.charCodeAt(i)
+  return DEPT_COLORS[Math.abs(h) % DEPT_COLORS.length]
+}
+
 function getDaysInMonth(year, month) {
   return new Date(year, month, 0).getDate()
 }
@@ -576,7 +763,7 @@ function CentreMonthlyPlanner({ bhatiEntries, specificEntries, loading }) {
     const key = `${e.year}-${e.month}`
     if (!months[key]) months[key] = { year: e.year, month: e.month, label: `${MONTHS[e.month - 1]} ${e.year}`, bhati: {}, specific: [] }
     if (!months[key].bhati[e.day_of_week]) months[key].bhati[e.day_of_week] = []
-    months[key].bhati[e.day_of_week].push({ department: e.department, count: e.count, jatha_type: e.jatha_type || 'major_centre' })
+    months[key].bhati[e.day_of_week].push({ department: e.department, count: e.count, jatha_type: e.jatha_type || 'major_centre', centre: e.centre, is_allocation: !!e.is_allocation })
   }
 
   for (const e of specificEntries) {
@@ -668,13 +855,13 @@ function CentreMonthlyPlanner({ bhatiEntries, specificEntries, loading }) {
                         <td key={di} className={`planner-cell ${isEmpty ? 'empty' : ''}`}>
                           <div className="planner-date">{day}</div>
                           {bhatiItems.map((item, i) => (
-                            <div key={`b-${i}`} className="planner-tag bhati-tag" title={`${item.jatha_type} - ${item.department}`}>
+                            <div key={`b-${i}`} className="planner-tag bhati-tag" title={`${item.jatha_type} - ${item.department}`} style={{ borderLeftColor: getDeptColor(item.department) }}>
                               <span className="planner-tag-label"><span className="planner-type-hint">{item.jatha_type === 'major_centre' ? 'Bhati' : item.jatha_type}</span>{item.department}</span>
                               <span className="planner-tag-count">{item.count}</span>
                             </div>
                           ))}
                           {specificItems.map((s, i) => (
-                            <div key={`s-${i}`} className="planner-tag specific-tag" title={`${s.location} - ${s.department || ''}`}>
+                            <div key={`s-${i}`} className="planner-tag specific-tag" title={`${s.location} - ${s.department || ''}`} style={{ borderLeftColor: getDeptColor(s.department || s.location) }}>
                               <span className="planner-tag-label">{s.location}{s.department ? <span className="planner-dept-label">{s.department}</span> : null}</span>
                               <span className="planner-tag-count">{s.count}</span>
                             </div>
@@ -708,55 +895,52 @@ export default function ScheduleManager({ profile }) {
   const [showBhati, setShowBhati] = useState(false)
   const [showSpecific, setShowSpecific] = useState(false)
 
-  const canWrite = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
+  const canWrite = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO || profile?.role === ROLES.ADMIN
+  const canCreate = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
 
   const fetchSchedules = useCallback(async () => {
     setLoading(true)
     const [centresRes] = await Promise.all([
       supabase.rpc('get_user_accessible_centres')
     ])
-    setCentres((centresRes.data || []).map(r => ({ name: r.centre_name })))
+    const centresList = (centresRes.data || []).map(r => ({ name: r.centre_name }))
+    setCentres(centresList)
 
-    if (canWrite) {
-      const schedRes = await supabase.from('jatha_schedules').select('*').order('created_at', { ascending: false })
-      const schedData = schedRes.data || []
-      setSchedules(schedData)
-      if (schedData.length > 0) {
-        const { data: entData } = await supabase
-          .from('jatha_schedule_entries')
-          .select('*')
-          .in('schedule_id', schedData.map(s => s.id))
-          .order('centre')
-        const map = {}
-        for (const e of (entData || [])) {
-          if (!map[e.schedule_id]) map[e.schedule_id] = []
-          map[e.schedule_id].push(e)
-        }
-        setEntriesMap(map)
-      } else {
-        setEntriesMap({})
+    const schedRes = await supabase.from('jatha_schedules').select('*').order('created_at', { ascending: false })
+    const schedData = schedRes.data || []
+    setSchedules(schedData)
+    const map = {}
+    if (schedData.length > 0) {
+      const { data: entData } = await supabase
+        .from('jatha_schedule_entries')
+        .select('*')
+        .in('schedule_id', schedData.map(s => s.id))
+        .order('centre')
+      for (const e of (entData || [])) {
+        if (!map[e.schedule_id]) map[e.schedule_id] = []
+        map[e.schedule_id].push(e)
       }
-    } else {
-      const [bhatiRes, specificRes] = await Promise.all([
-        supabase.from('jatha_schedule_entries')
-          .select('*, jatha_schedules!inner(schedule_type, month, year)')
-          .eq('jatha_schedules.schedule_type', 'bhati')
-          .order('centre'),
-        supabase.from('jatha_schedule_entries')
-          .select('*, jatha_schedules!inner(schedule_type, from_date, to_date, location, title)')
-          .eq('jatha_schedules.schedule_type', 'specific')
-          .order('centre')
-      ])
-      const consolidated = (bhatiRes.data || []).map(e => ({
-        ...e,
-        month: e.jatha_schedules?.month,
-        year: e.jatha_schedules?.year
-      }))
-      setConsolidatedEntries(consolidated)
-      setSpecificConsolidated(specificRes.data || [])
     }
+    setEntriesMap(map)
+
+    const cn = []
+    const sp = []
+    for (const s of schedData) {
+      const entries = map[s.id] || []
+      if (s.schedule_type === 'bhati') {
+        for (const e of entries) {
+          cn.push({ ...e, month: s.month, year: s.year })
+        }
+      } else if (s.schedule_type === 'specific') {
+        for (const e of entries) {
+          sp.push({ ...e, jatha_schedules: { from_date: s.from_date, to_date: s.to_date, location: s.location || s.title || '', title: s.title || '' } })
+        }
+      }
+    }
+    setConsolidatedEntries(cn)
+    setSpecificConsolidated(sp)
     setLoading(false)
-  }, [canWrite])
+  }, [])
 
   useEffect(() => { fetchSchedules() }, [fetchSchedules])
 
@@ -802,47 +986,44 @@ export default function ScheduleManager({ profile }) {
     URL.revokeObjectURL(url)
   }
 
-  if (!canWrite) {
-    return (
-      <div className="schedules-container">
-        <div className="schedules-refresh">
-          <button className="icon-btn" onClick={fetchSchedules} disabled={loading}>
-            <RefreshCw size={14} className={loading ? 'spin' : ''} />
-          </button>
-        </div>
-        <CentreMonthlyPlanner bhatiEntries={consolidatedEntries} specificEntries={specificConsolidated} loading={loading} />
-      </div>
-    )
-  }
-
   return (
     <div className="schedules-container">
       <div className="schedules-header">
         <h3>Jatha Schedules</h3>
-        <div className="schedules-actions">
-          <button className="btn btn-primary" onClick={downloadScheduleCSV} disabled={schedules.length === 0}>
-            <span role="img" aria-label="export">📥</span> Export CSV
-          </button>
-          <button className="btn btn-primary" onClick={() => setShowBhati(true)}>
-            <Grid3X3 size={16} /> New Bhati
-          </button>
-          <button className="btn btn-primary" onClick={() => setShowSpecific(true)}>
-            <Calendar size={16} /> New Specific
-          </button>
-        </div>
+        {canWrite && (
+          <div className="schedules-actions">
+            <button className="btn btn-primary" onClick={downloadScheduleCSV} disabled={schedules.length === 0}>
+              <span role="img" aria-label="export">📥</span> Export CSV
+            </button>
+            {canCreate && (
+              <button className="btn btn-primary" onClick={() => setShowBhati(true)}>
+                <Grid3X3 size={16} /> New Bhati
+              </button>
+            )}
+            {canCreate && (
+              <button className="btn btn-primary" onClick={() => setShowSpecific(true)}>
+                <Calendar size={16} /> New Specific
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
-      <div className="schedule-summary">
-        <div className="summary-stat"><span className="stat-value">{schedules.length}</span><span className="stat-label">Total Schedules</span></div>
-        <div className="summary-stat bhati-stat"><span className="stat-value">{bhatiSchedules.length}</span><span className="stat-label">Bhati</span></div>
-        <div className="summary-stat specific-stat"><span className="stat-value">{specificSchedules.length}</span><span className="stat-label">Specific</span></div>
-        <div className="summary-stat"><span className="stat-value">{totalSewadars}</span><span className="stat-label">Sewadars</span></div>
-        <div className="summary-stat pending-stat"><span className="stat-value">{pendingMonths.length}</span><span className="stat-label">Pending Months</span></div>
-      </div>
-      {pendingMonths.length > 0 && (
-        <div className="pending-months-bar">
-          {pendingMonths.map(p => <span key={`${p.year}-${p.month}`} className="pending-chip">{p.label}</span>)}
-        </div>
+      {canWrite && (
+        <>
+          <div className="schedule-summary">
+            <div className="summary-stat"><span className="stat-value">{schedules.length}</span><span className="stat-label">Total Schedules</span></div>
+            <div className="summary-stat bhati-stat"><span className="stat-value">{bhatiSchedules.length}</span><span className="stat-label">Bhati</span></div>
+            <div className="summary-stat specific-stat"><span className="stat-value">{specificSchedules.length}</span><span className="stat-label">Specific</span></div>
+            <div className="summary-stat"><span className="stat-value">{totalSewadars}</span><span className="stat-label">Sewadars</span></div>
+            <div className="summary-stat pending-stat"><span className="stat-value">{pendingMonths.length}</span><span className="stat-label">Pending Months</span></div>
+          </div>
+          {pendingMonths.length > 0 && (
+            <div className="pending-months-bar">
+              {pendingMonths.map(p => <span key={`${p.year}-${p.month}`} className="pending-chip">{p.label}</span>)}
+            </div>
+          )}
+        </>
       )}
 
       <div className="schedules-refresh">
@@ -856,21 +1037,22 @@ export default function ScheduleManager({ profile }) {
           <RefreshCw size={24} className="spin" />
           <p>Loading schedules...</p>
         </div>
-      ) : schedules.length === 0 ? (
-        <div className="report-empty">
-          <Calendar size={48} />
-          <p>No schedules yet. Create a Bhati or Specific schedule.</p>
-        </div>
-      ) : (
+      ) : schedules.length > 0 && (
         <div className="schedules-list">
           {schedules.map(s => (
-            <ScheduleCard key={s.id} schedule={s} entries={entriesMap[s.id] || []} centres={centres} onDelete={handleDelete} onRefresh={fetchSchedules} canWrite={canWrite} />
+            <ScheduleCard key={s.id} schedule={s} entries={entriesMap[s.id] || []} centres={centres} onDelete={handleDelete} onRefresh={fetchSchedules} canWrite={canWrite} canCreate={canCreate} />
           ))}
         </div>
       )}
 
-      <BhatiSchedulerModal open={showBhati} onClose={() => setShowBhati(false)} onSave={fetchSchedules} centres={centres} />
-      <SpecificSchedulerModal open={showSpecific} onClose={() => setShowSpecific(false)} onSave={fetchSchedules} centres={centres} />
+      <CentreMonthlyPlanner bhatiEntries={consolidatedEntries} specificEntries={specificConsolidated} loading={loading && schedules.length === 0} />
+
+      {canCreate && (
+        <>
+          <BhatiSchedulerModal open={showBhati} onClose={() => setShowBhati(false)} onSave={fetchSchedules} centres={centres} />
+          <SpecificSchedulerModal open={showSpecific} onClose={() => setShowSpecific(false)} onSave={fetchSchedules} centres={centres} />
+        </>
+      )}
     </div>
   )
 }

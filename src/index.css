@@ -2164,6 +2164,7 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   font-size:10px; padding:2px 6px; margin:2px 0;
   border-radius:4px; display:flex; justify-content:space-between; align-items:center;
   line-height:1.4; cursor:default;
+  border-left:3px solid transparent;
 }
 .bhati-tag { background:rgba(33,115,70,0.08); }
 .specific-tag { background:rgba(37,99,235,0.08); }
@@ -2531,4 +2532,41 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   max-height:350px; overflow-y:auto;
   border:1px solid var(--border); border-radius:8px; padding:10px;
 }
+
+/* Distribution within Bhati rows */
+.bhati-row.has-distribute {
+  flex-wrap:wrap; padding-bottom:8px;
+  background:rgba(33,115,70,0.03); border-radius:8px;
+}
+.bhati-dist-btn {
+  display:flex; align-items:center; justify-content:center;
+  width:34px; height:34px; border:2px solid var(--border); border-radius:8px;
+  background:white; color:var(--text-muted); cursor:pointer;
+  font-size:16px; line-height:1; transition:all 0.15s;
+  flex-shrink:0;
+}
+.bhati-dist-btn:hover { border-color:var(--excel-green); color:var(--excel-green); background:rgba(33,115,70,0.05); }
+.bhati-dist-btn.active { background:rgba(33,115,70,0.1); border-color:var(--excel-green); color:var(--excel-green); }
+
+.bhati-dist-children {
+  width:100%; margin-top:6px; padding-top:6px;
+  border-top:1px dashed var(--border);
+  display:flex; flex-direction:column; gap:4px;
+}
+.bhati-dist-child {
+  display:flex; align-items:center; gap:6px;
+  padding-left:8px;
+}
+.bhati-dist-child-name {
+  flex:1; font-size:12px; font-weight:500; color:var(--text-primary);
+}
+.bhati-dist-child .dist-input {
+  width:60px; padding:4px 6px;
+}
+.bhati-dist-sum {
+  display:flex; align-items:center; gap:6px;
+  padding-left:8px; font-size:11px; font-weight:600; color:var(--text-muted);
+  margin-top:2px;
+}
+.bhati-dist-sum .mismatch { color:var(--error); }
 
