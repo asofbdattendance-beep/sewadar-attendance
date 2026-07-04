@@ -402,47 +402,18 @@ export default function DashboardPage() {
   const presentPercent = stats.presentToday > 0 ? Math.round(stats.currentlyInside / stats.presentToday * 100) : 0
 
   const exportDashboard = () => {
-    // Centre data
-    const centreRows = []
-    const addCentreRow = (centre, level = 0) => {
-      const deptRows = []
-      if (centre.departments) {
-        for (const [dept, d] of Object.entries(centre.departments)) {
-          const deptPresent = d.sewadars.filter(s => presentSet.has(s.badge_number)).length
-          const deptInside = d.sewadars.filter(s => insideSet.has(s.badge_number)).length
-          deptRows.push([dept, d.sewadars.length, deptPresent, deptInside])
-        }
-      }
-      centreRows.push([centre.name, centre.total, centre.sewadars.filter(s => presentSet.has(s.badge_number)).length, centre.sewadars.filter(s => insideSet.has(s.badge_number)).length, deptRows])
-    }
-    for (const c of centreTree) addCentreRow(c)
-    
-    // Flatten for CSV
-    const csvRows = [['Centre', 'Department', 'Total', 'Present', 'Inside']]
-    for (const [centreName, total, present, inside, depts] of centreRows) {
-      csvRows.push([centreName, '', total, present, inside])
-      for (const [dept, t, p, i] of depts) {
-        csvRows.push(['', dept, t, p, i])
-      }
-    }
-    
-    // Gender section
-    csvRows.push([])
-    csvRows.push(['Gender', 'Total', 'OPEN', 'PERMANENT', 'Present', 'Inside'])
-    csvRows.push(['Male', genderStats.male.total, genderStats.male.open, genderStats.male.permanent, genderStats.male.present, genderStats.male.inside])
-    csvRows.push(['Female', genderStats.female.total, genderStats.female.open, genderStats.female.permanent, genderStats.female.present, genderStats.female.inside])
-    
-    // Badge status
-    csvRows.push([])
-    csvRows.push(['Badge Status', 'Total'])
-    csvRows.push(['OPEN', stats.openBadges])
-    csvRows.push(['PERMANENT', stats.permanentBadges])
-    
-    // Download
     const esc = (val) => {
       const str = String(val ?? '')
       return (str.includes(',') || str.includes('"') || str.includes('\n')) ? '"' + str.replace(/"/g, '""') + '"' : str
     }
+    const csvRows = [['CENTRE', 'TOTAL', 'PRESENT', 'INSIDE']]
+    const flattenCentre = (node) => {
+      const present = node.sewadars.filter(s => presentSet.has(s.badge_number)).length
+      const inside = node.sewadars.filter(s => insideSet.has(s.badge_number)).length
+      csvRows.push([node.name, node.total, present, inside])
+      for (const child of (node.children || [])) flattenCentre(child)
+    }
+    for (const c of centreTree) flattenCentre(c)
     const csv = csvRows.map(r => r.map(esc).join(',')).join('\n')
     const a = document.createElement('a')
     const blobUrl = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))

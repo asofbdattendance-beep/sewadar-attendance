@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, ROLES, getLocalDate } from '../../lib/supabase'
 import { Calendar, Plus, Grid3X3, MapPin, RefreshCw, Trash2, X, ChevronDown, ChevronUp, Save, Edit3 } from 'lucide-react'
+import * as XLSX from 'xlsx'
 
 import CentreMonthlyPlanner from '../../components/reports/CentreMonthlyPlanner'
 
@@ -485,6 +486,11 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
       const { data: { user } } = await supabase.auth.getUser()
 
       for (const e of localEntries) {
+        const original = schedule.jatha_schedule_entries.find(o => o.id === e.id)
+        if (original && original.count !== e.count) {
+          const { error } = await supabase.from('jatha_schedule_entries').update({ count: e.count }).eq('id', e.id)
+          if (error) { alert('Failed to update entry: ' + error.message); setSaving(false); return }
+        }
         const dist = localDist[e.id]
         if (dist && Object.values(dist).some(v => v > 0)) {
           const childSum = Object.values(dist).reduce((s, v) => s + v, 0)
@@ -616,7 +622,11 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
                     return (
                     <div key={e.id} className={`bhati-row ${hasDist ? 'has-distribute' : ''}`}>
                       <span className="bhati-centre-label"><MapPin size={12} /> {e.centre}</span>
-                      <span className="bhati-count-display">{e.count}</span>
+                      {canWrite ? (
+                        <input type="number" min="0" className="sched-count-input" value={e.count} onChange={ev => updateCount(e.id, ev.target.value)} />
+                      ) : (
+                        <span className="bhati-count-display">{e.count}</span>
+                      )}
                       {canWrite && children.length > 0 && (
                         <button className={`bhati-dist-btn ${hasDist ? 'active' : ''}`} onClick={() => toggleDistEntry(e.id)} title="Distribute to child centres">⬇</button>
                       )}
@@ -684,58 +694,147 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
 }
 
 function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrite, canCreate }) {
-  const [expanded, setExpanded] = useState(false)
+  const [showModal, setShowModal] = useState(false)
   const isBhati = schedule.schedule_type === 'bhati'
-  const totalCount = entries.reduce((s, e) => s + (e.count || 0), 0)
+  const [changed, setChanged] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const entriesRef = useRef(entries.map(e => ({ ...e })))
+  const [newCentre, setNewCentre] = useState('')
+  const [newCount, setNewCount] = useState(1)
+  const [centreSearch, setCentreSearch] = useState('')
+  const [showDropdown, setShowDropdown] = useState(false)
+  useEffect(() => { entriesRef.current = entries.map(e => ({ ...e })); setChanged(false) }, [entries])
+  const totalCount = entriesRef.current.reduce((s, e) => s + (e.count || 0), 0)
   const departments = [...new Set(entries.map(e => e.department).filter(Boolean))]
 
+  const filteredCentres = centres.filter(c => c.name.toLowerCase().includes(centreSearch.toLowerCase()))
+
+  const updateCount = (id, val) => {
+    entriesRef.current = entriesRef.current.map(e => e.id === id ? { ...e, count: Math.max(0, parseInt(val) || 0) } : e)
+    setChanged(true)
+  }
+
+  const addEntry = () => {
+    if (!newCentre) return
+    entriesRef.current = [...entriesRef.current, { centre: newCentre, count: Math.max(1, newCount), _temp: true }]
+    setNewCentre('')
+    setNewCount(1)
+    setCentreSearch('')
+    setShowDropdown(false)
+    setChanged(true)
+  }
+
+  const removeEntry = (idx) => {
+    entriesRef.current = entriesRef.current.filter((_, i) => i !== idx)
+    setChanged(true)
+  }
+
+  const saveChanges = async () => {
+    setSaving(true)
+    const { data: { user } } = await supabase.auth.getUser()
+    for (const e of entriesRef.current) {
+      if (e._temp) {
+        const { error } = await supabase.from('jatha_schedule_entries').insert({
+          schedule_id: schedule.id, day_of_week: null, department: departments[0] || null, centre: e.centre, count: e.count, created_by: user?.id
+        })
+        if (error) { alert('Failed to add entry: ' + error.message); setSaving(false); return }
+      } else {
+        const orig = entries.find(o => o.id === e.id)
+        if (orig && orig.count !== e.count) {
+          const { error } = await supabase.from('jatha_schedule_entries').update({ count: e.count }).eq('id', e.id)
+          if (error) { alert('Failed to update: ' + error.message); setSaving(false); return }
+        }
+      }
+    }
+    setSaving(false)
+    setChanged(false)
+    setShowModal(false)
+    onRefresh()
+  }
+
   return (
-    <div className="schedule-card">
-      <div className="schedule-card-header" onClick={() => setExpanded(!expanded)}>
-        <div className="schedule-card-info">
-          {isBhati ? (
-            <>
-              <span className="schedule-card-title">{schedule.title}</span>
-              <span className="schedule-card-meta">{MONTHS[schedule.month - 1]} {schedule.year}</span>
-              {departments.length > 0 && (
-                <span className="schedule-dept-chips">{departments.join(', ')}</span>
-              )}
-            </>
-          ) : (
-            <span className="schedule-card-title">{schedule.location} {departments[0] || ''} {fmtDate(schedule.from_date)} → {fmtDate(schedule.to_date)}</span>
-          )}
-        </div>
-        <div className="schedule-card-actions">
-          <span className="schedule-total-count">{totalCount} Sewadars</span>
-          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+    <>
+      <tr className={`sched-row`} onClick={() => setShowModal(true)}>
+        <td className="sched-cell-type">
+          <span className={`schedule-type-badge ${isBhati ? '' : 'specific'}`}>{isBhati ? 'BHATI' : 'SPECIFIC'}</span>
+        </td>
+        <td className="sched-cell-title">{isBhati ? schedule.title : schedule.location}</td>
+        <td className="sched-cell-dept">{departments.join(', ') || '—'}</td>
+        <td className="sched-cell-date">{isBhati ? `${MONTHS[schedule.month - 1]} ${schedule.year}` : `${fmtDate(schedule.from_date)} – ${fmtDate(schedule.to_date)}`}</td>
+        <td className="sched-cell-count">{totalCount}</td>
+        <td className="sched-cell-actions" onClick={e => e.stopPropagation()}>
           {canCreate && (
-            <button className="schedule-delete-btn" onClick={e => { e.stopPropagation(); onDelete(schedule.id) }} title="Delete schedule">
+            <button className="schedule-delete-btn" onClick={() => onDelete(schedule.id)} title="Delete schedule">
               <Trash2 size={14} />
             </button>
           )}
-        </div>
-      </div>
-      {expanded && (
-        <div className="schedule-card-body">
-          {entries.length === 0 ? (
-            <p className="schedule-empty">No entries</p>
-          ) : isBhati ? (
-            <BhatiScheduleView schedule={schedule} entries={entries} centres={centres} onRefresh={onRefresh} canWrite={canWrite} canCreate={canCreate} />
-          ) : (
-            <table className="schedule-entry-table">
-              <thead>
-                <tr><th>Centre</th><th className="sched-num-col">Count</th></tr>
-              </thead>
-              <tbody>
-                {entries.map(e => (
-                  <tr key={e.id}><td>{e.centre}</td><td className="sched-num-col">{e.count}</td></tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          <span className={`sched-expand-icon`}><ChevronDown size={14} /></span>
+        </td>
+      </tr>
+
+      {showModal && (
+        <div className="modal-overlay" onClick={() => { if (!changed || confirm('Discard changes?')) setShowModal(false) }}>
+          <div className="modal-content sched-modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{isBhati ? schedule.title : schedule.location}</h3>
+              <button className="modal-close" onClick={() => { if (!changed || confirm('Discard changes?')) setShowModal(false) }}><X size={20} /></button>
+            </div>
+            <div className="modal-body">
+              {isBhati ? (
+                <BhatiScheduleView schedule={schedule} entries={entries} centres={centres} onRefresh={() => { setShowModal(false); onRefresh() }} canWrite={canWrite} canCreate={canCreate} />
+              ) : (
+                <div className="specific-edit-body">
+                  <table className="schedule-entry-table">
+                    <thead>
+                      <tr><th>Centre</th><th className="sched-num-col">Count</th></tr>
+                    </thead>
+                    <tbody>
+                      {entriesRef.current.map((e, i) => (
+                        <tr key={e.id || `new-${i}`}>
+                          <td className="sched-centre-cell">{e.centre}{e._temp && <span className="sched-new-badge">NEW</span>}</td>
+                          <td className="sched-num-col">
+                            {canWrite ? (
+                              <div className="sched-count-wrap">
+                                <input type="number" min="0" className="sched-count-input" value={e.count} onChange={ev => updateCount(e.id || `new-${i}`, ev.target.value)} />
+                                {e._temp && <button className="sched-remove-btn" onClick={() => removeEntry(i)}><X size={12} /></button>}
+                              </div>
+                            ) : e.count}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {canCreate && (
+                    <div className="sched-add-row">
+                      <div className="sched-centre-picker">
+                        <input type="text" className="sched-add-input" placeholder="Search centre..." value={centreSearch} onFocus={() => setShowDropdown(true)} onChange={e => { setCentreSearch(e.target.value); setShowDropdown(true) }} />
+                        {showDropdown && filteredCentres.length > 0 && (
+                          <div className="sched-centre-dropdown">
+                            {filteredCentres.map(c => (
+                              <div key={c.name} className={`sched-centre-option${newCentre === c.name ? ' selected' : ''}`} onClick={() => { setNewCentre(c.name); setCentreSearch(c.name); setShowDropdown(false) }}>{c.name}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <input type="number" min="1" className="sched-add-input sched-add-count" value={newCount} onChange={e => setNewCount(Math.max(1, parseInt(e.target.value) || 1))} />
+                      <button className="btn btn-sm" onClick={addEntry} disabled={!newCentre}>+ Add</button>
+                    </div>
+                  )}
+                  {canWrite && changed && (
+                    <div className="sched-modal-actions">
+                      <button className="btn btn-secondary" onClick={() => { setShowModal(false); onRefresh() }}>Cancel</button>
+                      <button className="btn btn-primary" onClick={saveChanges} disabled={saving}>
+                        <Save size={16} /> {saving ? 'Saving...' : 'Save Changes'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 
@@ -748,6 +847,7 @@ export default function ScheduleManager({ profile }) {
   const [specificConsolidated, setSpecificConsolidated] = useState([])
   const [showBhati, setShowBhati] = useState(false)
   const [showSpecific, setShowSpecific] = useState(false)
+  const [plannerRefresh, setPlannerRefresh] = useState(0)
 
   const canWrite = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO || profile?.role === ROLES.ADMIN
   const canCreate = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
@@ -794,6 +894,7 @@ export default function ScheduleManager({ profile }) {
     setConsolidatedEntries(cn)
     setSpecificConsolidated(sp)
     setLoading(false)
+    setPlannerRefresh(p => p + 1)
   }, [])
 
   useEffect(() => { fetchSchedules() }, [fetchSchedules])
@@ -817,25 +918,50 @@ export default function ScheduleManager({ profile }) {
     if (!bhatiMonths.has(`${y}-${month}`)) pendingMonths.push({ month, year: y, label: `${MONTHS[month - 1]} ${y}` })
   }
 
-  const downloadScheduleCSV = () => {
+  const downloadScheduleXLSX = () => {
     if (schedules.length === 0) return
-    const rows = [['Type', 'Title', 'Date Info', 'Location', 'Department', 'Centre', 'Count']]
+    const bhatiRows = []
+    const specificRows = []
     for (const s of schedules) {
       const entries = entriesMap[s.id] || []
-      const dateInfo = s.schedule_type === 'bhati' ? `${MONTHS[s.month - 1]} ${s.year}` : `${s.from_date} to ${s.to_date}`
-      if (entries.length === 0) {
-        rows.push([s.schedule_type, s.title, dateInfo, s.location || '', '', '', ''])
-      }
-      for (const e of entries) {
-        rows.push([s.schedule_type, s.title, dateInfo, s.location || '', e.department || '', e.centre, e.count])
+      if (s.schedule_type === 'bhati') {
+        for (const e of entries) {
+          bhatiRows.push({
+            Type: 'Bhati',
+            Title: s.title,
+            Location: '',
+            Day: DAYS_FULL[e.day_of_week] ?? '',
+            Department: e.department || '',
+            Centre: e.centre,
+            Count: e.count,
+          })
+        }
+      } else {
+        for (const e of entries) {
+          specificRows.push({
+            Type: 'Specific',
+            Title: s.title,
+            Location: s.location || '',
+            'From Date': s.from_date || '',
+            'To Date': s.to_date || '',
+            Department: e.department || '',
+            Centre: e.centre,
+            Count: e.count,
+          })
+        }
       }
     }
-    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
+    const wb = XLSX.utils.book_new()
+    const bhatiWs = XLSX.utils.json_to_sheet(bhatiRows)
+    const specificWs = XLSX.utils.json_to_sheet(specificRows)
+    XLSX.utils.book_append_sheet(wb, bhatiWs, 'Bhati')
+    XLSX.utils.book_append_sheet(wb, specificWs, 'Specific')
+    const data = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+    const blob = new Blob([data], { type: 'application/octet-stream' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `schedules_export_${getLocalDate()}.csv`
+    a.download = `schedules_export_${getLocalDate()}.xlsx`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -846,8 +972,8 @@ export default function ScheduleManager({ profile }) {
         <h3>Jatha Schedules</h3>
         {canWrite && (
           <div className="schedules-actions">
-            <button className="btn btn-primary" onClick={downloadScheduleCSV} disabled={schedules.length === 0}>
-              <span role="img" aria-label="export">📥</span> Export CSV
+            <button className="btn btn-primary" onClick={downloadScheduleXLSX} disabled={schedules.length === 0}>
+              <span role="img" aria-label="export">📥</span> Export Excel
             </button>
             {canCreate && (
               <button className="btn btn-primary" onClick={() => setShowBhati(true)}>
@@ -891,15 +1017,26 @@ export default function ScheduleManager({ profile }) {
           <RefreshCw size={24} className="spin" />
           <p>Loading schedules...</p>
         </div>
-      ) : schedules.length > 0 && (
-        <div className="schedules-list">
-          {schedules.map(s => (
-            <ScheduleCard key={s.id} schedule={s} entries={entriesMap[s.id] || []} centres={centres} onDelete={handleDelete} onRefresh={fetchSchedules} canWrite={canWrite} canCreate={canCreate} />
-          ))}
-        </div>
-      )}
-
-      <CentreMonthlyPlanner profile={profile} />
+      ) : (<>
+        <CentreMonthlyPlanner profile={profile} refreshTrigger={plannerRefresh} />
+        {schedules.length > 0 && <table className="schedules-table">
+          <thead>
+            <tr>
+              <th className="sched-th-type">Type</th>
+              <th className="sched-th-title">Title / Location</th>
+              <th className="sched-th-dept">Department</th>
+              <th className="sched-th-date">Period</th>
+              <th className="sched-th-count">Count</th>
+              <th className="sched-th-actions"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {schedules.map(s => (
+              <ScheduleCard key={s.id} schedule={s} entries={entriesMap[s.id] || []} centres={centres} onDelete={handleDelete} onRefresh={fetchSchedules} canWrite={canWrite} canCreate={canCreate} />
+            ))}
+          </tbody>
+        </table>}
+      </>)}
 
       {canCreate && (
         <>

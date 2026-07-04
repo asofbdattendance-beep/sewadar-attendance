@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase, getLocalDate } from '../../lib/supabase'
 import { ChevronLeft, ChevronRight, Printer, MapPin, Calendar } from 'lucide-react'
-import { getDeptColor } from '../../lib/deptColors'
+import { getDeptColor, getDeptAbbr, getCentreAbbr } from '../../lib/deptColors'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -35,7 +35,7 @@ function buildDayMap(bhatiData, specificData, month, year) {
             centre: e.centre,
             count: e.count,
             kind: 'bhati',
-            jatha_type: e.jatha_type || 'major_centre',
+            title: sched.title,
           })
         }
       }
@@ -67,7 +67,7 @@ function buildDayMap(bhatiData, specificData, month, year) {
   return dayMap
 }
 
-export default function CentreMonthlyPlanner({ profile }) {
+export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
   const isAsoView = profile?.role === 'aso' || profile?.role === 'super_admin'
   const now = new Date()
   const [month, setMonth] = useState(now.getMonth() + 1)
@@ -75,6 +75,10 @@ export default function CentreMonthlyPlanner({ profile }) {
   const [loading, setLoading] = useState(true)
   const [bhatiData, setBhatiData] = useState([])
   const [specificData, setSpecificData] = useState([])
+  const [allCentres, setAllCentres] = useState([])
+  const [typeFilter, setTypeFilter] = useState('all')
+  const [centreFilter, setCentreFilter] = useState(null)
+  const [deptFilter, setDeptFilter] = useState(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -103,9 +107,17 @@ export default function CentreMonthlyPlanner({ profile }) {
       console.error('Failed to fetch planner data:', err)
     }
     setLoading(false)
-  }, [month, year])
+  }, [month, year, refreshTrigger])
 
   useEffect(() => { fetchData() }, [fetchData])
+
+  useEffect(() => {
+    if (isAsoView && allCentres.length === 0) {
+      supabase.rpc('get_user_accessible_centres').then(({ data }) => {
+        setAllCentres((data || []).map(c => c.centre_name).sort())
+      })
+    }
+  }, [isAsoView])
 
   const prevMonth = () => {
     if (month === 1) { setMonth(12); setYear(y => y - 1) }
@@ -118,24 +130,34 @@ export default function CentreMonthlyPlanner({ profile }) {
   }
 
   const dayMap = buildDayMap(bhatiData, specificData, month, year)
+
+  const filteredDayMap = new Map()
+  for (const [dateStr, entries] of dayMap) {
+    let filtered = entries
+    if (typeFilter !== 'all') filtered = filtered.filter(e => e.kind === typeFilter)
+    if (centreFilter) filtered = filtered.filter(e => (e.centre || e.location) === centreFilter)
+    if (deptFilter) filtered = filtered.filter(e => e.department === deptFilter)
+    if (filtered.length > 0) filteredDayMap.set(dateStr, filtered)
+  }
+
   const daysInMonth = getDaysInMonth(year, month)
   const firstDay = getFirstDayOfMonth(year, month)
 
   const calendarCells = []
-  const leadingEmpty = firstDay === 0 ? 6 : firstDay - 1
+  const leadingEmpty = firstDay
   for (let i = 0; i < leadingEmpty; i++) {
     calendarCells.push({ date: null, entries: null })
   }
   for (let d = 1; d <= daysInMonth; d++) {
     const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-    calendarCells.push({ date: new Date(year, month - 1, d), entries: dayMap.get(dateStr) || [] })
+    calendarCells.push({ date: new Date(year, month - 1, d), entries: filteredDayMap.get(dateStr) || [] })
   }
   while (calendarCells.length % 7 !== 0) {
     calendarCells.push({ date: null, entries: null })
   }
 
   const allDepartments = new Set()
-  for (const [, entries] of dayMap) {
+  for (const [, entries] of filteredDayMap) {
     for (const e of entries) {
       if (e.department) allDepartments.add(e.department)
     }
@@ -143,52 +165,93 @@ export default function CentreMonthlyPlanner({ profile }) {
   const activeDepartments = [...allDepartments].sort()
 
   let totalSewadars = 0
-  for (const [, entries] of dayMap) {
+  for (const [, entries] of filteredDayMap) {
     for (const e of entries) totalSewadars += e.count || 0
   }
 
-  const hasData = bhatiData.length > 0 || specificData.length > 0
+  const hasData = filteredDayMap.size > 0
+
+  const allPlannerDepts = [...new Set([...bhatiData, ...specificData].flatMap(s => (s.jatha_schedule_entries || []).map(e => e.department).filter(Boolean)))].sort()
+
+  function buildCentreDayMap(entriesByDate, centreName) {
+    const cm = new Map()
+    for (const [dateStr, entries] of entriesByDate) {
+      const filtered = entries.filter(e => e.centre === centreName)
+      if (filtered.length > 0) cm.set(dateStr, filtered)
+    }
+    return cm
+  }
+
+  function renderGridFromDayMap(sourceMap) {
+    const cells = []
+    for (let i = 0; i < firstDay; i++) cells.push({ date: null, entries: null })
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+      cells.push({ date: new Date(year, month - 1, d), entries: sourceMap.get(dateStr) || [] })
+    }
+    while (cells.length % 7 !== 0) cells.push({ date: null, entries: null })
+    return cells
+  }
+
+  const centreNamesInData = [...new Set([...dayMap.values()].flat().map(e => e.centre).filter(Boolean))].sort()
+
+  const centrePrintSections = centreNamesInData.map(cn => {
+    const cm = buildCentreDayMap(filteredDayMap, cn)
+    const totalForCentre = [...cm.values()].reduce((s, ee) => s + ee.reduce((a, e) => a + (e.count || 0), 0), 0)
+    const depts = [...new Set([...cm.values()].flat().map(e => e.department).filter(Boolean))].sort()
+    const gridCells = renderGridFromDayMap(cm)
+    const centreHasData = cm.size > 0
+    return { centre: cn, dayMap: cm, total: totalForCentre, departments: depts, gridCells, hasData: centreHasData }
+  })
 
   function renderCentreEntries(entries) {
-    return entries.map((e, j) => (
-      <div
-        key={j}
-        className="planner-entry"
-        style={{ borderLeftColor: getDeptColor(e.department || '') }}
-      >
-        {e.kind === 'specific' && (
-          <span className="entry-tag"><MapPin size={10} /> {e.location || 'Specific'}</span>
-        )}
-        <div className="entry-dept">{e.department || 'General'}</div>
-        <div className="entry-detail">{e.count}</div>
-      </div>
-    ))
+    const groups = {}
+    for (const e of entries) {
+      const label = e.kind === 'specific' ? (e.location || '—') : ((e.title || '').split(' - ')[0] || '—')
+      if (!groups[label]) groups[label] = { label, depts: [] }
+      groups[label].depts.push({ abbr: getDeptAbbr(e.department), count: e.count, dept: e.department })
+    }
+    return Object.values(groups).map((g, i) => {
+      const bgColor = getDeptColor(g.label)
+      return (
+        <div key={i} className="planner-entry" style={{ background: `${bgColor}0D`, borderLeftColor: bgColor }}>
+          <span className="entry-label" style={{ color: bgColor }}><MapPin size={11} /> {g.label.toUpperCase()}</span>
+          <span className="entry-sep"></span>
+          <span className="entry-meta-inline">{g.depts.map(d => {
+            const dc = getDeptColor(d.dept)
+            return <span key={d.dept} className="dept-chip" style={{ background: `${dc}18`, color: dc }}>{d.abbr};{d.count}</span>
+          })}</span>
+        </div>
+      )
+    })
   }
 
   function renderAsoEntries(entries) {
     const groups = {}
     for (const e of entries) {
+      const label = e.kind === 'specific' ? (e.location || '—') : ((e.title || '').split(' - ')[0] || '—')
       const dept = e.department || 'General'
-      if (!groups[dept]) groups[dept] = {}
+      const deptAbbr = getDeptAbbr(dept)
+      const key = `${label}|${dept}`
+      if (!groups[key]) groups[key] = { label, dept, deptAbbr, centres: [] }
       const loc = e.centre || e.location || 'Unknown'
-      if (!groups[dept][loc]) groups[dept][loc] = { count: 0, kind: e.kind, location: e.location }
-      groups[dept][loc].count += e.count || 0
+      const existing = groups[key].centres.find(c => c.name === loc)
+      if (existing) existing.count += e.count || 0
+      else groups[key].centres.push({ name: loc, count: e.count || 0 })
     }
-    return Object.entries(groups).map(([dept, centres]) => (
-      <div
-        key={dept}
-        className="planner-entry-group"
-        style={{ borderLeftColor: getDeptColor(dept) }}
-      >
-        <div className="entry-dept">{dept}</div>
-        {Object.entries(centres).map(([loc, data]) => (
-          <div key={loc} className="entry-centre-row">
-            <span className="entry-centre-name">{loc}</span>
-            <span className="entry-centre-count">{data.count}</span>
-          </div>
-        ))}
-      </div>
-    ))
+    return Object.values(groups).map((g, i) => {
+      const color = getDeptColor(g.dept)
+      const centresStr = g.centres.map(c => `${getCentreAbbr(c.name)};${c.count}`).join(', ')
+      return (
+        <div key={i} className="planner-entry" style={{ background: `${color}0D`, borderLeftColor: color }}>
+          <span className="entry-label" style={{ color: getDeptColor(g.label) }}><MapPin size={11} /> {g.label.toUpperCase()}</span>
+          <span className="entry-sep"></span>
+          <span className="entry-label-dept">{g.deptAbbr}</span>
+          <span className="entry-sep"></span>
+          <span className="aso-centres-text">{centresStr}</span>
+        </div>
+      )
+    })
   }
 
   return (
@@ -206,6 +269,33 @@ export default function CentreMonthlyPlanner({ profile }) {
         </div>
       </div>
 
+      {isAsoView && (
+        <div className="planner-filters">
+          <div className="planner-filter-group">
+            <span className="filter-label">Type</span>
+            <button className={`filter-chip${typeFilter === 'all' ? ' active' : ''}`} onClick={() => setTypeFilter('all')}>All</button>
+            <button className={`filter-chip${typeFilter === 'bhati' ? ' active' : ''}`} onClick={() => setTypeFilter('bhati')}>BHATI</button>
+            <button className={`filter-chip${typeFilter === 'specific' ? ' active' : ''}`} onClick={() => setTypeFilter('specific')}>SPECIFIC</button>
+          </div>
+          <div className="planner-filter-group">
+            <span className="filter-label">Centre</span>
+            <button className={`filter-chip${!centreFilter ? ' active' : ''}`} onClick={() => setCentreFilter(null)}>All</button>
+            {allCentres.map(c => (
+              <button key={c} className={`filter-chip${centreFilter === c ? ' active' : ''}`} onClick={() => setCentreFilter(centreFilter === c ? null : c)}>{getCentreAbbr(c)}</button>
+            ))}
+          </div>
+          {allPlannerDepts.length > 0 && (
+            <div className="planner-filter-group">
+              <span className="filter-label">Dept</span>
+              <button className={`filter-chip${!deptFilter ? ' active' : ''}`} onClick={() => setDeptFilter(null)}>All</button>
+              {allPlannerDepts.map(d => (
+                <button key={d} className={`filter-chip${deptFilter === d ? ' active' : ''}`} onClick={() => setDeptFilter(deptFilter === d ? null : d)}>{getDeptAbbr(d)}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {activeDepartments.length > 0 && (
         <div className="planner-legend">
           {activeDepartments.map(dept => (
@@ -214,7 +304,6 @@ export default function CentreMonthlyPlanner({ profile }) {
               {dept}
             </span>
           ))}
-
         </div>
       )}
 
@@ -251,6 +340,38 @@ export default function CentreMonthlyPlanner({ profile }) {
       {hasData && (
         <div className="planner-footer">
           {totalSewadars} sewadars assigned this month across {activeDepartments.length} department{activeDepartments.length !== 1 ? 's' : ''}
+        </div>
+      )}
+
+      {centrePrintSections.length > 0 && (
+        <div className="planner-print-sections">
+          {centrePrintSections.map((cs, idx) => (
+            <div key={idx} className="planner-print-section">
+              <h4 className="print-centre-header">{cs.centre}</h4>
+              {cs.departments.length > 0 && (
+                <div className="print-legend">
+                  {cs.departments.map(dept => (
+                    <span key={dept} className="legend-item">
+                      <span className="legend-swatch" style={{ background: getDeptColor(dept) }} />
+                      {dept}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="print-grid">
+                {WEEKDAYS.map(d => <div key={d} className="planner-weekday">{d}</div>)}
+                {cs.gridCells.map((cell, i) => (
+                  <div key={i} className={`planner-day${!cell.date || !cell.entries?.length ? ' empty' : ''}`}>
+                    {cell.date && <div className="planner-date-num">{cell.date.getDate()}</div>}
+                    {cell.entries?.length > 0 && renderCentreEntries(cell.entries)}
+                  </div>
+                ))}
+              </div>
+              {cs.total > 0 && (
+                <div className="planner-total-bar">{cs.total} sewadars — {cs.departments.length} department{cs.departments.length !== 1 ? 's' : ''}</div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>

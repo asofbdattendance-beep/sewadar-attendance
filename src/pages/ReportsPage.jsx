@@ -53,7 +53,7 @@ function DateRangePicker({ dateFrom, dateTo, onDateFromChange, onDateToChange, s
   return (
     <div className="report-date-range">
       <div className="date-input-group">
-        <label>From</label>
+        <label>{singleDate ? 'As On' : 'From'}</label>
         <input 
           type="date" 
           value={dateFrom} 
