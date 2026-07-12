@@ -48,6 +48,7 @@ export default function ScannerPage({ isOnline }) {
   const manualSearchTimeout = useRef(null)
   const manualSearchTickRef = useRef(0)
   const popupOpenRef = useRef(false)
+  const popupStateRef = useRef(null)
   const [geoCheckDone, setGeoCheckDone] = useState(false)
   const [geoBlocked, setGeoBlocked] = useState(false)
   const [geoDistance, setGeoDistance] = useState(null)
@@ -163,6 +164,8 @@ export default function ScannerPage({ isOnline }) {
     }
   }, [profile?.centre])
 
+  useEffect(() => { popupStateRef.current = popupState }, [popupState])
+
   const isInScope = (sewadarCentre, department) => {
     if (profile?.role === ROLES.ASO || profile?.role === ROLES.SUPER_ADMIN) return true
     if (!profile?.centre) return true
@@ -187,7 +190,6 @@ const handleScan = useCallback(async (badge) => {
       return
     }
     if (!scopeDataLoaded) {
-      setProcessing(false)
       return
     }
     setProcessing(true)
@@ -307,16 +309,20 @@ const handleScan = useCallback(async (badge) => {
     }
 
     setProcessing(false)
-  }, [isOnline, profile, childCentres, specialDepts])
+  }, [isOnline, profile?.centre, profile?.role, profile?.badge_number, profile?.name, childCentres, specialDepts, scopeDataLoaded])
 
   const markIN = async (customTime = null) => {
-    if (!popupState?.sewadar || !profile) return
+    const state = popupStateRef.current
+    if (!state?.sewadar || !profile) return
+    if (processing) return
+    setProcessing(true)
 
-    const sewadar = popupState.sewadar
+    try {
+    const sewadar = state.sewadar
     const now = new Date()
     const inDate = customTime?.date || getLocalDate(now)
     const inTime = customTime?.time || now.toTimeString().slice(0, 5)
-    const scanCentre = popupState.scanCentre || profile?.centre || sewadar.centre || 'UNKNOWN'
+    const scanCentre = state.scanCentre || profile?.centre || sewadar.centre || 'UNKNOWN'
 
     if (inDate > getLocalDate(new Date())) {
       toast.error('Cannot scan IN with a future date')
@@ -374,15 +380,22 @@ const handleScan = useCallback(async (badge) => {
     }
 
     setTimeout(closePopup, 1500)
+    } finally {
+      setProcessing(false)
+    }
   }
 
   const markOUT = async (forgotDate = null, forgotTime = null) => {
-    if (!popupState?.openSession || !profile) return
+    const state = popupStateRef.current
+    if (!state?.openSession || !profile) return
+    if (processing) return
+    setProcessing(true)
+    try {
     const now = new Date()
     const outDate = forgotDate || getLocalDate(now)
     const outTime = forgotTime || now.toTimeString().slice(0, 5)
 
-    const sessionId = typeof popupState.openSession === 'object' ? popupState.openSession.id : popupState.openSession
+    const sessionId = typeof state.openSession === 'object' ? state.openSession.id : state.openSession
 
     if (navigator.vibrate) navigator.vibrate([40, 30, 40])
 
@@ -394,7 +407,7 @@ const handleScan = useCallback(async (badge) => {
           p_out_time: outTime,
           p_out_scanner_badge: profile?.badge_number,
           p_out_scanner_name: profile?.name,
-          p_out_scanner_centre: profile?.centre || popupState?.sewadar?.centre || 'UNKNOWN'
+          p_out_scanner_centre: profile?.centre || state?.sewadar?.centre || 'UNKNOWN'
         })
         if (error) {
           console.error('Failed to close session:', error)
@@ -402,11 +415,11 @@ const handleScan = useCallback(async (badge) => {
           return
         }
         logAction(profile?.badge_number, profile?.name, 'SCAN_OUT', {
-          badge: popupState?.sewadar?.badge_number,
-          name: popupState?.sewadar?.sewadar_name,
+          badge: state?.sewadar?.badge_number,
+          name: state?.sewadar?.sewadar_name,
           session_id: sessionId
         })
-        setPopupState({ type: 'success', action: 'OUT', sewadar: popupState.sewadar, time: formatTime12Hour(outTime) })
+        setPopupState({ type: 'success', action: 'OUT', sewadar: state.sewadar, time: formatTime12Hour(outTime) })
         fetchRecentScans()
       } catch (err) {
         console.error('Failed to close session:', err)
@@ -414,10 +427,13 @@ const handleScan = useCallback(async (badge) => {
         return
       }
     } else {
-      setPopupState({ type: 'success', action: 'OUT', sewadar: popupState.sewadar, time: formatTime12Hour(outTime) })
+      setPopupState({ type: 'success', action: 'OUT', sewadar: state.sewadar, time: formatTime12Hour(outTime) })
     }
 
     setTimeout(closePopup, 1500)
+    } finally {
+      setProcessing(false)
+    }
   }
 
   const closePopup = () => {

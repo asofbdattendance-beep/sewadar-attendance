@@ -380,9 +380,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
         case 'currently_inside':
           await fetchCurrentlyInside(canViewAllCentres, userCentre)
           break
-        case 'gate_summary':
-          await fetchGateSummary(canViewAllCentres, userCentre)
-          break
         case 'late_coming':
           await fetchLateComing(canViewAllCentres, userCentre)
           break
@@ -415,7 +412,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   useEffect(() => {
     supabase.rpc('get_user_accessible_centres').then(({ data }) => {
       setCentresList((data || []).map(r => ({ name: r.centre_name })))
-    }).catch(() => {})
+    }).catch(err => console.error('Failed to load accessible centres:', err))
   }, [])
 
   // Query builders
@@ -460,11 +457,12 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       page++
     }
 
-    // Get all sessions for today (both CLOSED and OPEN)
+    // Get all sessions for date range (both CLOSED and OPEN)
     const { data: todaySessions } = await supabase
       .from('attendance_sessions')
       .select('badge_number, out_date, status')
-      .eq('in_date', today)
+      .gte('in_date', dateFrom)
+      .lte('in_date', dateTo)
       .in('status', ['OPEN', 'CLOSED'])
 
     const presentBadges = new Set(todaySessions?.map(s => s.badge_number) || [])
@@ -513,11 +511,12 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       page++
     }
 
-    // Get all sessions for today (both CLOSED and OPEN)
+    // Get all sessions for date range (both CLOSED and OPEN)
     const { data: todaySessions } = await supabase
       .from('attendance_sessions')
       .select('badge_number')
-      .eq('in_date', today)
+      .gte('in_date', dateFrom)
+      .lte('in_date', dateTo)
       .in('status', ['OPEN', 'CLOSED'])
 
     const presentBadges = new Set(todaySessions?.map(s => s.badge_number) || [])
@@ -545,7 +544,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       .from('attendance_sessions')
       .select('*')
       .eq('status', 'OPEN')
-      .eq('in_date', today)
+      .gte('in_date', dateFrom)
+      .lte('in_date', dateTo)
       .order('in_time', { ascending: false })
 
     if (!canViewAllCentres && userCentre) {
@@ -573,41 +573,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
     setReportData(rows)
     setReportSummary({ total: rows.length })
-  }
-
-  // Gate Summary: Full log
-  const fetchGateSummary = async (canViewAllCentres, userCentre) => {
-    let query = supabase
-      .from('attendance_sessions')
-      .select('*')
-      .gte('in_date', dateFrom)
-      .lte('in_date', dateTo)
-      .order('in_time', { ascending: false })
-      .limit(1000)
-
-    if (!canViewAllCentres && userCentre) {
-      query = query.eq('centre', userCentre)
-    }
-
-    const { data: sessions } = await query
-
-    const rows = (sessions || []).map(s => ({
-      badge_number: { value: s.badge_number, className: 'cell-badge' },
-      name: { value: s.sewadar_name, className: 'cell-name' },
-      date: { value: formatDateIndian(s.in_date), className: 'cell-date' },
-      in_time: formatTime12Hour(s.in_time),
-      out_time: s.out_time ? formatTime12Hour(s.out_time) : '—',
-      status: { value: s.status, className: `status-pill status-pill-${s.status.toLowerCase()}` },
-      centre: s.centre,
-      duty_type: { value: s.duty_type, className: `duty-badge-sm ${s.duty_type}` },
-    }))
-
-    setReportData(rows)
-    setReportSummary({
-      total: rows.length,
-      closed: rows.filter(r => r.status.value === 'CLOSED').length,
-      open: rows.filter(r => r.status.value === 'OPEN').length,
-    })
   }
 
   // Late Coming: Present but after threshold time
@@ -672,7 +637,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       .from('attendance_sessions')
       .select('*')
       .eq('status', 'OPEN')
-      .lt('in_date', today)
+      .lte('in_date', dateTo)
       .order('in_time', { ascending: false })
 
     if (!canViewAllCentres && userCentre) {
@@ -757,7 +722,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     const { data: sessions } = await supabase
       .from('attendance_sessions')
       .select('badge_number')
-      .eq('in_date', today)
+      .gte('in_date', dateFrom)
+      .lte('in_date', dateTo)
 
     const presentBadges = new Set(sessions?.map(s => s.badge_number) || [])
 
@@ -802,7 +768,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     const { data: sessions } = await supabase
       .from('attendance_sessions')
       .select('badge_number')
-      .eq('in_date', today)
+      .gte('in_date', dateFrom)
+      .lte('in_date', dateTo)
 
     const { data: centres } = await supabase
       .from('centres')
@@ -952,21 +919,35 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     try {
       const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
       const userCentre = profile?.centre
-      let query = supabase
-        .from('attendance_sessions')
-        .select('badge_number, sewadar_name, sewadar_centre, sewadar_dept, duty_type, in_date, in_time, out_date, out_time, status, centre')
-        .gte('in_date', dailyFrom)
-        .lte('in_date', dailyTo)
-        .order('in_date', { ascending: false })
-        .order('in_time', { ascending: false })
-        .limit(10000)
+      const pageSize = 10000
+      let allSessions = []
+      let page = 0
 
-      if (centreFilter) {
-        query = query.ilike('centre', centreFilter)
+      while (true) {
+        const from = page * pageSize
+        const to = from + pageSize - 1
+        let query = supabase
+          .from('attendance_sessions')
+          .select('badge_number, sewadar_name, sewadar_centre, sewadar_dept, duty_type, in_date, in_time, out_date, out_time, status, centre')
+          .gte('in_date', dailyFrom)
+          .lte('in_date', dailyTo)
+          .order('in_date', { ascending: false })
+          .order('in_time', { ascending: false })
+          .range(from, to)
+
+        if (centreFilter) {
+          query = query.ilike('centre', centreFilter)
+        }
+
+        const { data: batch } = await query
+        if (!batch || batch.length === 0) break
+        allSessions = [...allSessions, ...batch]
+        if (batch.length < pageSize) break
+        page++
       }
 
-      const { data: sessions } = await query
-      if (!sessions || sessions.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }
+      if (!allSessions || allSessions.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }
+      const sessions = allSessions
 
       const headers = ['Date', 'Badge Number', 'Name', 'Home Centre', 'Department', 'Duty Type', 'IN Time', 'OUT Time', 'Status']
       const rows = sessions.map(s => [
@@ -994,20 +975,34 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     try {
       const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
       const userCentre = profile?.centre
-      let query = supabase
-        .from('jatha_attendance')
-        .select('badge_number, sewadar_name, sewadar_centre, from_date, to_date, remarks, jatha_id, jatha_master!inner(jatha_type, department, centre_name)')
-        .gte('from_date', jathaFrom)
-        .lte('from_date', jathaTo)
-        .order('from_date', { ascending: false })
-        .limit(10000)
+      const pageSize = 10000
+      let allRecords = []
+      let page = 0
 
-      if (centreFilter) {
-        query = query.ilike('sewadar_centre', centreFilter)
+      while (true) {
+        const from = page * pageSize
+        const to = from + pageSize - 1
+        let query = supabase
+          .from('jatha_attendance')
+          .select('badge_number, sewadar_name, sewadar_centre, from_date, to_date, remarks, jatha_id, jatha_master!inner(jatha_type, department, centre_name)')
+          .gte('from_date', jathaFrom)
+          .lte('from_date', jathaTo)
+          .order('from_date', { ascending: false })
+          .range(from, to)
+
+        if (centreFilter) {
+          query = query.ilike('sewadar_centre', centreFilter)
+        }
+
+        const { data: batch } = await query
+        if (!batch || batch.length === 0) break
+        allRecords = [...allRecords, ...batch]
+        if (batch.length < pageSize) break
+        page++
       }
 
-      const { data: records } = await query
-      if (!records || records.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }
+      if (!allRecords || allRecords.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }
+      const records = allRecords
 
       const isAso = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
       let headers, rows
@@ -1117,7 +1112,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       present: ['Badge', 'Name', 'Centre', 'Department', 'Status'],
       absenteeism: ['Badge', 'Name', 'Centre', 'Department', 'Status'],
       currently_inside: ['Badge', 'Name', 'IN Time', 'Duration', 'Centre', 'Duty'],
-      gate_summary: ['Badge', 'Name', 'Date', 'IN', 'OUT', 'Status', 'Centre', 'Duty'],
       late_coming: ['Badge', 'Name', 'Date', 'IN Time', 'Delay', 'Centre'],
       missing_out: ['Badge', 'Name', 'IN Date', 'IN Time', 'Days Open', 'Centre', 'Duty'],
       weekly_summary: ['Date', 'Day', 'Present', '%'],
@@ -1228,11 +1222,11 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
         {activeCategory === 'downloads' || activeCategory === 'schedules' ? <span /> : (
           <>
             <DateRangePicker
-              dateFrom={['late_coming', 'aso_overview'].includes(activeReport) ? dateFrom : today}
-              dateTo={['late_coming', 'aso_overview'].includes(activeReport) ? dateTo : today}
-              onDateFromChange={(val) => ['late_coming', 'aso_overview'].includes(activeReport) && setDateFrom(val)}
-              onDateToChange={(val) => setDateTo(val)}
-              singleDate={!['late_coming', 'aso_overview'].includes(activeReport)}
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              onDateFromChange={setDateFrom}
+              onDateToChange={setDateTo}
+              singleDate={false}
             />
             <div className="export-btn-group">
               <ExportDropdown onExport={handleExport} loading={loading} label="Export" description="Centre + Sub Centre" />
@@ -1363,13 +1357,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
               )}
               {activeReport === 'currently_inside' && (
                 <SummaryCard title="Currently Inside" value={reportSummary.total} icon={UserCheck} color="green" />
-              )}
-              {activeReport === 'gate_summary' && (
-                <>
-                  <SummaryCard title="Total Records" value={reportSummary.total} icon={Clock} color="blue" />
-                  <SummaryCard title="Closed" value={reportSummary.closed} icon={CheckCircle} color="green" />
-                  <SummaryCard title="Open" value={reportSummary.open} icon={AlertTriangle} color="orange" />
-                </>
               )}
               {activeReport === 'late_coming' && (
                 <SummaryCard title="Late Comers" value={reportSummary.total} icon={AlertTriangle} color="orange" />

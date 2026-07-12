@@ -54,7 +54,7 @@ function GateEntryForm({ onSuccess }) {
     if (profile?.centre) {
       supabase.rpc('get_user_accessible_centres').then(({ data }) => {
         setChildCentres((data || []).map(r => r.centre_name).filter(c => c !== profile.centre))
-      }).catch(() => {})
+      }).catch(err => console.error('Failed to load accessible centres:', err))
     }
   }, [profile?.centre])
 
@@ -96,26 +96,28 @@ function GateEntryForm({ onSuccess }) {
   }
 
   const updateEntry = async (id, field, value) => {
-    setEntries(entries => entries.map(e => e.id === id ? { ...e, [field]: value } : e))
+    let updated = null
+    setEntries(prev => {
+      const next = prev.map(e => e.id === id ? { ...e, [field]: value } : e)
+      updated = next.find(e => e.id === id)
+      return next
+    })
     
-    const updatedEntry = entries.find(e => e.id === id)
-    if (updatedEntry) {
-      const updated = { ...updatedEntry, [field]: value }
-      const entryErrors = validateSingleEntry(updated)
-      setValidationErrors(prev => ({ ...prev, [id]: entryErrors }))
-      
-      if (selectedSewadar) {
-        const overlaps = await checkGateOverlaps(selectedSewadar.badge_number, [updated])
-        setDbOverlaps(prev => {
-          const next = { ...prev }
-          if (overlaps.overlappingIds.has(id)) {
-            next[id] = overlaps.overlaps[0]?.reason || 'Overlap detected'
-          } else {
-            delete next[id]
-          }
-          return next
-        })
-      }
+    if (!updated) return
+    const entryErrors = validateSingleEntry(updated)
+    setValidationErrors(prev => ({ ...prev, [id]: entryErrors }))
+    
+    if (selectedSewadar) {
+      const overlaps = await checkGateOverlaps(selectedSewadar.badge_number, [updated])
+      setDbOverlaps(prev => {
+        const next = { ...prev }
+        if (overlaps.overlappingIds.has(id)) {
+          next[id] = overlaps.overlaps[0]?.reason || 'Overlap detected'
+        } else {
+          delete next[id]
+        }
+        return next
+      })
     }
   }
 
@@ -179,7 +181,7 @@ function GateEntryForm({ onSuccess }) {
 
     const twoMonthsAgo = new Date()
     twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2)
-    const twoMonthsAgoStr = twoMonthsAgo.toISOString().split('T')[0]
+    const twoMonthsAgoStr = getLocalDate(twoMonthsAgo)
 
     let openRes, closedRes
     try {
@@ -671,7 +673,7 @@ function JathaEntryForm({ onSuccess }) {
     if (profile?.centre && profile?.role !== ROLES.SUPER_ADMIN) {
       supabase.rpc('get_user_accessible_centres').then(({ data }) => {
         setJathaChildCentres((data || []).map(r => r.centre_name).filter(c => c !== profile.centre))
-      }).catch(() => {})
+      }).catch(err => console.error('Failed to load accessible centres:', err))
     }
   }, [profile?.centre, profile?.role])
 
@@ -766,8 +768,7 @@ function JathaEntryForm({ onSuccess }) {
   }
 
   const checkDateValidations = () => {
-    const today = new Date()
-    const todayStr = today.toLocaleDateString('en-CA')
+    const todayStr = getLocalDate()
     const from = new Date(fromDate)
     const to = new Date(toDate)
 

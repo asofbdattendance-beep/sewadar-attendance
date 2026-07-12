@@ -344,7 +344,7 @@ export default function RecordsPage() {
     if (profile?.centre) {
       supabase.rpc('get_user_accessible_centres').then(({ data }) => {
         setCentresList((data || []).map(r => ({ name: r.centre_name })))
-      }).catch(() => {})
+      }).catch(err => console.error('Failed to load accessible centres:', err))
     }
   }, [profile?.role, profile?.centre])
 

@@ -106,7 +106,7 @@ function FormFields({ table, formData, setFormData, centres, isUsersTable, roleL
                     if (data?.permissions) {
                       setFormData(prev => ({ ...prev, permissions: data.permissions }))
                     }
-                  }).catch(() => {})
+                  }).catch(err => console.error('Failed to load role permissions:', err))
                 }
               }}
               required
@@ -245,7 +245,7 @@ export default function SuperAdminPage() {
           setLockDate('')
           setNewLockDate('')
         }
-      }).catch(() => {})
+      }).catch(err => console.error('Failed to load lock date:', err))
       return
     }
     fetchData(activeTable)
@@ -263,7 +263,7 @@ export default function SuperAdminPage() {
           data.forEach(r => { map[r.role_key] = r.role_label.replace(/_/g, ' ') })
           setRoleLabelMap(map)
         }
-      }).catch(() => {})
+      }).catch(err => console.error('Failed to load roles:', err))
     }
   }, [canAccessPanel])
 

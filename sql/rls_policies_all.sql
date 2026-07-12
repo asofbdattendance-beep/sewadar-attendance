@@ -153,7 +153,7 @@ DECLARE
   v_prev_month_first DATE;
 BEGIN
   -- Permanent rolling window: records before the 1st of the previous month are always locked
-  v_prev_month_first := (date_trunc('month', CURRENT_DATE - interval '1 month'))::DATE;
+  v_prev_month_first := (date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE - interval '1 month'))::DATE;
   IF p_date < v_prev_month_first THEN
     RETURN TRUE;
   END IF;
@@ -162,12 +162,12 @@ BEGIN
   SELECT value::DATE INTO v_lock_date FROM public.settings WHERE key = 'lock_date';
 
   -- No lock date set or lock hasn't activated yet
-  IF v_lock_date IS NULL OR CURRENT_DATE <= v_lock_date THEN
+  IF v_lock_date IS NULL OR (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE <= v_lock_date THEN
     RETURN FALSE;
   END IF;
 
   -- Lock is active: additionally lock records from months before the current month
-  RETURN date_trunc('month', p_date) < date_trunc('month', CURRENT_DATE);
+  RETURN date_trunc('month', p_date) < date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE);
 END;
 $$;
 
@@ -661,8 +661,8 @@ BEGIN
     RAISE EXCEPTION 'OUT date must be on or after IN date';
   END IF;
 
-  -- Block future OUT dates
-  IF p_out_date > CURRENT_DATE THEN
+  -- Block future OUT dates (use Asia/Kolkata timezone to match client)
+  IF p_out_date > (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE THEN
     RAISE EXCEPTION 'OUT date cannot be in the future';
   END IF;
 
@@ -980,7 +980,7 @@ SECURITY DEFINER
 SET search_path = ''
 AS $$
 BEGIN
-  IF NEW.in_date > CURRENT_DATE AND public.get_user_role() != 'super_admin' THEN
+  IF NEW.in_date > (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE AND public.get_user_role() != 'super_admin' THEN
     RAISE EXCEPTION 'Cannot create attendance session with a future date';
   END IF;
   RETURN NEW;
