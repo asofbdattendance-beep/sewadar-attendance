@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, createPortal } from 'react'
 import { supabase, ROLES, getLocalDate } from '../../lib/supabase'
 import { Calendar, Plus, Grid3X3, MapPin, RefreshCw, Trash2, X, ChevronDown, ChevronUp, Save, Edit3 } from 'lucide-react'
 import * as XLSX from 'xlsx'
@@ -249,8 +249,8 @@ function SpecificSchedulerModal({ open, onClose, onSave, centres }) {
         .select('id, title')
         .eq('schedule_type', 'specific')
         .eq('location', location)
-        .lte('from_date', toDate)
-        .gte('to_date', fromDate)
+        .lt('from_date', toDate)
+        .gt('to_date', fromDate)
         .limit(1)
       if (existingOverlap && existingOverlap.length > 0) {
         alert(`An overlapping specific schedule already exists for ${location} in this date range. Please adjust dates or edit the existing schedule.`)
@@ -799,7 +799,7 @@ function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrit
         </td>
       </tr>
 
-      {showModal && (
+      {showModal && createPortal(
         <div className="modal-overlay" onClick={() => { if (!changed || confirm('Discard changes?')) setShowModal(false) }}>
           <div className="modal-content sched-modal-content" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
@@ -859,7 +859,8 @@ function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrit
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   )
