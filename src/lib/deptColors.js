@@ -30,8 +30,9 @@ const DEPT_ABBR = {
 }
 
 export function getDeptColor(dept) {
+  if (!dept) return '#888'
   let h = 0
-  for (let i = 0; i < (dept || '').length; i++) h = ((h << 5) - h) + dept.charCodeAt(i)
+  for (let i = 0; i < dept.length; i++) h = ((h << 5) - h) + dept.charCodeAt(i)
   return DEPT_COLORS[Math.abs(h) % DEPT_COLORS.length]
 }
 

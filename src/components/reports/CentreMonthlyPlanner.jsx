@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase, getLocalDate } from '../../lib/supabase'
-import { ChevronLeft, ChevronRight, Printer, MapPin, Calendar } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Printer, Calendar } from 'lucide-react'
 import { getDeptColor, getDeptAbbr, getCentreAbbr } from '../../lib/deptColors'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -51,6 +51,7 @@ function buildDayMap(bhatiData, specificData, month, year) {
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`
       if (dateStr >= fromDate && dateStr <= toDate) {
         for (const e of entries) {
+          if (e.day_of_week != null && new Date(year, month - 1, d).getDay() !== e.day_of_week) continue
           push(dateStr, {
             department: e.department,
             centre: e.centre,
@@ -76,9 +77,11 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
   const [bhatiData, setBhatiData] = useState([])
   const [specificData, setSpecificData] = useState([])
   const [allCentres, setAllCentres] = useState([])
+  const [centreTab, setCentreTab] = useState(null)
   const [typeFilter, setTypeFilter] = useState('all')
   const [centreFilter, setCentreFilter] = useState(null)
   const [deptFilter, setDeptFilter] = useState(null)
+  const [tooltip, setTooltip] = useState({ show: false, items: [], color: '', x: 0, y: 0 })
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -129,11 +132,14 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
     else setMonth(m => m + 1)
   }
 
-  const dayMap = buildDayMap(bhatiData, specificData, month, year)
+  const dayMap = useMemo(() => buildDayMap(bhatiData, specificData, month, year), [bhatiData, specificData, month, year])
+
+  const centreNamesInData = [...new Set([...dayMap.values()].flat().map(e => e.centre).filter(Boolean))].sort()
 
   const filteredDayMap = new Map()
   for (const [dateStr, entries] of dayMap) {
     let filtered = entries
+    if (centreTab) filtered = filtered.filter(e => (e.centre || e.location) === centreTab)
     if (typeFilter !== 'all') filtered = filtered.filter(e => e.kind === typeFilter)
     if (centreFilter) filtered = filtered.filter(e => (e.centre || e.location) === centreFilter)
     if (deptFilter) filtered = filtered.filter(e => e.department === deptFilter)
@@ -193,8 +199,6 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
     return cells
   }
 
-  const centreNamesInData = [...new Set([...dayMap.values()].flat().map(e => e.centre).filter(Boolean))].sort()
-
   const centrePrintSections = centreNamesInData.map(cn => {
     const cm = buildCentreDayMap(filteredDayMap, cn)
     const totalForCentre = [...cm.values()].reduce((s, ee) => s + ee.reduce((a, e) => a + (e.count || 0), 0), 0)
@@ -202,53 +206,60 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
     const gridCells = renderGridFromDayMap(cm)
     const centreHasData = cm.size > 0
     return { centre: cn, dayMap: cm, total: totalForCentre, departments: depts, gridCells, hasData: centreHasData }
-  })
+  }).filter(cs => cs.hasData)
 
-  function renderCentreEntries(entries) {
-    const groups = {}
+  function renderCompactEntries(entries) {
+    const deptMap = {}
+    const centreMap = {}
     for (const e of entries) {
-      const label = e.kind === 'specific' ? (e.location || '—') : ((e.title || '').split(' - ')[0] || '—')
-      if (!groups[label]) groups[label] = { label, depts: [] }
-      groups[label].depts.push({ abbr: getDeptAbbr(e.department), count: e.count, dept: e.department })
+      const d = e.department || 'General'
+      if (!deptMap[d]) { deptMap[d] = 0; centreMap[d] = [] }
+      deptMap[d] += e.count || 0
+      const c = e.centre || 'Unknown'
+      const existing = centreMap[d].find(x => x.centre === c)
+      if (existing) existing.count += e.count || 0
+      else centreMap[d].push({ centre: c, count: e.count || 0 })
     }
-    return Object.values(groups).map((g, i) => {
-      const bgColor = getDeptColor(g.label)
+    return Object.entries(deptMap).map(([dept, count]) => {
+      const color = getDeptColor(dept)
       return (
-        <div key={i} className="planner-entry" style={{ background: `${bgColor}0D`, borderLeftColor: bgColor }}>
-          <span className="entry-label" style={{ color: bgColor }}><MapPin size={11} /> {g.label.toUpperCase()}</span>
-          <span className="entry-sep"></span>
-          <span className="entry-meta-inline">{g.depts.map(d => {
-            const dc = getDeptColor(d.dept)
-            return <span key={d.dept} className="dept-chip" style={{ background: `${dc}18`, color: dc }}>{d.abbr};{d.count}</span>
-          })}</span>
-        </div>
+        <span key={dept} className="compact-dept" style={{ color }}
+          onMouseEnter={e => setTooltip({ show: true, items: centreMap[dept], color, x: e.clientX, y: e.clientY })}
+          onMouseLeave={() => setTooltip({ show: false, items: [], color: '', x: 0, y: 0 })}>
+          {getDeptAbbr(dept)}:{count}
+        </span>
       )
     })
   }
 
-  function renderAsoEntries(entries) {
+  function renderGroupedEntries(entries) {
     const groups = {}
     for (const e of entries) {
       const label = e.kind === 'specific' ? (e.location || '—') : ((e.title || '').split(' - ')[0] || '—')
-      const dept = e.department || 'General'
-      const deptAbbr = getDeptAbbr(dept)
-      const key = `${label}|${dept}`
-      if (!groups[key]) groups[key] = { label, dept, deptAbbr, centres: [] }
-      const loc = e.centre || e.location || 'Unknown'
-      const existing = groups[key].centres.find(c => c.name === loc)
+      if (!groups[label]) groups[label] = { label, depts: {} }
+      const d = e.department || 'General'
+      if (!groups[label].depts[d]) groups[label].depts[d] = { abbr: getDeptAbbr(d), dept: d, count: 0, centres: [] }
+      groups[label].depts[d].count += e.count || 0
+      const c = e.centre || 'Unknown'
+      const existing = groups[label].depts[d].centres.find(x => x.centre === c)
       if (existing) existing.count += e.count || 0
-      else groups[key].centres.push({ name: loc, count: e.count || 0 })
+      else groups[label].depts[d].centres.push({ centre: c, count: e.count || 0 })
     }
     return Object.values(groups).map((g, i) => {
-      const color = getDeptColor(g.dept)
-      const centresStr = g.centres.map(c => `${getCentreAbbr(c.name)};${c.count}`).join(', ')
+      const color = getDeptColor(g.label)
       return (
-        <div key={i} className="planner-entry" style={{ background: `${color}0D`, borderLeftColor: color }}>
-          <span className="entry-label" style={{ color: getDeptColor(g.label) }}><MapPin size={11} /> {g.label.toUpperCase()}</span>
-          <span className="entry-sep"></span>
-          <span className="entry-label-dept">{g.deptAbbr}</span>
-          <span className="entry-sep"></span>
-          <span className="aso-centres-text">{centresStr}</span>
+        <div key={i} className="planner-entry" style={{ borderLeftColor: color }}>
+          <span className="entry-label" style={{ color }}>{g.label.toUpperCase()}</span>
+          {Object.values(g.depts).map(d => {
+            const dc = getDeptColor(d.dept)
+            return (
+              <span key={d.dept} className="compact-dept" style={{ color: dc }}
+                onMouseEnter={e => setTooltip({ show: true, items: d.centres, color: dc, x: e.clientX, y: e.clientY })}
+                onMouseLeave={() => setTooltip({ show: false, items: [], color: '', x: 0, y: 0 })}>
+                {d.abbr}:{d.count}
+              </span>
+            )
+          })}
         </div>
       )
     })
@@ -317,7 +328,17 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
           <Calendar size={32} />
           <p>No duties scheduled for {MONTHS[month - 1]} {year}</p>
         </div>
-      ) : (
+      ) : (<>
+        {centreNamesInData.length > 1 && (
+          <div className="planner-centre-tabs">
+            <button className={`planner-centre-tab${!centreTab ? ' active' : ''}`} onClick={() => setCentreTab(null)}>All</button>
+            {centreNamesInData.map(c => (
+              <button key={c} className={`planner-centre-tab${centreTab === c ? ' active' : ''}`} onClick={() => setCentreTab(c)}>
+                {getCentreAbbr(c)}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="planner-grid">
           {WEEKDAYS.map(d => (
             <div key={d} className="planner-weekday">{d}</div>
@@ -330,12 +351,12 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
                 className={`planner-day${isEmpty ? ' empty' : ''}`}
               >
                 {cell.date && <div className="planner-date-num">{cell.date.getDate()}</div>}
-                {!isEmpty && (isAsoView ? renderAsoEntries(cell.entries) : renderCentreEntries(cell.entries))}
+                {!isEmpty && (centreTab ? renderCompactEntries(cell.entries) : renderGroupedEntries(cell.entries))}
               </div>
             )
           })}
         </div>
-      )}
+      </>)}
 
       {hasData && (
         <div className="planner-footer">
@@ -363,7 +384,7 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
                 {cs.gridCells.map((cell, i) => (
                   <div key={i} className={`planner-day${!cell.date || !cell.entries?.length ? ' empty' : ''}`}>
                     {cell.date && <div className="planner-date-num">{cell.date.getDate()}</div>}
-                    {cell.entries?.length > 0 && renderCentreEntries(cell.entries)}
+                    {cell.entries?.length > 0 && renderCompactEntries(cell.entries)}
                   </div>
                 ))}
               </div>
@@ -372,6 +393,22 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {tooltip.show && (
+        <div className="planner-tooltip" style={{ left: tooltip.x + 10, top: tooltip.y - 10 }}>
+          <div className="planner-tooltip-header" style={{ backgroundColor: tooltip.color }}>
+            Centre Details
+          </div>
+          <div className="planner-tooltip-list">
+            {tooltip.items.map((item, i) => (
+              <div key={i} className="planner-tooltip-row">
+                <span className="planner-tooltip-name">{item.centre}</span>
+                <span className="planner-tooltip-count" style={{ color: tooltip.color }}>{item.count}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

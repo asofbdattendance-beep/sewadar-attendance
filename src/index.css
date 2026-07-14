@@ -2510,7 +2510,56 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .bhati-dist-sum .mismatch { color:var(--error); }
 
 /* ========== MONTHLY PLANNER V2 ========== */
-.monthly-planner { font-size:13px; }
+.monthly-planner { font-size:12px; }
+
+.planner-centre-tabs {
+  display:flex; flex-wrap:wrap; gap:4px; margin-bottom:10px;
+}
+.planner-centre-tab {
+  padding:4px 12px; border:1px solid var(--border); border-radius:6px;
+  font-size:10px; font-weight:600; cursor:pointer;
+  background:white; color:var(--text-secondary);
+  transition:all 0.12s;
+}
+.planner-centre-tab:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.planner-centre-tab.active {
+  background:var(--excel-green); color:white; border-color:var(--excel-green);
+}
+
+.compact-dept {
+  display:inline-flex; align-items:baseline; gap:0px;
+  font-size:10px; font-weight:700; margin-right:6px;
+  white-space:nowrap; cursor:help;
+}
+
+.planner-tooltip {
+  position:fixed; z-index:99999;
+  background:#fff; color:var(--text-primary);
+  border-radius:8px; font-size:12px;
+  pointer-events:none;
+  box-shadow:0 4px 16px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.04);
+  min-width:140px;
+  transform:translateY(-100%);
+  overflow:hidden;
+}
+.planner-tooltip-header {
+  padding:5px 12px; font-size:10px; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.04em;
+  color:#fff;
+}
+.planner-tooltip-list {
+  padding:4px 0;
+}
+.planner-tooltip-row {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:3px 12px; gap:16px;
+}
+.planner-tooltip-name {
+  font-size:12px; font-weight:500; color:var(--text-primary);
+}
+.planner-tooltip-count {
+  font-size:12px; font-weight:700;
+}
 .planner-filters {
   display:flex; flex-wrap:wrap; gap:8px 20px; margin-bottom:12px;
   padding:10px 12px; background:var(--bg); border-radius:8px;
@@ -2583,70 +2632,31 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 }
 .planner-day {
   background:var(--bg-white);
-  padding:6px;
-  min-height:80px;
+  padding:4px 5px;
+  min-height:60px;
 }
 .planner-day.empty { background:var(--bg-secondary); }
 
 .planner-date-num {
-  font-size:12px; font-weight:700; color:var(--text-primary);
-  margin-bottom:4px;
+  font-size:11px; font-weight:700; color:var(--text-primary);
+  margin-bottom:2px;
 }
 .planner-entry {
-  border-left:3px solid transparent;
-  border-radius:4px;
-  padding:3px 6px;
-  margin-bottom:4px;
-  font-size:11px;
-  line-height:1.5;
+  border-left:2px solid transparent;
+  padding:1px 4px;
+  margin-bottom:2px;
+  font-size:10px;
+  line-height:1.4;
   display:flex;
   align-items:baseline;
   flex-wrap:wrap;
-  gap:2px 4px;
+  gap:1px 4px;
 }
 .entry-label {
   font-weight:700;
   color:var(--text-primary);
-  font-size:11px;
-  display:inline-flex;
-  align-items:center;
-  gap:3px;
-  white-space:nowrap;
-}
-.entry-sep {
-  display:inline-block;
-  width:1px;
-  height:12px;
-  background:var(--text-muted);
-  opacity:0.4;
-  margin:0 2px;
-}
-.entry-label-dept {
-  font-weight:600;
-  font-size:10px;
-  color:var(--text-secondary);
-  white-space:nowrap;
-}
-.entry-meta-inline {
-  display:inline-flex;
-  flex-wrap:wrap;
-  gap:2px;
-  align-items:center;
-}
-.aso-centres-text {
-  font-size:10px;
-  color:var(--text-secondary);
-  line-height:1.4;
-}
-.dept-chip {
-  display:inline-flex;
-  align-items:center;
-  padding:0 5px;
-  border-radius:3px;
-  font-weight:700;
   font-size:9px;
-  letter-spacing:0.02em;
-  line-height:1.6;
+  white-space:nowrap;
 }
 .planner-entry-group {
   border-left:3px solid transparent;
@@ -2778,7 +2788,7 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
     print-color-adjust:exact;
   }
   .print-grid .planner-day {
-    min-height:28mm;
+    min-height:26mm;
     padding:1mm;
     border:0.5px solid #eee;
     -webkit-print-color-adjust:exact;
@@ -2788,27 +2798,19 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   .print-grid .planner-day.empty { background:#fafafa; }
   .print-grid .planner-date-num {
     font-size:8pt; font-weight:700;
-    color:#333; margin-bottom:1mm;
+    color:#333; margin-bottom:0.5mm;
   }
   .print-grid .planner-entry {
-    font-size:6.5pt;
-    padding:0.5mm 1mm;
-    margin-bottom:0.5mm;
-    border-left-width:2px;
+    font-size:6pt;
+    padding:0.3mm 0.5mm;
+    margin-bottom:0.3mm;
+    border-left-width:1.5px;
     -webkit-print-color-adjust:exact;
     print-color-adjust:exact;
     line-height:1.2;
   }
-  .print-grid .planner-entry .entry-label { font-size:6.5pt; }
-  .print-grid .planner-entry .entry-label svg { width:8px; height:8px; }
-  .print-grid .planner-entry .entry-sep { display:none; }
-  .print-grid .planner-entry .entry-meta-inline { font-size:6pt; }
-  .print-grid .dept-chip {
-    font-size:6pt;
-    padding:0 2mm;
-    -webkit-print-color-adjust:exact;
-    print-color-adjust:exact;
-  }
+  .print-grid .planner-entry .entry-label { font-size:6pt; }
+  .print-grid .compact-dept { font-size:6pt; margin-right:2mm; }
 
   .planner-total-bar {
     text-align:center;

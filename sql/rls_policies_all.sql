@@ -1452,6 +1452,15 @@ CREATE INDEX idx_jatha_schedule_entries_schedule ON public.jatha_schedule_entrie
 DROP INDEX IF EXISTS idx_jatha_schedule_entries_centre;
 CREATE INDEX idx_jatha_schedule_entries_centre ON public.jatha_schedule_entries(centre);
 
+-- Remove duplicate (schedule_id, department) rows before adding unique constraint
+DELETE FROM public.jatha_schedule_entries
+WHERE department IS NOT NULL
+AND id NOT IN (
+  SELECT MIN(id) FROM public.jatha_schedule_entries WHERE department IS NOT NULL GROUP BY schedule_id, department
+);
+
+ALTER TABLE public.jatha_schedule_entries ADD CONSTRAINT unique_entry_department UNIQUE (schedule_id, department);
+
 -- TABLE: jatha_schedule_allocations (soft distribution overlay, parent entry untouched)
 CREATE TABLE IF NOT EXISTS public.jatha_schedule_allocations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1524,6 +1533,11 @@ CREATE POLICY jatha_schedules_write ON public.jatha_schedules
     OR (
       public.get_user_role() IN ('admin', 'aso')
       AND public.has_permission('allow_jatha')
+      AND EXISTS (
+        SELECT 1 FROM public.jatha_schedule_entries e
+        WHERE e.schedule_id = id
+        AND e.centre IN (SELECT public.get_user_accessible_centres())
+      )
     )
   )
   WITH CHECK (

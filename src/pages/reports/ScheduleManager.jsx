@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef, createPortal } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { supabase, ROLES, getLocalDate } from '../../lib/supabase'
 import { Calendar, Plus, Grid3X3, MapPin, RefreshCw, Trash2, X, ChevronDown, ChevronUp, Save, Edit3 } from 'lucide-react'
 import * as XLSX from 'xlsx'
@@ -68,6 +69,8 @@ function BhatiSchedulerModal({ open, onClose, onSave, centres }) {
       }
     }
     if (validRows.length === 0) { alert('Please add at least one centre with a count'); return }
+    const curYear = new Date().getFullYear()
+    if (year < curYear - 1 || year > curYear + 1) { alert('Please select a valid year'); return }
     setSaving(true)
     try {
       const { data: existing } = await supabase
@@ -138,7 +141,7 @@ function BhatiSchedulerModal({ open, onClose, onSave, centres }) {
             </div>
             <div className="schedule-field">
               <label>Year</label>
-              <input type="number" value={year} onChange={e => setYear(Number(e.target.value))} min={2024} max={2030} />
+              <input type="number" value={year} onChange={e => setYear(Number(e.target.value))} min={new Date().getFullYear() - 1} max={new Date().getFullYear() + 1} />
             </div>
           </div>
 
@@ -204,6 +207,20 @@ function SpecificSchedulerModal({ open, onClose, onSave, centres }) {
   const [departments, setDepartments] = useState([])
   const [rows, setRows] = useState([])
   const [saving, setSaving] = useState(false)
+  const [masterData, setMasterData] = useState([])
+
+  const locationDepts = useMemo(() => {
+    const map = {}
+    for (const d of masterData) {
+      if (!map[d.centre_name]) map[d.centre_name] = new Set()
+      map[d.centre_name].add(d.department)
+    }
+    return map
+  }, [masterData])
+
+  const filteredDepartments = location
+    ? departments.filter(d => locationDepts[location]?.has(d))
+    : departments
 
   useEffect(() => {
     if (!open) return
@@ -217,9 +234,11 @@ function SpecificSchedulerModal({ open, onClose, onSave, centres }) {
       .eq('is_active', true)
       .not('centre_name', 'is', null)
       .then(({ data }) => {
-        const locs = [...new Set((data || []).map(d => d.centre_name))]
+        const raw = data || []
+        setMasterData(raw)
+        const locs = [...new Set(raw.map(d => d.centre_name))]
         setLocations(locs)
-        const depts = [...new Set((data || []).map(d => d.department).filter(Boolean))]
+        const depts = [...new Set(raw.map(d => d.department).filter(Boolean))]
         setDepartments(depts)
       })
   }, [open])
@@ -241,19 +260,20 @@ function SpecificSchedulerModal({ open, onClose, onSave, centres }) {
     if (!department) { alert('Please select a department'); return }
     const validRows = rows.filter(r => r.centre && r.count > 0)
     if (validRows.length === 0) { alert('Please add at least one centre with a count'); return }
-    if (toDate < fromDate) { alert('To date must be on or after from date'); setSaving(false); return }
+    if (toDate < fromDate) { alert('To date must be on or after from date'); return }
     setSaving(true)
     try {
       const { data: existingOverlap } = await supabase
         .from('jatha_schedules')
-        .select('id, title')
+        .select('id, jatha_schedule_entries!inner(department)')
         .eq('schedule_type', 'specific')
         .eq('location', location)
-        .lt('from_date', toDate)
-        .gt('to_date', fromDate)
+        .lte('from_date', toDate)
+        .gte('to_date', fromDate)
+        .eq('jatha_schedule_entries.department', department)
         .limit(1)
       if (existingOverlap && existingOverlap.length > 0) {
-        alert(`An overlapping specific schedule already exists for ${location} in this date range. Please adjust dates or edit the existing schedule.`)
+        alert(`An overlapping specific schedule already exists for ${location} (${department}) in this date range. Please adjust dates or edit the existing schedule.`)
         setSaving(false); return
       }
       const { data: { user } } = await supabase.auth.getUser()
@@ -263,7 +283,7 @@ function SpecificSchedulerModal({ open, onClose, onSave, centres }) {
       if (schedErr) { alert('Failed to create schedule. Please try again.'); console.error(schedErr); setSaving(false); return }
 
       const entryRows = validRows.map(r => ({
-        schedule_id: schedule.id, day_of_week: null, department, date: null, centre: r.centre, count: r.count, created_by: user?.id
+        schedule_id: schedule.id, day_of_week: null, department, jatha_type: `Jatha ${location}`, date: null, centre: r.centre, count: r.count, created_by: user?.id
       }))
       const { error: entErr } = await supabase.from('jatha_schedule_entries').insert(entryRows)
       if (entErr) { alert('Failed to save schedule entries. Please try again.'); console.error(entErr); setSaving(false); return }
@@ -290,7 +310,7 @@ function SpecificSchedulerModal({ open, onClose, onSave, centres }) {
           <div className="schedule-form-row">
             <div className="schedule-field">
               <label>Location</label>
-              <select value={location} onChange={e => setLocation(e.target.value)}>
+              <select value={location} onChange={e => { setLocation(e.target.value); setDepartment('') }}>
                 <option value="">Select location...</option>
                 {locations.map(l => <option key={l} value={l}>{l}</option>)}
               </select>
@@ -299,7 +319,7 @@ function SpecificSchedulerModal({ open, onClose, onSave, centres }) {
               <label>Department</label>
               <select value={department} onChange={e => setDepartment(e.target.value)}>
                 <option value="">Select department...</option>
-                {departments.map(d => <option key={d} value={d}>{d}</option>)}
+                {filteredDepartments.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
             </div>
           </div>
@@ -350,6 +370,7 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
   const [changed, setChanged] = useState(false)
   const [renderTick, setRenderTick] = useState(0)
   const [childMap, setChildMap] = useState({})
+  const [activeDept, setActiveDept] = useState('')
 
   useEffect(() => {
     entriesRef.current = [...entries]
@@ -381,6 +402,14 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
       })
     }
   }, [entries])
+
+  const localEntriesForDept = entriesRef.current
+  const deptList = [...new Set(localEntriesForDept.map(e => e.department).filter(Boolean))]
+  useEffect(() => {
+    if (deptList.length > 0 && !deptList.includes(activeDept)) {
+      setActiveDept(deptList[0])
+    }
+  }, [deptList])
 
   const updateCount = (entryId, val) => {
     entriesRef.current = entriesRef.current.map(e => e.id === entryId ? { ...e, count: Math.max(0, parseInt(val) || 0) } : e)
@@ -495,6 +524,8 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
 
   const saveChanges = async () => {
     setSaving(true)
+    let errors = []
+    let savedAllocs = {}
     try {
       const localEntries = entriesRef.current
       const localDist = distRef.current
@@ -502,31 +533,77 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
       const localNewDist = newDistRef.current
       const { data: { user } } = await supabase.auth.getUser()
 
+      // Phase 1: Validate all distribution sums first
       for (const e of localEntries) {
-        const original = schedule.jatha_schedule_entries.find(o => o.id === e.id)
-        if (original && original.count !== e.count) {
-          const { error } = await supabase.from('jatha_schedule_entries').update({ count: e.count }).eq('id', e.id)
-          if (error) { alert('Failed to update entry. Please try again.'); console.error(error); setSaving(false); return }
-        }
         const dist = localDist[e.id]
-        if (dist && Object.values(dist).some(v => v > 0)) {
+        if (dist) {
           const childSum = Object.values(dist).reduce((s, v) => s + v, 0)
           if (childSum > e.count) {
             alert(`Distribution for ${e.centre} sums to ${childSum}, exceeds available ${e.count}`)
             setSaving(false); return
           }
+        }
+      }
+      for (const [dayIdx, rows] of Object.entries(localNewRows)) {
+        for (let ri = 0; ri < rows.length; ri++) {
+          const r = rows[ri]
+          if (!r.centre || r.count <= 0) continue
+          const dist = localNewDist[dayIdx]?.[ri]
+          if (dist) {
+            const childSum = Object.values(dist).reduce((s, v) => s + v, 0)
+            if (childSum > r.count) {
+              alert(`Distribution for ${r.centre} sums to ${childSum}, exceeds ${r.count}`)
+              setSaving(false); return
+            }
+          }
+        }
+      }
+
+      // Phase 2: Save existing allocations before any delete
+      const allocEntryIds = localEntries
+        .filter(e => localDist[e.id])
+        .map(e => e.id)
+      if (allocEntryIds.length > 0) {
+        const { data: oldAllocs } = await supabase
+          .from('jatha_schedule_allocations')
+          .select('*')
+          .in('entry_id', allocEntryIds)
+        if (oldAllocs) {
+          for (const a of oldAllocs) {
+            if (!savedAllocs[a.entry_id]) savedAllocs[a.entry_id] = []
+            savedAllocs[a.entry_id].push(a)
+          }
+        }
+      }
+
+      // Phase 3: Update existing entries (counts + distributions)
+      for (const e of localEntries) {
+        const original = schedule.jatha_schedule_entries.find(o => o.id === e.id)
+        if (original && original.count !== e.count) {
+          const { error } = await supabase.from('jatha_schedule_entries').update({ count: e.count }).eq('id', e.id)
+          if (error) { errors.push(`Failed to update ${e.centre}: ${error.message}`); continue }
+        }
+        const dist = localDist[e.id]
+        if (dist && Object.values(dist).some(v => v > 0)) {
           const { error: delErr } = await supabase.from('jatha_schedule_allocations').delete().eq('entry_id', e.id)
-          if (delErr) { console.error('Failed to clear existing allocations:', delErr); alert('Failed to update distribution. Please try again.'); setSaving(false); return }
+          if (delErr) { errors.push(`Failed to update distribution for ${e.centre}`); continue }
           const allocRows = Object.entries(dist).filter(([,c]) => c > 0).map(([child, count]) => ({
             entry_id: e.id, centre: child, count, created_by: user?.id
           }))
           if (allocRows.length > 0) {
             const { error } = await supabase.from('jatha_schedule_allocations').insert(allocRows)
-            if (error) { alert('Failed to save distribution. Please try again.'); console.error(error); setSaving(false); return }
+            if (error) {
+              // Rollback: restore old allocations
+              if (savedAllocs[e.id]) {
+                await supabase.from('jatha_schedule_allocations').insert(savedAllocs[e.id])
+              }
+              errors.push(`Failed to save distribution for ${e.centre}`)
+            }
           }
         }
       }
 
+      // Phase 4: Add new rows
       for (const [dayIdx, rows] of Object.entries(localNewRows)) {
         for (let ri = 0; ri < rows.length; ri++) {
           const r = rows[ri]
@@ -547,27 +624,27 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
             const { data: ins, error } = await supabase.from('jatha_schedule_entries').insert({
               schedule_id: schedule.id, day_of_week: d, department: activeDept, centre: r.centre, count: r.count, created_by: user?.id
             }).select('id').single()
-            if (error) { alert('Failed to add entry. Please try again.'); console.error(error); continue }
+            if (error) { errors.push(`Failed to add ${r.centre}: ${error.message}`); continue }
             entryId = ins.id
           }
           const dist = localNewDist[dayIdx]?.[ri]
           if (dist && Object.values(dist).some(v => v > 0)) {
-            const childSum = Object.values(dist).reduce((s, v) => s + v, 0)
-            if (childSum > r.count) {
-              alert(`Distribution for ${r.centre} sums to ${childSum}, exceeds ${r.count}`)
-              setSaving(false); return
-            }
             const { error: delErr } = await supabase.from('jatha_schedule_allocations').delete().eq('entry_id', entryId)
-            if (delErr) { console.error('Failed to clear existing allocations:', delErr); alert('Failed to update distribution. Please try again.'); setSaving(false); return }
+            if (delErr) { errors.push(`Failed to update distribution for new row`); continue }
             const allocRows = Object.entries(dist).filter(([,c]) => c > 0).map(([child, count]) => ({
               entry_id: entryId, centre: child, count, created_by: user?.id
             }))
             if (allocRows.length > 0) {
               const { error } = await supabase.from('jatha_schedule_allocations').insert(allocRows)
-              if (error) { alert('Failed to save distribution. Please try again.'); console.error(error); setSaving(false); return }
+              if (error) { errors.push(`Failed to save distribution for new row`); continue }
             }
           }
         }
+      }
+
+      if (errors.length > 0) {
+        alert(`Some changes couldn't be saved:\n${errors.join('\n')}\n\nFix the issues and try again.`)
+        setSaving(false); return
       }
 
       newRowsRef.current = {}
@@ -580,20 +657,14 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
     } catch (err) {
       alert('Failed to save changes. Please try again.')
       console.error(err)
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const localEntries = entriesRef.current
   const newRows = newRowsRef.current
   const departments = [...new Set(localEntries.map(e => e.department).filter(Boolean))]
-  const [activeDept, setActiveDept] = useState('')
-
-  useEffect(() => {
-    if (departments.length > 0 && !departments.includes(activeDept)) {
-      setActiveDept(departments[0])
-    }
-  }, [departments])
 
   const deptEntries = activeDept ? localEntries.filter(e => e.department === activeDept) : localEntries
   const deptNewRows = activeDept ? newRows : {}
@@ -882,13 +953,17 @@ export default function ScheduleManager({ profile }) {
 
   const fetchSchedules = useCallback(async () => {
     setLoading(true)
-    const [centresRes] = await Promise.all([
-      supabase.rpc('get_user_accessible_centres')
-    ])
-    const centresList = (centresRes.data || []).map(r => ({ name: r.centre_name }))
+    let centresData = []
+    try { const { data } = await supabase.rpc('get_user_accessible_centres'); centresData = data || [] } catch (_) { centresData = [] }
+    const centresList = centresData.map(r => ({ name: r.centre_name }))
     setCentres(centresList)
 
-    const schedRes = await supabase.from('jatha_schedules').select('*').order('created_at', { ascending: false }).limit(200)
+    const curYear = new Date().getFullYear()
+    const schedRes = await supabase
+      .from('jatha_schedules')
+      .select('*')
+      .or(`year.gte.${curYear - 1},to_date.gte.${curYear - 1}-01-01`)
+      .order('created_at', { ascending: false })
     const schedData = schedRes.data || []
     setSchedules(schedData)
     const map = {}
