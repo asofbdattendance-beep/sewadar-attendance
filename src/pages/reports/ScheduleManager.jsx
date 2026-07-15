@@ -104,7 +104,15 @@ function BhatiSchedulerModal({ open, onClose, onSave, centres }) {
         schedule_id: schedule.id, day_of_week: Number(e._dayIdx), department: selectedDept, jatha_type: 'major_centre', centre: e.centre, count: e.count, created_by: user?.id
       }))
       const { error: entErr } = await supabase.from('jatha_schedule_entries').insert(rows)
-      if (entErr) { alert('Failed to save schedule entries. Please try again.'); console.error(entErr); setSaving(false); return }
+      if (entErr) {
+        await supabase.from('jatha_schedules').delete().eq('id', schedule.id)
+        if (entErr.code === '23505') {
+          alert('This centre already exists in this schedule. Please edit the existing entry instead.')
+        } else {
+          alert('Failed to save schedule entries. Please try again.')
+        }
+        console.error(entErr); setSaving(false); return
+      }
 
       setSaving(false)
       onSave()
@@ -263,18 +271,24 @@ function SpecificSchedulerModal({ open, onClose, onSave, centres }) {
     if (toDate < fromDate) { alert('To date must be on or after from date'); return }
     setSaving(true)
     try {
-      const { data: existingOverlap } = await supabase
+      const { data: overlappingHeaders } = await supabase
         .from('jatha_schedules')
-        .select('id, jatha_schedule_entries!inner(department)')
+        .select('id')
         .eq('schedule_type', 'specific')
         .eq('location', location)
         .lte('from_date', toDate)
         .gte('to_date', fromDate)
-        .eq('jatha_schedule_entries.department', department)
-        .limit(1)
-      if (existingOverlap && existingOverlap.length > 0) {
-        alert(`An overlapping specific schedule already exists for ${location} (${department}) in this date range. Please adjust dates or edit the existing schedule.`)
-        setSaving(false); return
+      if (overlappingHeaders && overlappingHeaders.length > 0) {
+        const { data: deptEntries } = await supabase
+          .from('jatha_schedule_entries')
+          .select('schedule_id')
+          .in('schedule_id', overlappingHeaders.map(h => h.id))
+          .eq('department', department)
+          .limit(1)
+        if (deptEntries && deptEntries.length > 0) {
+          alert(`An overlapping specific schedule already exists for ${location} (${department}) in this date range. Please adjust dates or edit the existing schedule.`)
+          setSaving(false); return
+        }
       }
       const { data: { user } } = await supabase.auth.getUser()
       const autoTitle = `Specific - ${department} - ${location} - ${fmtDate(fromDate)} to ${fmtDate(toDate)}`
@@ -286,7 +300,15 @@ function SpecificSchedulerModal({ open, onClose, onSave, centres }) {
         schedule_id: schedule.id, day_of_week: null, department, jatha_type: `Jatha ${location}`, date: null, centre: r.centre, count: r.count, created_by: user?.id
       }))
       const { error: entErr } = await supabase.from('jatha_schedule_entries').insert(entryRows)
-      if (entErr) { alert('Failed to save schedule entries. Please try again.'); console.error(entErr); setSaving(false); return }
+      if (entErr) {
+        await supabase.from('jatha_schedules').delete().eq('id', schedule.id)
+        if (entErr.code === '23505') {
+          alert('This centre already exists in this schedule. Please edit the existing entry instead.')
+        } else {
+          alert('Failed to save schedule entries. Please try again.')
+        }
+        console.error(entErr); setSaving(false); return
+      }
 
       setSaving(false)
       onSave()
@@ -578,7 +600,7 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
 
       // Phase 3: Update existing entries (counts + distributions)
       for (const e of localEntries) {
-        const original = schedule.jatha_schedule_entries.find(o => o.id === e.id)
+        const original = entries.find(o => o.id === e.id)
         if (original && original.count !== e.count) {
           const { error } = await supabase.from('jatha_schedule_entries').update({ count: e.count }).eq('id', e.id)
           if (error) { errors.push(`Failed to update ${e.centre}: ${error.message}`); continue }
@@ -825,12 +847,25 @@ function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrit
     setSaving(true)
     try {
       const { data: { user } } = await supabase.auth.getUser()
+      const entryDept = departments[0] || (!isBhati && schedule.title?.startsWith('Specific - ') ? schedule.title.split(' - ')[1] : null) || null
       for (const e of entriesRef.current) {
         if (e._temp) {
-          const { error } = await supabase.from('jatha_schedule_entries').insert({
-            schedule_id: schedule.id, day_of_week: null, department: departments[0] || null, centre: e.centre, count: e.count, created_by: user?.id
-          })
-          if (error) { alert('Failed to add entry. Please try again.'); console.error(error); setSaving(false); return }
+          const { data: existing } = await supabase
+            .from('jatha_schedule_entries')
+            .select('id, count')
+            .eq('schedule_id', schedule.id)
+            .eq('department', entryDept)
+            .eq('centre', e.centre)
+            .maybeSingle()
+          if (existing) {
+            const { error: updErr } = await supabase.from('jatha_schedule_entries').update({ count: existing.count + e.count }).eq('id', existing.id)
+            if (updErr) { alert('Failed to update entry. Please try again.'); console.error(updErr); setSaving(false); return }
+          } else {
+            const { error } = await supabase.from('jatha_schedule_entries').insert({
+              schedule_id: schedule.id, day_of_week: null, department: entryDept, centre: e.centre, count: e.count, created_by: user?.id
+            })
+            if (error) { alert('Failed to add entry. Please try again.'); console.error(error); setSaving(false); return }
+          }
         } else {
           const orig = entries.find(o => o.id === e.id)
           if (orig && orig.count !== e.count) {

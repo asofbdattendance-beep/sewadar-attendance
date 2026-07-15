@@ -1452,14 +1452,25 @@ CREATE INDEX idx_jatha_schedule_entries_schedule ON public.jatha_schedule_entrie
 DROP INDEX IF EXISTS idx_jatha_schedule_entries_centre;
 CREATE INDEX idx_jatha_schedule_entries_centre ON public.jatha_schedule_entries(centre);
 
--- Remove duplicate (schedule_id, department) rows before adding unique constraint
+-- Drop old constraint that incorrectly only used (schedule_id, department)
+-- (caused 409 errors when multiple centres exist under the same department)
+ALTER TABLE public.jatha_schedule_entries DROP CONSTRAINT IF EXISTS unique_entry_department;
+
+-- Remove duplicate entries before adding new partial indexes
+-- For bhati schedules (day_of_week IS NOT NULL): unique per (schedule_id, department, centre, day_of_week)
+-- For specific schedules (day_of_week IS NULL): unique per (schedule_id, department, centre)
 DELETE FROM public.jatha_schedule_entries
-WHERE department IS NOT NULL
-AND id NOT IN (
-  SELECT MIN(id) FROM public.jatha_schedule_entries WHERE department IS NOT NULL GROUP BY schedule_id, department
+WHERE id NOT IN (
+  SELECT MIN(id) FROM public.jatha_schedule_entries GROUP BY schedule_id, department, centre, COALESCE(day_of_week, -1)
 );
 
-ALTER TABLE public.jatha_schedule_entries ADD CONSTRAINT unique_entry_department UNIQUE (schedule_id, department);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_entry_specific
+  ON public.jatha_schedule_entries (schedule_id, department, centre)
+  WHERE day_of_week IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_entry_bhati
+  ON public.jatha_schedule_entries (schedule_id, department, centre, day_of_week)
+  WHERE day_of_week IS NOT NULL;
 
 -- TABLE: jatha_schedule_allocations (soft distribution overlay, parent entry untouched)
 CREATE TABLE IF NOT EXISTS public.jatha_schedule_allocations (
