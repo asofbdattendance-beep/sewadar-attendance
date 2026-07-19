@@ -3,7 +3,7 @@ import { supabase, ROLES, ROLE_LABELS } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import { logAction } from '../lib/logger'
-import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search, Copy, CheckCircle, UserPlus, FileText, ChevronRight, ChevronDown, Calendar, AlertTriangle, UserCheck } from 'lucide-react'
+import { Settings, Plus, Pencil, Trash2, X, Save, Users, MapPin, Shield, Building, Search, Copy, CheckCircle, UserPlus, FileText, ChevronRight, ChevronDown, Calendar, AlertTriangle, UserCheck, LayoutDashboard, Scan, FileText as FileIcon, ClipboardList, Truck } from 'lucide-react'
 
 const TABLES = [
   { id: 'centres', label: 'Centres', icon: MapPin, 
@@ -24,14 +24,34 @@ const TABLES = [
     columns: [], sortBy: '', defaults: {} },
 ]
 
-const PERMISSIONS_LIST = [
-  { key: 'allow_dashboard', label: 'Allow Dashboard' },
-  { key: 'allow_records', label: 'Allow Records' },
-  { key: 'allow_scan', label: 'Allow Scanning' },
-  { key: 'allow_gate_entry', label: 'Allow Gate Entry' },
-  { key: 'allow_jatha', label: 'Allow Jatha Entry' },
-  { key: 'allow_reports', label: 'Allow Reports' },
+const PERMISSION_GROUPS = [
+  {
+    id: 'attendance', label: 'Attendance Management', icon: Users,
+    permissions: [
+      { key: 'allow_dashboard', label: 'Dashboard Stats' },
+      { key: 'allow_scan', label: 'Scan In/Out' },
+      { key: 'allow_gate_entry', label: 'Manual Entry' },
+      { key: 'allow_records', label: 'View Records' },
+      { key: 'allow_reports', label: 'Reports & Downloads' },
+    ]
+  },
+  {
+    id: 'schedules', label: 'Schedule Management', icon: Calendar,
+    note: 'Schedule creation & deletion is restricted to ASO and Super Admin roles only.',
+    permissions: [
+      { key: 'schedule_view', label: 'View Schedules' },
+      { key: 'schedule_distribute', label: 'Divide in Child Centre' },
+    ]
+  },
+  {
+    id: 'admin', label: 'Administration', icon: Settings,
+    permissions: [
+      { key: 'allow_settings', label: 'Settings & Users' },
+    ]
+  },
 ]
+
+const PERMISSIONS_LIST = PERMISSION_GROUPS.flatMap(g => g.permissions)
 
 function SkeletonRow({ cols }) {
   return (
@@ -58,24 +78,59 @@ function Modal({ isOpen, onClose, title, children }) {
   )
 }
 
-function PermissionToggle({ permissions, onChange }) {
+function GroupedPermissionToggle({ permissions, onChange }) {
   const perms = permissions || {}
   const toggle = (key) => {
     const updated = { ...perms, [key]: !perms[key] }
     onChange(updated)
   }
+  const toggleGroup = (groupPerms, on) => {
+    const updated = { ...perms }
+    groupPerms.forEach(p => { updated[p.key] = on })
+    onChange(updated)
+  }
   return (
-    <div className="permission-grid">
-      {PERMISSIONS_LIST.map(p => (
-        <label key={p.key} className="permission-item">
-          <input
-            type="checkbox"
-            checked={!!perms[p.key]}
-            onChange={() => toggle(p.key)}
-          />
-          <span>{p.label}</span>
-        </label>
-      ))}
+    <div className="perm-groups">
+      {PERMISSION_GROUPS.map(group => {
+        const Icon = group.icon
+        const allOn = group.permissions.length > 0 && group.permissions.every(p => perms[p.key])
+        const someOn = group.permissions.some(p => perms[p.key])
+        return (
+          <div key={group.id} className="perm-group">
+            <div className="perm-group-header">
+              <div className="perm-group-title">
+                <Icon size={18} />
+                <span>{group.label}</span>
+              </div>
+              {group.permissions.length > 0 && (
+                <label className="perm-toggle-all" onClick={() => toggleGroup(group.permissions, !allOn)}>
+                  <input type="checkbox" checked={allOn} readOnly />
+                  <span>{allOn ? 'All On' : someOn ? 'Partial' : 'All Off'}</span>
+                </label>
+              )}
+            </div>
+            {group.note && (
+              <div className="perm-group-note">{group.note}</div>
+            )}
+            {group.permissions.length > 0 ? (
+              <div className="perm-group-items">
+                {group.permissions.map(p => (
+                  <label key={p.key} className="perm-item">
+                    <input
+                      type="checkbox"
+                      checked={!!perms[p.key]}
+                      onChange={() => toggle(p.key)}
+                    />
+                    <span>{p.label}</span>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <div className="perm-group-empty">No toggleable permissions — managed separately.</div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -172,7 +227,7 @@ function FormFields({ table, formData, setFormData, centres, isUsersTable, roleL
               placeholder="Optional description"
             />
           ) : col === 'permissions' && (isUsersTable || table.id === 'role_masters') ? (
-            <PermissionToggle 
+            <GroupedPermissionToggle 
               permissions={formData.permissions} 
               onChange={(perms) => setFormData({ ...formData, permissions: perms })} 
             />

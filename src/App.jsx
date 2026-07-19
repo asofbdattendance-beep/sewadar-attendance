@@ -2,16 +2,18 @@ import { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { ToastProvider } from './components/Toast'
-import { supabase, ROLES } from './lib/supabase'
+import { supabase } from './lib/supabase'
 import LoginPage from './pages/LoginPage'
+import HomePage from './pages/HomePage'
 import DashboardPage from './pages/DashboardPage'
 import ScannerPage from './pages/ScannerPage'
 import RecordsPage from './pages/RecordsPage'
 import ProfilePage from './pages/ProfilePage'
 import AttendanceEntryPage from './pages/AttendanceEntryPage'
 import ReportsPage from './pages/ReportsPage'
+import SchedulesPage from './pages/SchedulesPage'
 import SuperAdminPage from './pages/SuperAdminPage'
-import { LayoutDashboard, Scan, FileText, WifiOff, User, ClipboardList, FileBarChart, Settings } from 'lucide-react'
+import { LayoutDashboard, Scan, FileText, WifiOff, User, ClipboardList, FileBarChart, Settings, Calendar, Home } from 'lucide-react'
 
 function AppLayout() {
   const { profile, loading, hasPermission } = useAuth()
@@ -41,26 +43,24 @@ function AppLayout() {
 
   if (!profile) return <LoginPage />
 
-  // Build nav items based on permissions
-  const navItems = [
-    { path: '/', label: 'Home', icon: LayoutDashboard, permission: 'allow_dashboard' },
+  const allNavItems = [
+    { path: '/', label: 'Home', icon: Home, always: true },
+    { path: '/attendance', label: 'Dashboard', icon: LayoutDashboard, permission: 'allow_dashboard' },
     { path: '/scan', label: 'Scan', icon: Scan, permission: 'allow_scan' },
     { path: '/records', label: 'Records', icon: FileText, permission: 'allow_records' },
-    { path: '/entry', label: 'Entry', icon: ClipboardList, permission: 'allow_gate_entry' },
+    { path: '/entry', label: 'Entry', icon: ClipboardList, gate: true },
     { path: '/reports', label: 'Reports', icon: FileBarChart, permission: 'allow_reports' },
-    { path: '/profile', label: 'Profile', icon: User },
+    { path: '/schedules', label: 'Schedules', icon: Calendar, permission: 'schedule_view' },
+    { path: '/superadmin', label: 'ASO', icon: Settings, permission: 'allow_settings' },
+    { path: '/profile', label: 'Profile', icon: User, always: true },
   ]
 
-  // Filter nav items based on permissions (ASO sees all)
-  const visibleNavItems = navItems.filter(item => {
-    if (!item.permission) return true // Profile always visible
-    if (item.path === '/entry') {
-      return hasPermission('allow_gate_entry') || hasPermission('allow_jatha')
-    }
-    return hasPermission(item.permission)
+  const navItems = allNavItems.filter(item => {
+    if (item.always) return true
+    if (item.gate) return hasPermission('allow_gate_entry') || hasPermission('allow_jatha')
+    if (item.permission) return hasPermission(item.permission)
+    return false
   })
-
-  const adminNav = profile?.role === ROLES.SUPER_ADMIN ? [{ path: '/superadmin', label: 'ASO', icon: Settings }] : []
 
   return (
     <div>
@@ -78,7 +78,9 @@ function AppLayout() {
 
       {/* Routes */}
       <Routes>
-        <Route path="/" element={hasPermission('allow_dashboard') ? <DashboardPage /> : <Navigate to="/profile" replace />} />
+        <Route path="/" element={<HomePage />} />
+        <Route path="/attendance" element={hasPermission('allow_dashboard') ? <DashboardPage /> : <Navigate to="/" replace />} />
+        <Route path="/schedules" element={hasPermission('schedule_view') ? <SchedulesPage /> : <Navigate to="/" replace />} />
         <Route path="/reports" element={hasPermission('allow_reports') ? <ReportsPage /> : <Navigate to="/" replace />} />
         <Route path="/scan" element={hasPermission('allow_scan') ? <ScannerPage isOnline={isOnline} /> : <Navigate to="/" replace />} />
         <Route path="/records" element={hasPermission('allow_records') ? <RecordsPage /> : <Navigate to="/" replace />} />
@@ -90,7 +92,7 @@ function AppLayout() {
 
       {/* Bottom Nav */}
       <nav className="bottom-nav">
-        {[...visibleNavItems, ...adminNav].map(({ path, label, icon: Icon }) => (
+        {navItems.map(({ path, label, icon: Icon }) => (
           <button
             key={path}
             className={`bottom-nav-item ${location.pathname === path ? 'active' : ''}`}

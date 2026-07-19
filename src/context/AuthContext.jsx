@@ -49,7 +49,7 @@ export function AuthProvider({ children }) {
       let perms = {}
       if (isFullAdmin) {
         // super_admin gets all permissions by default
-        perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true, allow_settings: true }
+        perms = { allow_dashboard: true, allow_records: true, allow_scan: true, allow_gate_entry: true, allow_jatha: true, allow_reports: true, allow_settings: true, schedule_view: true, schedule_distribute: true }
       } else if (isElevatedAccess) {
         // aso gets read-only permissions
         perms = { allow_dashboard: true, allow_records: true, allow_reports: true }
@@ -79,7 +79,7 @@ export function AuthProvider({ children }) {
   const hasPermission = (permKey) => {
     if (profile?.role === ROLES.SUPER_ADMIN) return true
     if (profile?.role === ROLES.ASO) {
-      return ['allow_dashboard', 'allow_records', 'allow_reports', 'allow_jatha'].includes(permKey)
+      return ['allow_dashboard', 'allow_records', 'allow_reports', 'allow_jatha', 'schedule_view', 'schedule_distribute'].includes(permKey)
     }
     return !!permissions[permKey]
   }

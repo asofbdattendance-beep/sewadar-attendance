@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase, ROLES, formatDateIndian, formatTime12Hour, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import ScheduleManager from './reports/ScheduleManager'
+
 import { 
   ChevronDown, ChevronRight, ChevronUp, Calendar, Download, FileSpreadsheet, FileText, 
   Users, UserCheck, Clock, AlertTriangle, UserX, Building, MapPin, RefreshCw, Settings, CheckCircle, Truck,
@@ -11,7 +11,7 @@ import {
 const REPORTS = {
   GATE: {
     id: 'gate',
-    label: 'Gate',
+    label: 'General',
     icon: Users,
     subReports: [
       { id: 'present', label: 'Present List', icon: UserCheck },
@@ -37,14 +37,6 @@ const REPORTS = {
       { id: 'jatha_attendance_report', label: 'Jatha Attendance', icon: Truck, description: 'Jatha attendance record showing destination and duration for each sewadar across selected dates' },
     ]
   },
-  SCHEDULES: {
-    id: 'schedules',
-    label: 'Schedules',
-    icon: Calendar,
-    subReports: [
-      { id: 'manage', label: 'Jatha Schedules', icon: Grid3X3 },
-    ]
-  }
 }
 
 const LATE_THRESHOLD_DEFAULT = '10:00'
@@ -339,6 +331,14 @@ export default function ReportsPage() {
   const currentCategory = Object.values(REPORTS).find(c => c.id === activeCategory)
   const currentSubReports = currentCategory?.subReports || []
 
+  const SINGLE_DATE_REPORTS = ['present', 'absenteeism', 'currently_inside', 'late_coming']
+  const isSingleDate = SINGLE_DATE_REPORTS.includes(activeReport)
+
+  const handleDateFromChange = (val) => {
+    setDateFrom(val)
+    if (isSingleDate) setDateTo(val)
+  }
+
   const handleCategoryChange = (catId) => {
     setActiveCategory(catId)
     const cat = Object.values(REPORTS).find(c => c.id === catId)
@@ -349,6 +349,9 @@ export default function ReportsPage() {
 
   const handleSubReportChange = (reportId) => {
     setActiveReport(reportId)
+    if (SINGLE_DATE_REPORTS.includes(reportId)) {
+      setDateTo(dateFrom)
+    }
   }
 
   const getWeekRange = (offset = 0) => {
@@ -1219,14 +1222,14 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
       {/* Date Range / Centre Filter */}
       <div className="report-filters">
-        {activeCategory === 'downloads' || activeCategory === 'schedules' ? <span /> : (
+        {activeCategory === 'downloads' ? <span /> : (
           <>
             <DateRangePicker
               dateFrom={dateFrom}
               dateTo={dateTo}
-              onDateFromChange={setDateFrom}
+              onDateFromChange={handleDateFromChange}
               onDateToChange={setDateTo}
-              singleDate={false}
+              singleDate={isSingleDate}
             />
             <div className="export-btn-group">
               <ExportDropdown onExport={handleExport} loading={loading} label="Export" description="Centre + Sub Centre" />
@@ -1244,7 +1247,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
         onTabChange={handleCategoryChange}
         tabs={Object.values(REPORTS).filter(t => {
           if (t.id === 'aso' && profile?.role !== ROLES.SUPER_ADMIN && profile?.role !== ROLES.ASO) return false
-          if (t.id === 'schedules' && !hasPermission('allow_jatha')) return false
+
+
           return true
         })}
       />
@@ -1321,8 +1325,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
             </div>
           </div>
         </div>
-      ) : activeCategory === 'schedules' ? (
-        <ScheduleManager profile={profile} />
       ) : (
         <>
           {/* Sub Tabs */}

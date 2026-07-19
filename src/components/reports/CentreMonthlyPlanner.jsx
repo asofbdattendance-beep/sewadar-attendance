@@ -14,6 +14,11 @@ function getFirstDayOfMonth(year, month) {
   return new Date(year, month - 1, 1).getDay()
 }
 
+function centreMatches(entryCentre, filterCentre) {
+  if (entryCentre === filterCentre) return true
+  return (entryCentre || '').split(' & ').includes(filterCentre)
+}
+
 function buildDayMap(bhatiData, specificData, month, year) {
   const dayMap = new Map()
   const daysInMonth = getDaysInMonth(year, month)
@@ -139,9 +144,9 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
   const filteredDayMap = new Map()
   for (const [dateStr, entries] of dayMap) {
     let filtered = entries
-    if (centreTab) filtered = filtered.filter(e => (e.centre || e.location) === centreTab)
+    if (centreTab) filtered = filtered.filter(e => centreMatches(e.centre || e.location, centreTab))
     if (typeFilter !== 'all') filtered = filtered.filter(e => e.kind === typeFilter)
-    if (centreFilter) filtered = filtered.filter(e => (e.centre || e.location) === centreFilter)
+    if (centreFilter) filtered = filtered.filter(e => centreMatches(e.centre || e.location, centreFilter))
     if (deptFilter) filtered = filtered.filter(e => e.department === deptFilter)
     if (filtered.length > 0) filteredDayMap.set(dateStr, filtered)
   }
@@ -182,7 +187,7 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
   function buildCentreDayMap(entriesByDate, centreName) {
     const cm = new Map()
     for (const [dateStr, entries] of entriesByDate) {
-      const filtered = entries.filter(e => e.centre === centreName)
+      const filtered = entries.filter(e => centreMatches(e.centre, centreName))
       if (filtered.length > 0) cm.set(dateStr, filtered)
     }
     return cm
