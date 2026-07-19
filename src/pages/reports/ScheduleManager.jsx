@@ -448,6 +448,11 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
   const [renderTick, setRenderTick] = useState(0)
   const [childMap, setChildMap] = useState({})
   const [activeDept, setActiveDept] = useState('')
+  const [groupAddOpen, setGroupAddOpen] = useState(null)
+  const [groupAddCentres, setGroupAddCentres] = useState([])
+  const [groupAddCount, setGroupAddCount] = useState(1)
+
+  const parseCentres = (str) => str ? str.split(' & ') : []
 
   useEffect(() => {
     entriesRef.current = [...entries]
@@ -639,12 +644,15 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
         }
       }
 
-      // Phase 3: Update existing entries (counts + distributions) — skip _temp
+      // Phase 3: Update existing entries (counts + centre + distributions) — skip _temp
       for (const e of localEntries) {
         if (e._temp) continue
         const original = entries.find(o => o.id === e.id)
-        if (original && original.count !== e.count) {
-          const { error } = await supabase.from('jatha_schedule_entries').update({ count: e.count }).eq('id', e.id)
+        if (original && (original.count !== e.count || original.centre !== e.centre)) {
+          const updates = {}
+          if (original.count !== e.count) updates.count = e.count
+          if (original.centre !== e.centre) updates.centre = e.centre
+          const { error } = await supabase.from('jatha_schedule_entries').update(updates).eq('id', e.id)
           if (error) { errors.push(`Failed to update ${e.centre}: ${error.message}`); continue }
         }
         const dist = localDist[e.id]
@@ -740,21 +748,43 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
     group.entries.push(e)
   }
 
-  const removeFromGroup = (entry) => {
-    if (entry._temp) {
-      entriesRef.current = entriesRef.current.filter(e => e !== entry)
-      setRenderTick(t => t + 1)
+  const removeFromGroup = (entry, centreName) => {
+    const components = parseCentres(entry.centre)
+    const filtered = components.filter(c => c !== centreName)
+    if (filtered.length === 0) {
+      if (entry._temp || !entry.id) {
+        entriesRef.current = entriesRef.current.filter(e => e !== entry)
+      } else {
+        deleteEntry(entry.id)
+        return
+      }
     } else {
-      deleteEntry(entry.id)
+      const newCentre = filtered.join(' & ')
+      entriesRef.current = entriesRef.current.map(e =>
+        (e.id && e.id === entry.id) || (!e.id && e === entry) ? { ...e, centre: newCentre } : e
+      )
     }
+    setChanged(true)
+    setRenderTick(t => t + 1)
   }
 
   const addCentresToGroup = (dayIdx, count, selected) => {
     if (selected.length === 0) return
-    entriesRef.current = [...entriesRef.current, {
-      schedule_id: schedule.id, day_of_week: dayIdx, department: activeDept,
-      centre: selected.join(' & '), count, _temp: true
-    }]
+    const existing = entriesRef.current.find(e =>
+      e.day_of_week === dayIdx && e.count === count && e.department === activeDept
+    )
+    if (existing) {
+      const current = parseCentres(existing.centre)
+      const merged = [...new Set([...current, ...selected])]
+      entriesRef.current = entriesRef.current.map(e =>
+        e === existing ? { ...e, centre: merged.join(' & ') } : e
+      )
+    } else {
+      entriesRef.current = [...entriesRef.current, {
+        schedule_id: schedule.id, day_of_week: dayIdx, department: activeDept,
+        centre: selected.join(' & '), count, _temp: true
+      }]
+    }
     setChanged(true)
     setRenderTick(t => t + 1)
   }
@@ -769,8 +799,95 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
     setRenderTick(t => t + 1)
   }
 
-  const [groupAddOpen, setGroupAddOpen] = useState(null)
-  const [groupAddCentres, setGroupAddCentres] = useState([])
+  const renderGroupCard = (group, dayIdx) => {
+    const groupKey = `${dayIdx}_${group.count}`
+    const isAdding = groupAddOpen === groupKey
+    return (
+      <div key={groupKey} className="group-card">
+        <div className="group-centres-row">
+          {group.entries.map(e => {
+            const centreList = parseCentres(e.centre)
+            return centreList.map((c, ci) => (
+              <span key={`${e.id || 't'}-${ci}`} className="group-chip">
+                <MapPin size={10} />
+                {c}
+                {canCreate && <button className="group-chip-x" onClick={() => removeFromGroup(e, c)}><X size={9} /></button>}
+              </span>
+            ))
+          })}
+          {canCreate && (
+            <button className="group-add-chip" onClick={() => { setGroupAddOpen(isAdding ? null : groupKey); setGroupAddCentres([]); setGroupAddCount(1) }}>
+              <Plus size={10} /> Add
+            </button>
+          )}
+        </div>
+        <div className="group-actions-row">
+          <div className="group-count-wrap">
+            <span className="group-count-label">Count</span>
+            {canWrite ? (
+              <input type="number" min="0" className="group-count-input" value={group.count} onChange={ev => updateGroupCount(dayIdx, group.count, ev.target.value)} />
+            ) : (
+              <span className="group-count-display">{group.count}</span>
+            )}
+          </div>
+        </div>
+        {canWrite && group.entries.map(e => {
+          if (!e.id) return null
+          const centreList = parseCentres(e.centre)
+          return centreList.filter(c => (childMap[c] || []).length > 0).map(c => {
+            const hasDist = distRef.current[e.id] !== undefined || (savedDistRef.current[e.id] !== undefined && !toggledOffRef.current.has(e.id))
+            const dist = hasDist ? (distRef.current[e.id] || savedDistRef.current[e.id]) : null
+            const childSum = dist ? Object.values(dist).reduce((s, v) => s + v, 0) : 0
+            const children = childMap[c] || []
+            return (
+              <div key={`dist-${e.id}-${c}`} className="group-dist-section">
+                <button className={`group-dist-btn ${hasDist ? 'active' : ''}`} onClick={() => toggleDistEntry(e.id)}>
+                  ⬇ {c}
+                </button>
+                {hasDist && (
+                  <div className="group-dist-children">
+                    {children.map(child => (
+                      <div key={child} className="group-dist-child">
+                        <span className="group-dist-child-name">{child}</span>
+                        <input type="number" min="0" className="group-dist-input" value={dist?.[child] || 0} onChange={ev => updateDistChild(e.id, child, ev.target.value)} />
+                      </div>
+                    ))}
+                    <div className="group-dist-sum">
+                      <span>Total</span>
+                      <span className={childSum !== e.count ? 'mismatch' : ''}>{childSum} / {e.count}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })
+        })}
+        {isAdding && canCreate && (
+          <div className="group-add-bar">
+            <MultiSelectCentres centres={centres} selected={groupAddCentres} onChange={setGroupAddCentres} placeholder="Add centres..." />
+            <input type="number" min="1" className="group-add-count-input" value={groupAddCount} onChange={e => setGroupAddCount(Math.max(1, parseInt(e.target.value) || 1))} />
+            <button className="group-add-confirm" onClick={() => { addCentresToGroup(dayIdx, groupAddCount, groupAddCentres); setGroupAddCentres([]); setGroupAddCount(1); setGroupAddOpen(null) }} disabled={groupAddCentres.length === 0}><Plus size={12} /></button>
+            <button className="group-add-cancel" onClick={() => { setGroupAddCentres([]); setGroupAddCount(1); setGroupAddOpen(null) }}><X size={12} /></button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const renderNewRow = (r, ri, dayIdx) => (
+    <div key={`new-${ri}`} className="group-card group-card-new">
+      <div className="group-centres-row">
+        <MultiSelectCentres centres={centres} selected={r.centres} onChange={val => updateNewRow(dayIdx, ri, 'centres', val)} placeholder="Select centres..." />
+      </div>
+      <div className="group-actions-row">
+        <div className="group-count-wrap">
+          <span className="group-count-label">Count</span>
+          <input type="number" min="1" className="group-count-input" value={r.count} onChange={e => updateNewRow(dayIdx, ri, 'count', Math.max(1, parseInt(e.target.value) || 1))} />
+        </div>
+        <button className="group-delete-btn" onClick={() => removeNewRow(dayIdx, ri)}><X size={12} /> Delete</button>
+      </div>
+    </div>
+  )
 
   return (
     <div>
@@ -803,79 +920,8 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
                 <p className="bhati-day-empty">—</p>
               ) : (
                 <>
-                  {dayGroups.map(group => {
-                    const groupKey = `${dayIdx}_${group.count}`
-                    const isAdding = groupAddOpen === groupKey
-                    return (
-                      <div key={groupKey} className="bhati-row bhati-group-row">
-                        <div className="bhati-group-header">
-                          <div className="bhati-group-centres">
-                            {group.entries.map(e => {
-                              const children = childMap[e.centre] || []
-                              const hasDist = distRef.current[e.id] !== undefined || (savedDistRef.current[e.id] !== undefined && !toggledOffRef.current.has(e.id))
-                              const dist = distRef.current[e.id] || savedDistRef.current[e.id]
-                              const childSum = dist ? Object.values(dist).reduce((s, v) => s + v, 0) : 0
-                              return (
-                                <div key={e.id} className="bhati-group-centre-item">
-                                  <span className="bhati-centre-chip">
-                                    <MapPin size={11} />
-                                    {e.centre}
-                                    {canCreate && (
-                                      <button className="bhati-chip-remove" onClick={() => removeFromGroup(e)}>
-                                        <X size={10} />
-                                      </button>
-                                    )}
-                                  </span>
-                                  {canWrite && children.length > 0 && (
-                                    <button className={`bhati-dist-btn ${hasDist ? 'active' : ''}`} onClick={() => toggleDistEntry(e.id)} title="Distribute to child centres">⬇</button>
-                                  )}
-                                  {hasDist && (
-                                    <div className="bhati-dist-children">
-                                      {children.map(child => (
-                                        <div key={child} className="bhati-dist-child">
-                                          <span className="bhati-dist-child-name">{child}</span>
-                                          <input type="number" min="0" className="sched-count-input dist-input" value={dist[child] || 0} onChange={ev => updateDistChild(e.id, child, ev.target.value)} />
-                                        </div>
-                                      ))}
-                                      <div className="bhati-dist-sum"><span>Total</span><span className={childSum !== e.count ? 'mismatch' : ''}>{childSum} / {e.count}</span></div>
-                                    </div>
-                                  )}
-                                </div>
-                              )
-                            })}
-                          </div>
-                          <div className="bhati-group-actions">
-                            <div className="bhati-group-count-wrap">
-                              {canWrite ? (
-                                <input type="number" min="0" className="sched-count-input" value={group.count} onChange={ev => updateGroupCount(dayIdx, group.count, ev.target.value)} />
-                              ) : (
-                                <span className="bhati-count-display">{group.count}</span>
-                              )}
-                            </div>
-                            {canCreate && (
-                              <button className="bhati-add-centre-btn" onClick={() => { setGroupAddOpen(isAdding ? null : groupKey); setGroupAddCentres([]) }}>
-                                <Plus size={12} /> Add
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                        {isAdding && canCreate && (
-                          <div className="bhati-group-add-inline">
-                            <MultiSelectCentres centres={centres} selected={groupAddCentres} onChange={setGroupAddCentres} placeholder="Select centres to add..." />
-                            <button className="btn btn-sm" onClick={() => { addCentresToGroup(dayIdx, group.count, groupAddCentres); setGroupAddCentres([]); setGroupAddOpen(null) }} disabled={groupAddCentres.length === 0}>+</button>
-                            <button className="bhati-remove-btn" onClick={() => { setGroupAddCentres([]); setGroupAddOpen(null) }}><X size={12} /></button>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                  {canWrite && dayNewRows.map((r, ri) => (
-                    <div key={`new-${ri}`} className="bhati-row multi-centre-row bhati-new-group-row">
-                      <MultiSelectCentres centres={centres} selected={r.centres} onChange={val => updateNewRow(dayIdx, ri, 'centres', val)} placeholder="Select centres..." />
-                      <input type="number" min="1" className="sched-count-input" value={r.count} onChange={e => updateNewRow(dayIdx, ri, 'count', Math.max(1, parseInt(e.target.value) || 1))} />
-                      <button className="bhati-remove-btn" onClick={() => removeNewRow(dayIdx, ri)}><X size={14} /></button>
-                    </div>
-                  ))}
+                  {dayGroups.map(group => renderGroupCard(group, dayIdx))}
+                  {canWrite && dayNewRows.map((r, ri) => renderNewRow(r, ri, dayIdx))}
                 </>
               )}
             </div>

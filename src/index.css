@@ -2607,54 +2607,117 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   padding:10px; text-align:center; font-size:11px; color:var(--text-muted);
 }
 
-/* ========== BHATI GROUPED ROW ========== */
-.bhati-group-row {
-  display:flex; flex-direction:column; gap:4px;
-  padding:6px 8px; margin-bottom:5px;
-  background:rgba(33,115,70,0.03); border-radius:8px;
-  border:1px solid var(--border);
+/* ========== BHATI GROUP CARD ========== */
+.group-card {
+  background:white; border:1px solid var(--border); border-radius:8px;
+  padding:10px 12px; margin-bottom:6px;
 }
-.bhati-group-header {
-  display:flex; align-items:flex-start; gap:8px;
+.group-card-new {
+  border-style:dashed; border-color:var(--border-strong);
 }
-.bhati-group-centres {
-  flex:1; display:flex; flex-wrap:wrap; gap:4px;
+.group-centres-row {
+  display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-bottom:8px;
 }
-.bhati-group-centre-item {
-  display:flex; align-items:center; gap:3px; flex-wrap:wrap;
-}
-.bhati-centre-chip {
-  display:inline-flex; align-items:center; gap:3px;
-  padding:3px 7px; border-radius:5px;
+.group-chip {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:4px 8px; border-radius:5px;
   background:rgba(33,115,70,0.08); color:var(--text-primary);
-  font-size:11px; font-weight:600; line-height:1.4;
+  font-size:12px; font-weight:600;
 }
-.bhati-centre-chip svg { color:var(--excel-green); flex-shrink:0; }
-.bhati-chip-remove {
+.group-chip svg { color:var(--excel-green); flex-shrink:0; }
+.group-chip-x {
   display:inline-flex; align-items:center; justify-content:center;
-  width:14px; height:14px; border:none; background:none;
+  width:16px; height:16px; border:none; background:none;
   color:var(--text-muted); cursor:pointer; border-radius:3px; padding:0;
 }
-.bhati-chip-remove:hover { background:var(--red-bg); color:var(--error); }
-.bhati-group-actions {
-  display:flex; align-items:center; gap:4px; flex-shrink:0;
-}
-.bhati-group-count-wrap { display:flex; }
-.bhati-add-centre-btn {
+.group-chip-x:hover { background:var(--red-bg); color:var(--error); }
+.group-add-chip {
   display:inline-flex; align-items:center; gap:3px;
-  padding:3px 8px; border:1px dashed var(--border-strong); border-radius:5px;
-  background:white; color:var(--excel-green); font-size:10px; font-weight:600;
-  cursor:pointer; transition:all 0.15s; white-space:nowrap;
+  padding:4px 8px; border:1px dashed var(--border-strong); border-radius:5px;
+  background:white; color:var(--excel-green); font-size:11px; font-weight:600;
+  cursor:pointer; transition:all 0.15s;
 }
-.bhati-add-centre-btn:hover { border-color:var(--excel-green); background:rgba(33,115,70,0.05); }
-.bhati-group-add-inline {
-  display:flex; align-items:center; gap:6px; margin-top:4px;
+.group-add-chip:hover { border-color:var(--excel-green); background:rgba(33,115,70,0.05); }
+.group-actions-row {
+  display:flex; align-items:center; gap:12px;
 }
-.bhati-new-group-row {
-  padding:6px 8px; margin-bottom:5px;
-  background:rgba(33,115,70,0.03); border-radius:8px;
+.group-count-wrap {
+  display:flex; align-items:center; gap:6px;
 }
-.multi-centre-row { gap:6px; }
+.group-count-label {
+  font-size:12px; font-weight:600; color:var(--text-secondary);
+}
+.group-count-input {
+  width:60px; padding:5px 8px; border:1px solid var(--border);
+  border-radius:6px; font-size:13px; text-align:center;
+  font-family:'Inter',sans-serif; background:white;
+}
+.group-count-input:focus { outline:none; border-color:var(--excel-green); }
+.group-count-display {
+  font-size:14px; font-weight:700; color:var(--text-primary);
+}
+.group-delete-btn {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:5px 10px; border:1px solid var(--border); border-radius:6px;
+  background:white; color:var(--text-muted); font-size:11px; font-weight:600;
+  cursor:pointer; transition:all 0.15s;
+}
+.group-delete-btn:hover { border-color:var(--error); color:var(--error); background:var(--red-bg); }
+.group-dist-section {
+  margin-top:8px; padding-top:8px; border-top:1px solid var(--border);
+  display:flex; flex-direction:column; gap:5px;
+}
+.group-dist-btn {
+  display:inline-flex; align-items:center; gap:5px;
+  padding:4px 10px; border:1px solid var(--border); border-radius:6px;
+  background:white; color:var(--text-secondary); font-size:11px; font-weight:600;
+  cursor:pointer; transition:all 0.15s;
+}
+.group-dist-btn:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.group-dist-btn.active { background:rgba(33,115,70,0.08); border-color:var(--excel-green); color:var(--excel-green); }
+.group-dist-children {
+  display:flex; flex-direction:column; gap:4px;
+  padding:6px 8px; margin-left:4px;
+  background:var(--bg-secondary); border-radius:6px;
+}
+.group-dist-child {
+  display:flex; align-items:center; gap:6px;
+}
+.group-dist-child-name {
+  flex:1; font-size:12px; font-weight:500; color:var(--text-primary);
+}
+.group-dist-input {
+  width:55px; padding:4px 6px; border:1px solid var(--border);
+  border-radius:5px; font-size:12px; text-align:center; background:white;
+}
+.group-dist-input:focus { outline:none; border-color:var(--excel-green); }
+.group-dist-sum {
+  display:flex; align-items:center; gap:8px;
+  font-size:11px; font-weight:600; color:var(--text-muted); margin-top:2px;
+}
+.group-dist-sum .mismatch { color:var(--error); }
+.group-add-bar {
+  display:flex; align-items:center; gap:6px; margin-top:8px; padding-top:8px;
+  border-top:1px dashed var(--border);
+}
+.group-add-confirm {
+  display:flex; align-items:center; justify-content:center;
+  width:28px; height:28px; border:none; border-radius:6px;
+  background:var(--excel-green); color:white; cursor:pointer; flex-shrink:0;
+}
+.group-add-confirm:disabled { opacity:0.4; cursor:default; }
+.group-add-cancel {
+  display:flex; align-items:center; justify-content:center;
+  width:28px; height:28px; border:none; border-radius:6px;
+  background:var(--red-bg); color:var(--text-muted); cursor:pointer; flex-shrink:0;
+}
+.group-add-cancel:hover { color:var(--error); }
+.group-add-count-input {
+  width:50px; padding:5px 6px; border:1px solid var(--border);
+  border-radius:6px; font-size:12px; text-align:center;
+  font-family:'Inter',sans-serif; background:white; flex-shrink:0;
+}
+.group-add-count-input:focus { outline:none; border-color:var(--excel-green); }
 
 /* ========== MONTHLY PLANNER V2 ========== */
 .monthly-planner { font-size:12px; }
