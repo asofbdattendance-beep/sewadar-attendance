@@ -84,7 +84,7 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
   const [specificData, setSpecificData] = useState([])
   const [allCentres, setAllCentres] = useState([])
   const [centreTab, setCentreTab] = useState(null)
-  const [typeFilter, setTypeFilter] = useState('all')
+  const [destFilter, setDestFilter] = useState('all')
   const [centreFilter, setCentreFilter] = useState(null)
   const [deptFilter, setDeptFilter] = useState(null)
   const [tooltip, setTooltip] = useState({ show: false, items: [], color: '', x: 0, y: 0, header: '' })
@@ -123,8 +123,8 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
 
   useEffect(() => {
     if (isAsoView && allCentres.length === 0) {
-      supabase.rpc('get_user_accessible_centres').then(({ data }) => {
-        setAllCentres((data || []).map(c => c.centre_name).sort())
+      supabase.from('centres').select('name').is('parent_centre', null).order('name').then(({ data }) => {
+        setAllCentres((data || []).map(c => c.name))
       })
     }
   }, [isAsoView])
@@ -141,13 +141,26 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
 
   const dayMap = useMemo(() => buildDayMap(bhatiData, specificData, month, year), [bhatiData, specificData, month, year])
 
-  const centreNamesInData = [...new Set([...dayMap.values()].flat().map(e => e.centre).filter(Boolean))].sort()
+  const destLabels = useMemo(() => {
+    const labels = new Set()
+    for (const [, entries] of dayMap) {
+      for (const e of entries) {
+        labels.add(e.kind === 'specific' ? (e.location || '—') : ((e.title || '').split(' - ')[0] || '—'))
+      }
+    }
+    return [...labels].sort()
+  }, [dayMap])
 
   const filteredDayMap = new Map()
   for (const [dateStr, entries] of dayMap) {
     let filtered = entries
     if (centreTab) filtered = filtered.filter(e => centreMatches(e.centre || e.location, centreTab))
-    if (typeFilter !== 'all') filtered = filtered.filter(e => e.kind === typeFilter)
+    if (destFilter !== 'all') {
+      filtered = filtered.filter(e => {
+        const label = e.kind === 'specific' ? (e.location || '—') : ((e.title || '').split(' - ')[0] || '—')
+        return label === destFilter
+      })
+    }
     if (centreFilter) filtered = filtered.filter(e => centreMatches(e.centre || e.location, centreFilter))
     if (deptFilter) filtered = filtered.filter(e => e.department === deptFilter)
     if (!isAsoView && userCentre) filtered = filtered.filter(e => centreMatches(e.centre, userCentre))
@@ -185,37 +198,6 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
 
   const hasData = filteredDayMap.size > 0
 
-  const allPlannerDepts = [...new Set([...bhatiData, ...specificData].flatMap(s => (s.jatha_schedule_entries || []).map(e => e.department).filter(Boolean)))].sort()
-
-  function buildCentreDayMap(entriesByDate, centreName) {
-    const cm = new Map()
-    for (const [dateStr, entries] of entriesByDate) {
-      const filtered = entries.filter(e => centreMatches(e.centre, centreName))
-      if (filtered.length > 0) cm.set(dateStr, filtered)
-    }
-    return cm
-  }
-
-  function renderGridFromDayMap(sourceMap) {
-    const cells = []
-    for (let i = 0; i < firstDay; i++) cells.push({ date: null, entries: null })
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-      cells.push({ date: new Date(year, month - 1, d), entries: sourceMap.get(dateStr) || [] })
-    }
-    while (cells.length % 7 !== 0) cells.push({ date: null, entries: null })
-    return cells
-  }
-
-  const centrePrintSections = centreNamesInData.map(cn => {
-    const cm = buildCentreDayMap(filteredDayMap, cn)
-    const totalForCentre = [...cm.values()].reduce((s, ee) => s + ee.reduce((a, e) => a + (e.count || 0), 0), 0)
-    const depts = [...new Set([...cm.values()].flat().map(e => e.department).filter(Boolean))].sort()
-    const gridCells = renderGridFromDayMap(cm)
-    const centreHasData = cm.size > 0
-    return { centre: cn, dayMap: cm, total: totalForCentre, departments: depts, gridCells, hasData: centreHasData }
-  }).filter(cs => cs.hasData)
-
   function renderGroupedEntries(entries) {
     const groups = {}
     for (const e of entries) {
@@ -235,7 +217,11 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
             {Object.values(g.depts).map(d => {
               const dc = getDeptColor(d.dept)
               const tooltipItems = isAsoView
-                ? d.entries.map(e => ({ centre: e.centre, count: e.count }))
+                ? Object.entries(d.entries.reduce((acc, e) => {
+                    const key = e.centre || '—'
+                    acc[key] = (acc[key] || 0) + (e.count || 0)
+                    return acc
+                  }, {})).map(([centre, count]) => ({ centre, count }))
                 : [{ centre: `${g.label} - ${d.dept}`, count: d.count }]
               return (
                 <span key={d.dept} className="dept-pill" style={{ background: `${dc}18`, color: dc }}
@@ -247,25 +233,6 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
             })}
           </div>
         </div>
-      )
-    })
-  }
-
-  function renderCompactEntries(entries) {
-    const deptMap = {}
-    for (const e of entries) {
-      const d = e.department || 'General'
-      if (!deptMap[d]) deptMap[d] = 0
-      deptMap[d] += e.count || 0
-    }
-    return Object.entries(deptMap).map(([dept, count]) => {
-      const dc = getDeptColor(dept)
-      return (
-        <span key={dept} className="dept-pill" style={{ background: `${dc}18`, color: dc }}
-          onMouseEnter={e => setTooltip({ show: true, items: [{ centre: dept, count }], color: dc, x: e.clientX, y: e.clientY, header: 'Department' })}
-          onMouseLeave={() => setTooltip({ show: false, items: [], color: '', x: 0, y: 0, header: '' })}>
-          {getDeptAbbr(dept)}:{count}
-        </span>
       )
     })
   }
@@ -285,39 +252,38 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
         </div>
       </div>
 
-      {isAsoView && (
-        <>
-          <button className="planner-filter-toggle" onClick={() => setFiltersVisible(v => !v)}>
-            {filtersVisible ? 'Hide' : 'Show'} Filters
-            <ChevronDown size={14} className={`filter-chevron${filtersVisible ? ' open' : ''}`} />
-          </button>
-          {filtersVisible && (
-            <div className="planner-filters">
-              <div className="planner-filter-group">
-                <span className="filter-label">Type</span>
-                <button className={`filter-chip${typeFilter === 'all' ? ' active' : ''}`} onClick={() => setTypeFilter('all')}>All</button>
-                <button className={`filter-chip${typeFilter === 'bhati' ? ' active' : ''}`} onClick={() => setTypeFilter('bhati')}>BHATI</button>
-                <button className={`filter-chip${typeFilter === 'specific' ? ' active' : ''}`} onClick={() => setTypeFilter('specific')}>SPECIFIC</button>
-              </div>
-              <div className="planner-filter-group">
-                <span className="filter-label">Centre</span>
-                <button className={`filter-chip${!centreFilter ? ' active' : ''}`} onClick={() => setCentreFilter(null)}>All</button>
-                {allCentres.map(c => (
-                  <button key={c} className={`filter-chip${centreFilter === c ? ' active' : ''}`} onClick={() => setCentreFilter(centreFilter === c ? null : c)}>{getCentreAbbr(c)}</button>
-                ))}
-              </div>
-              {allPlannerDepts.length > 0 && (
-                <div className="planner-filter-group">
-                  <span className="filter-label">Dept</span>
-                  <button className={`filter-chip${!deptFilter ? ' active' : ''}`} onClick={() => setDeptFilter(null)}>All</button>
-                  {allPlannerDepts.map(d => (
-                    <button key={d} className={`filter-chip${deptFilter === d ? ' active' : ''}`} onClick={() => setDeptFilter(deptFilter === d ? null : d)}>{getDeptAbbr(d)}</button>
-                  ))}
-                </div>
-              )}
+      <button className="planner-filter-toggle" onClick={() => setFiltersVisible(v => !v)}>
+        {filtersVisible ? 'Hide' : 'Show'} Filters
+        <ChevronDown size={14} className={`filter-chevron${filtersVisible ? ' open' : ''}`} />
+      </button>
+      {filtersVisible && (
+        <div className="planner-filters">
+          <div className="planner-filter-group">
+            <span className="filter-label">Destination</span>
+            <button className={`filter-chip${destFilter === 'all' ? ' active' : ''}`} onClick={() => setDestFilter('all')}>All</button>
+            {destLabels.map(label => (
+              <button key={label} className={`filter-chip${destFilter === label ? ' active' : ''}`} onClick={() => setDestFilter(destFilter === label ? 'all' : label)}>{label}</button>
+            ))}
+          </div>
+          {isAsoView && (
+            <div className="planner-filter-group">
+              <span className="filter-label">Centre</span>
+              <button className={`filter-chip${!centreFilter ? ' active' : ''}`} onClick={() => setCentreFilter(null)}>All</button>
+              {allCentres.map(c => (
+                <button key={c} className={`filter-chip${centreFilter === c ? ' active' : ''}`} onClick={() => setCentreFilter(centreFilter === c ? null : c)}>{getCentreAbbr(c)}</button>
+              ))}
             </div>
           )}
-        </>
+          {activeDepartments.length > 0 && (
+            <div className="planner-filter-group">
+              <span className="filter-label">Dept</span>
+              <button className={`filter-chip${!deptFilter ? ' active' : ''}`} onClick={() => setDeptFilter(null)}>All</button>
+              {activeDepartments.map(d => (
+                <button key={d} className={`filter-chip${deptFilter === d ? ' active' : ''}`} onClick={() => setDeptFilter(deptFilter === d ? null : d)}>{getDeptAbbr(d)}</button>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {loading ? (
@@ -337,14 +303,26 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
           </div>
         )}
 
-        <div className="planner-grid">
-          {WEEKDAYS.map(d => <div key={d} className="planner-weekday">{d}</div>)}
-          {calendarCells.map((cell, i) => (
-            <div key={i} className={`planner-day${!cell.date || !cell.entries?.length ? ' empty' : ''}`}>
-              {cell.date && <div className="planner-date-num">{cell.date.getDate()}</div>}
-              {cell.entries?.length > 0 && renderGroupedEntries(cell.entries)}
+        <div className="planner-grid-wrapper">
+          {activeDepartments.length > 0 && (
+            <div className="planner-legend">
+              {activeDepartments.map(dept => (
+                <span key={dept} className="legend-item">
+                  <span className="legend-swatch" style={{ background: getDeptColor(dept) }} />
+                  {dept}
+                </span>
+              ))}
             </div>
-          ))}
+          )}
+          <div className="planner-grid">
+            {WEEKDAYS.map(d => <div key={d} className="planner-weekday">{d}</div>)}
+            {calendarCells.map((cell, i) => (
+              <div key={i} className={`planner-day${!cell.date || !cell.entries?.length ? ' empty' : ''}`}>
+                {cell.date && <div className="planner-date-num">{cell.date.getDate()}</div>}
+                {cell.entries?.length > 0 && renderGroupedEntries(cell.entries)}
+              </div>
+            ))}
+          </div>
         </div>
 
       </>)}
@@ -352,38 +330,6 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
       {hasData && (
         <div className="planner-footer">
           {totalSewadars} sewadars assigned across {activeDepartments.length} department{activeDepartments.length !== 1 ? 's' : ''}
-        </div>
-      )}
-
-      {centrePrintSections.length > 0 && (
-        <div className="planner-print-sections">
-          {centrePrintSections.map((cs, idx) => (
-            <div key={idx} className="planner-print-section">
-              <h4 className="print-centre-header">{cs.centre}</h4>
-              {cs.departments.length > 0 && (
-                <div className="print-legend">
-                  {cs.departments.map(dept => (
-                    <span key={dept} className="legend-item">
-                      <span className="legend-swatch" style={{ background: getDeptColor(dept) }} />
-                      {dept}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="print-grid">
-                {WEEKDAYS.map(d => <div key={d} className="planner-weekday">{d}</div>)}
-                {cs.gridCells.map((cell, i) => (
-                  <div key={i} className={`planner-day${!cell.date || !cell.entries?.length ? ' empty' : ''}`}>
-                    {cell.date && <div className="planner-date-num">{cell.date.getDate()}</div>}
-                    {cell.entries?.length > 0 && renderCompactEntries(cell.entries)}
-                  </div>
-                ))}
-              </div>
-              {cs.total > 0 && (
-                <div className="planner-total-bar">{cs.total} sewadars — {cs.departments.length} department{cs.departments.length !== 1 ? 's' : ''}</div>
-              )}
-            </div>
-          ))}
         </div>
       )}
 
