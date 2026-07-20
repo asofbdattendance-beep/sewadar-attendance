@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { supabase, getLocalDate } from '../../lib/supabase'
 import { ChevronLeft, ChevronRight, ChevronDown, Printer, Calendar, MapPin } from 'lucide-react'
 import { getDeptColor, getDeptAbbr, getCentreAbbr, getLabelColor } from '../../lib/deptColors'
@@ -87,8 +87,30 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
   const [destFilter, setDestFilter] = useState('all')
   const [centreFilter, setCentreFilter] = useState(null)
   const [deptFilter, setDeptFilter] = useState(null)
-  const [tooltip, setTooltip] = useState({ show: false, items: [], color: '', x: 0, y: 0, header: '' })
+  const [tooltip, setTooltip] = useState({ show: false, items: [], color: '', x: 0, y: 0, header: '', key: '' })
   const [filtersVisible, setFiltersVisible] = useState(true)
+  const [touchStartX, setTouchStartX] = useState(0)
+  const [touchStartY, setTouchStartY] = useState(0)
+  const agendaRef = useRef(null)
+
+  const clampTooltip = useCallback(node => {
+    if (!node) return
+    const rect = node.getBoundingClientRect()
+    let left = parseInt(node.style.left, 10) || 0
+    let top = parseInt(node.style.top, 10) || 0
+
+    if (left + rect.width > window.innerWidth - 8) left = window.innerWidth - rect.width - 8
+    if (left < 8) left = 8
+
+    const visibleTop = top - rect.height
+    if (visibleTop < 8) top = 8 + rect.height
+    if (top > window.innerHeight - 8) top = window.innerHeight - 8
+
+    node.style.left = left + 'px'
+    node.style.top = top + 'px'
+  }, [])
+
+  const clearTooltip = useCallback(() => setTooltip({ show: false, items: [], color: '', x: 0, y: 0, header: '', key: '' }), [])
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -210,8 +232,14 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
     }
     return Object.values(groups).map((g, i) => {
       const color = getLabelColor(g.label)
+      const groupTooltipItems = Object.values(g.depts).map(d => ({ centre: isAsoView ? `${d.abbr}` : `${g.label} - ${d.dept}`, count: d.count }))
       return (
-        <div key={i} className="planner-entry-group" style={{ borderLeftColor: color, background: `${color}18` }}>
+        <div key={i} className="planner-entry-group" style={{ borderLeftColor: color, background: `${color}18` }}
+          onClick={e => {
+            const k = `group-${g.label}`
+            if (tooltip.show && tooltip.key === k) { clearTooltip(); return }
+            setTooltip({ show: true, items: groupTooltipItems, color, x: e.clientX, y: e.clientY, header: g.label, key: k })
+          }}>
           <div className="planner-group-label" style={{ color }}>{g.label.toUpperCase()}</div>
           <div className="planner-group-depts">
             {Object.values(g.depts).map(d => {
@@ -225,8 +253,14 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
                 : [{ centre: `${g.label} - ${d.dept}`, count: d.count }]
               return (
                 <span key={d.dept} className="dept-pill" style={{ background: `${dc}18`, color: dc }}
-                  onMouseEnter={e => setTooltip({ show: true, items: tooltipItems, color: dc, x: e.clientX, y: e.clientY, header: isAsoView ? 'Centres' : 'Details' })}
-                  onMouseLeave={() => setTooltip({ show: false, items: [], color: '', x: 0, y: 0, header: '' })}>
+                  onMouseEnter={e => setTooltip({ show: true, items: tooltipItems, color: dc, x: e.clientX, y: e.clientY, header: isAsoView ? 'Centres' : 'Details', key: '' })}
+                  onMouseLeave={clearTooltip}
+                  onClick={e => {
+                    e.stopPropagation()
+                    const k = `${g.label}-${d.dept}`
+                    if (tooltip.show && tooltip.key === k) { clearTooltip(); return }
+                    setTooltip({ show: true, items: tooltipItems, color: dc, x: e.clientX, y: e.clientY, header: isAsoView ? 'Centres' : 'Details', key: k })
+                  }}>
                   {d.abbr}:{d.count}
                 </span>
               )
@@ -325,6 +359,37 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
           </div>
         </div>
 
+        <div className="planner-agenda" ref={agendaRef}
+          onTouchStart={e => { setTouchStartX(e.touches[0].clientX); setTouchStartY(e.touches[0].clientY) }}
+          onTouchEnd={e => {
+            const dx = e.changedTouches[0].clientX - touchStartX
+            const dy = e.changedTouches[0].clientY - touchStartY
+            if (Math.abs(dx) > 50 && Math.abs(dy) < 100) {
+              clearTooltip()
+              dx > 0 ? prevMonth() : nextMonth()
+            }
+          }}>
+          {calendarCells.filter(c => c.date && c.entries?.length > 0).map(cell => {
+            const dayName = WEEKDAYS[cell.date.getDay()]
+            const dayTotal = cell.entries.reduce((s, e) => s + (e.count || 0), 0)
+            const today = new Date()
+            const isToday = cell.date.getDate() === today.getDate() &&
+              cell.date.getMonth() === today.getMonth() &&
+              cell.date.getFullYear() === today.getFullYear()
+            return (
+              <div key={cell.date.toISOString()} className={`agenda-day${isToday ? ' agenda-day--today' : ''}`}>
+                <div className="agenda-day-label">
+                  <span>{dayName} {cell.date.getDate()} {MONTHS[month - 1]}</span>
+                  <span className="agenda-day-total">{dayTotal}</span>
+                </div>
+                <div className="agenda-entries">
+                  {renderGroupedEntries(cell.entries)}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
       </>)}
 
       {hasData && (
@@ -334,19 +399,22 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
       )}
 
       {tooltip.show && (
-        <div className="planner-tooltip" style={{ left: tooltip.x + 10, top: tooltip.y - 10 }}>
-          <div className="planner-tooltip-header" style={{ backgroundColor: tooltip.color }}>
-            {tooltip.header}
+        <>
+          {tooltip.key && <div className="planner-tooltip-backdrop" onClick={() => setTooltip({ show: false, items: [], color: '', x: 0, y: 0, header: '', key: '' })} />}
+          <div className="planner-tooltip" ref={clampTooltip} style={{ left: tooltip.x + 10, top: tooltip.y - 10 }}>
+            <div className="planner-tooltip-header" style={{ backgroundColor: tooltip.color }}>
+              {tooltip.header}
+            </div>
+            <div className="planner-tooltip-list">
+              {tooltip.items.map((item, i) => (
+                <div key={i} className="planner-tooltip-row">
+                  <span className="planner-tooltip-name">{item.name || item.centre}</span>
+                  <span className="planner-tooltip-count" style={{ color: tooltip.color }}>{item.count}</span>
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="planner-tooltip-list">
-            {tooltip.items.map((item, i) => (
-              <div key={i} className="planner-tooltip-row">
-                <span className="planner-tooltip-name">{item.name || item.centre}</span>
-                <span className="planner-tooltip-count" style={{ color: tooltip.color }}>{item.count}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+        </>
       )}
     </div>
   )
