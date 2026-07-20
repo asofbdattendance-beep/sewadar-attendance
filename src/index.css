@@ -2850,8 +2850,8 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 }
 .planner-day {
   background:var(--bg-white);
-  padding:4px 5px;
-  min-height:60px;
+  padding:5px 6px 3px;
+  min-height:65px;
 }
 .planner-day.empty { background:var(--bg-secondary); }
 
@@ -2859,58 +2859,31 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   font-size:11px; font-weight:700; color:var(--text-primary);
   margin-bottom:2px;
 }
-.planner-entry {
-  border-left:2px solid transparent;
-  padding:1px 4px;
-  margin-bottom:2px;
-  font-size:10px;
-  line-height:1.4;
-  display:flex;
-  align-items:baseline;
-  flex-wrap:wrap;
-  gap:1px 4px;
-}
-.entry-label {
-  font-weight:700;
-  color:var(--text-primary);
-  font-size:9px;
-  white-space:nowrap;
-}
 .planner-entry-group {
   border-left:3px solid transparent;
   border-radius:4px;
-  padding:3px 6px;
-  margin-bottom:4px;
-  font-size:11px;
-  line-height:1.3;
+  padding:3px 5px;
+  margin-bottom:3px;
 }
-.entry-dept {
-  font-weight:700;
-  color:var(--text-primary);
-  font-size:11px;
-  line-height:1.3;
-  margin-bottom:2px;
+.planner-group-label {
+  font-size:8px;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:0.03em;
+  line-height:1.4;
 }
-.entry-centre-row {
+.planner-group-depts {
   display:flex;
-  align-items:center;
-  justify-content:space-between;
-  font-size:10px;
-  padding:1px 0;
-  color:var(--text-secondary);
+  flex-wrap:wrap;
+  gap:2px;
 }
-.entry-centre-name {
-  font-weight:500;
-  color:var(--text-primary);
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
-}
-.entry-centre-count {
+.dept-pill {
+  display:inline-block;
+  padding:1px 5px;
+  border-radius:3px;
+  font-size:8px;
   font-weight:700;
-  color:var(--excel-green);
-  flex-shrink:0;
-  margin-left:6px;
+  line-height:1.5;
 }
 .planner-footer {
   margin-top:12px;
@@ -3064,7 +3037,7 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
     font-size:8pt; font-weight:700;
     color:#333; margin-bottom:0.5mm;
   }
-  .print-grid .planner-entry {
+  .print-grid .planner-entry-group {
     font-size:6pt;
     padding:0.3mm 0.5mm;
     margin-bottom:0.3mm;
@@ -3073,8 +3046,8 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
     print-color-adjust:exact;
     line-height:1.2;
   }
-  .print-grid .planner-entry .entry-label { font-size:6pt; }
-  .print-grid .compact-dept { font-size:6pt; margin-right:2mm; }
+  .print-grid .planner-group-label { font-size:6pt; }
+  .print-grid .dept-pill { font-size:6pt; margin-right:2mm; }
 
   .planner-total-bar {
     text-align:center;

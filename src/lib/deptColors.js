@@ -43,6 +43,25 @@ export function getDeptAbbr(dept) {
   return upper.slice(0, 3)
 }
 
+const SCHEDULE_LABEL_COLORS = {
+  'BHATI': '#217346',
+  'BEAS': '#2980B9',
+  'BANGALORE': '#8E44AD',
+  'RUDRAPUR': '#E67E22',
+  'AMRITSAR': '#C0392B',
+  'DELHI': '#D35400',
+  'CHANDIGARH': '#16A085',
+}
+
+export function getLabelColor(label) {
+  if (!label) return '#888'
+  const upper = label.toUpperCase()
+  if (SCHEDULE_LABEL_COLORS[upper]) return SCHEDULE_LABEL_COLORS[upper]
+  let h = 0
+  for (let i = 0; i < label.length; i++) h = ((h << 5) - h) + label.charCodeAt(i)
+  return DEPT_COLORS[Math.abs(h) % DEPT_COLORS.length]
+}
+
 const JATHA_LABELS = {
   beas: 'BEAS',
   major_centre: 'Major Centre',
