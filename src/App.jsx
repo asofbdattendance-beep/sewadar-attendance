@@ -18,6 +18,7 @@ import { LayoutDashboard, Scan, FileText, WifiOff, User, ClipboardList, FileBarC
 function AppLayout() {
   const { profile, loading, hasPermission } = useAuth()
   const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 600)
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -30,6 +31,14 @@ function AppLayout() {
       window.removeEventListener('online', online)
       window.removeEventListener('offline', offline)
     }
+  }, [])
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 599px)')
+    const handler = (e) => setIsMobile(e.matches)
+    mq.addEventListener('change', handler)
+    setIsMobile(mq.matches)
+    return () => mq.removeEventListener('change', handler)
   }, [])
 
   if (loading) return (
@@ -62,6 +71,12 @@ function AppLayout() {
     return false
   })
 
+  const attendancePaths = ['/attendance', '/scan', '/records', '/entry', '/reports']
+  const isAttendanceHiddenPage = ['/schedules', '/superadmin', '/profile'].includes(location.pathname)
+  const visibleNavItems = isMobile && isAttendanceHiddenPage
+    ? navItems.filter(item => !attendancePaths.includes(item.path))
+    : navItems
+
   return (
     <div>
       {/* Navbar */}
@@ -92,7 +107,7 @@ function AppLayout() {
 
       {/* Bottom Nav */}
       <nav className="bottom-nav">
-        {navItems.map(({ path, label, icon: Icon }) => (
+        {visibleNavItems.map(({ path, label, icon: Icon }) => (
           <button
             key={path}
             className={`bottom-nav-item ${location.pathname === path ? 'active' : ''}`}

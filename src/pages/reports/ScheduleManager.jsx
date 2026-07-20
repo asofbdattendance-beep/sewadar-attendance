@@ -940,7 +940,7 @@ function BhatiScheduleView({ schedule, entries, centres, onRefresh, canWrite, ca
   )
 }
 
-function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrite, canCreate }) {
+function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrite, canCreate, hiddenRow, autoShow, onClose }) {
   const [showModal, setShowModal] = useState(false)
   const isBhati = schedule.schedule_type === 'bhati'
   const [changed, setChanged] = useState(false)
@@ -951,6 +951,7 @@ function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrit
   const [centreSearch, setCentreSearch] = useState('')
   const [showDropdown, setShowDropdown] = useState(false)
   useEffect(() => { entriesRef.current = entries.map(e => ({ ...e })); setChanged(false) }, [entries])
+  useEffect(() => { if (autoShow) setShowModal(true) }, [autoShow])
   const totalCount = entriesRef.current.reduce((s, e) => s + (e.count || 0), 0)
   const departments = [...new Set(entries.map(e => e.department).filter(Boolean))]
 
@@ -1020,30 +1021,32 @@ function ScheduleCard({ schedule, entries, centres, onDelete, onRefresh, canWrit
 
   return (
     <>
-      <tr className={`sched-row`} onClick={() => setShowModal(true)}>
-        <td className="sched-cell-type">
-          <span className={`schedule-type-badge ${isBhati ? '' : 'specific'}`}>{isBhati ? 'BHATI' : 'SPECIFIC'}</span>
-        </td>
-        <td className="sched-cell-title">{isBhati ? schedule.title : schedule.location}</td>
-        <td className="sched-cell-dept">{departments.join(', ') || '—'}</td>
-        <td className="sched-cell-date">{isBhati ? `${MONTHS[schedule.month - 1]} ${schedule.year}` : `${fmtDate(schedule.from_date)} – ${fmtDate(schedule.to_date)}`}</td>
-        <td className="sched-cell-count">{totalCount}</td>
-        <td className="sched-cell-actions" onClick={e => e.stopPropagation()}>
-          {canCreate && (
-            <button className="schedule-delete-btn" onClick={() => onDelete(schedule.id)} title="Delete schedule">
-              <Trash2 size={14} />
-            </button>
-          )}
-          <span className={`sched-expand-icon`}><ChevronDown size={14} /></span>
-        </td>
-      </tr>
+      {!hiddenRow && (
+        <tr className={`sched-row`} onClick={() => setShowModal(true)}>
+          <td className="sched-cell-type">
+            <span className={`schedule-type-badge ${isBhati ? '' : 'specific'}`}>{isBhati ? 'BHATI' : 'SPECIFIC'}</span>
+          </td>
+          <td className="sched-cell-title">{isBhati ? schedule.title : schedule.location}</td>
+          <td className="sched-cell-dept">{departments.join(', ') || '—'}</td>
+          <td className="sched-cell-date">{isBhati ? `${MONTHS[schedule.month - 1]} ${schedule.year}` : `${fmtDate(schedule.from_date)} – ${fmtDate(schedule.to_date)}`}</td>
+          <td className="sched-cell-count">{totalCount}</td>
+          <td className="sched-cell-actions" onClick={e => e.stopPropagation()}>
+            {canCreate && (
+              <button className="schedule-delete-btn" onClick={() => onDelete(schedule.id)} title="Delete schedule">
+                <Trash2 size={14} />
+              </button>
+            )}
+            <span className={`sched-expand-icon`}><ChevronDown size={14} /></span>
+          </td>
+        </tr>
+      )}
 
       {showModal && createPortal(
-        <div className="modal-overlay" onClick={() => { if (!changed || confirm('Discard changes?')) setShowModal(false) }}>
+        <div className="modal-overlay" onClick={() => { if (!changed || confirm('Discard changes?')) { setShowModal(false); if (onClose) onClose() } }}>
           <div className="modal-content sched-modal-content" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h3>{isBhati ? schedule.title : schedule.location}</h3>
-              <button className="modal-close" onClick={() => { if (!changed || confirm('Discard changes?')) setShowModal(false) }}><X size={20} /></button>
+              <button className="modal-close" onClick={() => { if (!changed || confirm('Discard changes?')) { setShowModal(false); if (onClose) onClose() } }}><X size={20} /></button>
             </div>
             <div className="modal-body">
               {isBhati ? (
@@ -1115,6 +1118,46 @@ export default function ScheduleManager({ profile, hasPermission }) {
   const [showBhati, setShowBhati] = useState(false)
   const [showSpecific, setShowSpecific] = useState(false)
   const [plannerRefresh, setPlannerRefresh] = useState(0)
+  const [editingScheduleId, setEditingScheduleId] = useState(null)
+  const editingSchedule = editingScheduleId ? schedules.find(s => s.id === editingScheduleId) : null
+
+  const isScoped = profile?.role !== ROLES.SUPER_ADMIN && profile?.role !== ROLES.ASO
+  const userCentre = profile?.centre
+
+  const flatEntries = useMemo(() => {
+    const result = []
+    for (const s of schedules) {
+      const entries = entriesMap[s.id] || []
+      for (const e of entries) {
+        if (isScoped && userCentre) {
+          const centres = (e.centre || '').split(' & ').map(c => c.trim()).filter(Boolean)
+          if (!centres.includes(userCentre)) continue
+        }
+        let location, fromDate, toDate
+        if (s.schedule_type === 'bhati') {
+          location = s.title
+          const daysInMonth = new Date(s.year, s.month, 0).getDate()
+          fromDate = fmtDate(`${s.year}-${String(s.month).padStart(2, '0')}-01`)
+          toDate = fmtDate(`${s.year}-${String(s.month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`)
+        } else {
+          location = s.location || s.title || '—'
+          fromDate = s.from_date ? fmtDate(s.from_date) : '—'
+          toDate = s.to_date ? fmtDate(s.to_date) : '—'
+        }
+        result.push({
+          key: e.id || `${s.id}-${result.length}`,
+          scheduleId: s.id,
+          location,
+          department: e.department || '—',
+          fromDate,
+          toDate,
+          count: e.count || 0,
+        })
+      }
+    }
+    result.sort((a, b) => a.location.localeCompare(b.location))
+    return result
+  }, [schedules, entriesMap, isScoped, userCentre])
 
   const canWrite = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO || (hasPermission && hasPermission('schedule_distribute'))
   const canCreate = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
@@ -1296,23 +1339,51 @@ export default function ScheduleManager({ profile, hasPermission }) {
         </div>
       ) : (<>
         <CentreMonthlyPlanner profile={profile} refreshTrigger={plannerRefresh} />
-        {schedules.length > 0 && <table className="schedules-table">
+        {flatEntries.length > 0 && <table className="schedules-table">
           <thead>
             <tr>
-              <th className="sched-th-type">Type</th>
-              <th className="sched-th-title">Title / Location</th>
-              <th className="sched-th-dept">Department</th>
-              <th className="sched-th-date">Period</th>
-              <th className="sched-th-count">Count</th>
-              <th className="sched-th-actions"></th>
+              <th>Location</th>
+              <th>Department</th>
+              <th>From Date</th>
+              <th>To Date</th>
+              <th>Count</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            {schedules.map(s => (
-              <ScheduleCard key={s.id} schedule={s} entries={entriesMap[s.id] || []} centres={centres} onDelete={handleDelete} onRefresh={fetchSchedules} canWrite={canWrite} canCreate={canCreate} />
+            {flatEntries.map(fe => (
+              <tr key={fe.key} className="sched-row" onClick={() => setEditingScheduleId(fe.scheduleId)}>
+                <td className="sched-cell-title">{fe.location}</td>
+                <td className="sched-cell-dept">{fe.department}</td>
+                <td className="sched-cell-date">{fe.fromDate}</td>
+                <td className="sched-cell-date">{fe.toDate}</td>
+                <td className="sched-cell-count">{fe.count}</td>
+                <td className="sched-cell-actions" onClick={e => e.stopPropagation()}>
+                  {canCreate && (
+                    <button className="schedule-delete-btn" onClick={() => handleDelete(fe.scheduleId)} title="Delete schedule">
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </td>
+              </tr>
             ))}
           </tbody>
         </table>}
+        {!loading && flatEntries.length === 0 && <div className="schedule-empty">No schedules found</div>}
+        {editingSchedule && (
+          <ScheduleCard
+            schedule={editingSchedule}
+            entries={entriesMap[editingScheduleId] || []}
+            centres={centres}
+            onDelete={handleDelete}
+            onRefresh={() => { setEditingScheduleId(null); fetchSchedules() }}
+            canWrite={canWrite}
+            canCreate={canCreate}
+            hiddenRow
+            autoShow
+            onClose={() => setEditingScheduleId(null)}
+          />
+        )}
       </>)}
 
       {canCreate && (

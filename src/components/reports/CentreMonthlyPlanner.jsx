@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase, getLocalDate } from '../../lib/supabase'
-import { ChevronLeft, ChevronRight, Printer, Calendar } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ChevronDown, Printer, Calendar, MapPin } from 'lucide-react'
 import { getDeptColor, getDeptAbbr, getCentreAbbr } from '../../lib/deptColors'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -75,6 +75,7 @@ function buildDayMap(bhatiData, specificData, month, year) {
 
 export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
   const isAsoView = profile?.role === 'aso' || profile?.role === 'super_admin'
+  const userCentre = profile?.centre
   const now = new Date()
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [year, setYear] = useState(now.getFullYear())
@@ -87,6 +88,7 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
   const [centreFilter, setCentreFilter] = useState(null)
   const [deptFilter, setDeptFilter] = useState(null)
   const [tooltip, setTooltip] = useState({ show: false, items: [], color: '', x: 0, y: 0 })
+  const [filtersVisible, setFiltersVisible] = useState(true)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -148,6 +150,7 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
     if (typeFilter !== 'all') filtered = filtered.filter(e => e.kind === typeFilter)
     if (centreFilter) filtered = filtered.filter(e => centreMatches(e.centre || e.location, centreFilter))
     if (deptFilter) filtered = filtered.filter(e => e.department === deptFilter)
+    if (!isAsoView && userCentre) filtered = filtered.filter(e => centreMatches(e.centre, userCentre))
     if (filtered.length > 0) filteredDayMap.set(dateStr, filtered)
   }
 
@@ -286,41 +289,38 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
       </div>
 
       {isAsoView && (
-        <div className="planner-filters">
-          <div className="planner-filter-group">
-            <span className="filter-label">Type</span>
-            <button className={`filter-chip${typeFilter === 'all' ? ' active' : ''}`} onClick={() => setTypeFilter('all')}>All</button>
-            <button className={`filter-chip${typeFilter === 'bhati' ? ' active' : ''}`} onClick={() => setTypeFilter('bhati')}>BHATI</button>
-            <button className={`filter-chip${typeFilter === 'specific' ? ' active' : ''}`} onClick={() => setTypeFilter('specific')}>SPECIFIC</button>
-          </div>
-          <div className="planner-filter-group">
-            <span className="filter-label">Centre</span>
-            <button className={`filter-chip${!centreFilter ? ' active' : ''}`} onClick={() => setCentreFilter(null)}>All</button>
-            {allCentres.map(c => (
-              <button key={c} className={`filter-chip${centreFilter === c ? ' active' : ''}`} onClick={() => setCentreFilter(centreFilter === c ? null : c)}>{getCentreAbbr(c)}</button>
-            ))}
-          </div>
-          {allPlannerDepts.length > 0 && (
-            <div className="planner-filter-group">
-              <span className="filter-label">Dept</span>
-              <button className={`filter-chip${!deptFilter ? ' active' : ''}`} onClick={() => setDeptFilter(null)}>All</button>
-              {allPlannerDepts.map(d => (
-                <button key={d} className={`filter-chip${deptFilter === d ? ' active' : ''}`} onClick={() => setDeptFilter(deptFilter === d ? null : d)}>{getDeptAbbr(d)}</button>
-              ))}
+        <>
+          <button className="planner-filter-toggle" onClick={() => setFiltersVisible(v => !v)}>
+            {filtersVisible ? 'Hide' : 'Show'} Filters
+            <ChevronDown size={14} className={`filter-chevron${filtersVisible ? ' open' : ''}`} />
+          </button>
+          {filtersVisible && (
+            <div className="planner-filters">
+              <div className="planner-filter-group">
+                <span className="filter-label">Type</span>
+                <button className={`filter-chip${typeFilter === 'all' ? ' active' : ''}`} onClick={() => setTypeFilter('all')}>All</button>
+                <button className={`filter-chip${typeFilter === 'bhati' ? ' active' : ''}`} onClick={() => setTypeFilter('bhati')}>BHATI</button>
+                <button className={`filter-chip${typeFilter === 'specific' ? ' active' : ''}`} onClick={() => setTypeFilter('specific')}>SPECIFIC</button>
+              </div>
+              <div className="planner-filter-group">
+                <span className="filter-label">Centre</span>
+                <button className={`filter-chip${!centreFilter ? ' active' : ''}`} onClick={() => setCentreFilter(null)}>All</button>
+                {allCentres.map(c => (
+                  <button key={c} className={`filter-chip${centreFilter === c ? ' active' : ''}`} onClick={() => setCentreFilter(centreFilter === c ? null : c)}>{getCentreAbbr(c)}</button>
+                ))}
+              </div>
+              {allPlannerDepts.length > 0 && (
+                <div className="planner-filter-group">
+                  <span className="filter-label">Dept</span>
+                  <button className={`filter-chip${!deptFilter ? ' active' : ''}`} onClick={() => setDeptFilter(null)}>All</button>
+                  {allPlannerDepts.map(d => (
+                    <button key={d} className={`filter-chip${deptFilter === d ? ' active' : ''}`} onClick={() => setDeptFilter(deptFilter === d ? null : d)}>{getDeptAbbr(d)}</button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
-        </div>
-      )}
-
-      {activeDepartments.length > 0 && (
-        <div className="planner-legend">
-          {activeDepartments.map(dept => (
-            <span key={dept} className="legend-item">
-              <span className="legend-swatch" style={{ background: getDeptColor(dept) }} />
-              {dept}
-            </span>
-          ))}
-        </div>
+        </>
       )}
 
       {loading ? (
@@ -334,38 +334,27 @@ export default function CentreMonthlyPlanner({ profile, refreshTrigger }) {
           <p>No duties scheduled for {MONTHS[month - 1]} {year}</p>
         </div>
       ) : (<>
-        {centreNamesInData.length > 1 && (
-          <div className="planner-centre-tabs">
-            <button className={`planner-centre-tab${!centreTab ? ' active' : ''}`} onClick={() => setCentreTab(null)}>All</button>
-            {centreNamesInData.map(c => (
-              <button key={c} className={`planner-centre-tab${centreTab === c ? ' active' : ''}`} onClick={() => setCentreTab(c)}>
-                {getCentreAbbr(c)}
-              </button>
-            ))}
+        {!isAsoView && userCentre && (
+          <div className="planner-centre-header">
+            <MapPin size={14} /> {userCentre}
           </div>
         )}
+
         <div className="planner-grid">
-          {WEEKDAYS.map(d => (
-            <div key={d} className="planner-weekday">{d}</div>
+          {WEEKDAYS.map(d => <div key={d} className="planner-weekday">{d}</div>)}
+          {calendarCells.map((cell, i) => (
+            <div key={i} className={`planner-day${!cell.date || !cell.entries?.length ? ' empty' : ''}`}>
+              {cell.date && <div className="planner-date-num">{cell.date.getDate()}</div>}
+              {cell.entries?.length > 0 && (isAsoView ? renderGroupedEntries(cell.entries) : renderCompactEntries(cell.entries))}
+            </div>
           ))}
-          {calendarCells.map((cell, i) => {
-            const isEmpty = !cell.date || !cell.entries?.length
-            return (
-              <div
-                key={i}
-                className={`planner-day${isEmpty ? ' empty' : ''}`}
-              >
-                {cell.date && <div className="planner-date-num">{cell.date.getDate()}</div>}
-                {!isEmpty && (centreTab ? renderCompactEntries(cell.entries) : renderGroupedEntries(cell.entries))}
-              </div>
-            )
-          })}
         </div>
+
       </>)}
 
       {hasData && (
         <div className="planner-footer">
-          {totalSewadars} sewadars assigned this month across {activeDepartments.length} department{activeDepartments.length !== 1 ? 's' : ''}
+          {totalSewadars} sewadars assigned across {activeDepartments.length} department{activeDepartments.length !== 1 ? 's' : ''}
         </div>
       )}
 
