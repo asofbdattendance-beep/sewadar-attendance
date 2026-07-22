@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { logAction } from '../lib/logger'
 import BarcodeScanner from '../components/scanner/BarcodeScanner'
 import { useToast } from '../components/Toast'
-import { Wifi, WifiOff, CheckCircle, XCircle, Clock, AlertTriangle, Keyboard, Search, Info, MapPin, RefreshCw } from 'lucide-react'
+import { Shield, Wifi, WifiOff, CheckCircle, XCircle, Clock, AlertTriangle, Keyboard, Search, Info, MapPin, RefreshCw } from 'lucide-react'
 
 // Geofencing: Calculate distance between two coordinates using Haversine formula
 function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
@@ -19,7 +19,7 @@ function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
 }
 
 export default function ScannerPage({ isOnline }) {
-  const { profile } = useAuth()
+  const { profile, hasPermission } = useAuth()
   const toast = useToast()
   const [popupState, setPopupState] = useState(null)
   const [processing, setProcessing] = useState(false)
@@ -611,6 +611,17 @@ const handleScan = useCallback(async (badge) => {
           const { error } = await supabase.from('attendance_sessions').insert(record)
           if (error) {
             if (error.code === '23505') {
+              try {
+                const { data: existingSession } = await supabase.rpc('get_open_session', { p_badge: manualSelectedSewadar.badge_number })
+                if (existingSession && existingSession.badge_number) {
+                  setManualOpenSession(existingSession)
+                  setManualEntryType('out')
+                  setManualHasSession(true)
+                  return
+                }
+              } catch (e) {
+                console.error('Failed to get open session:', e)
+              }
               setManualHasSession(true)
               return
             }
@@ -695,6 +706,21 @@ const handleScan = useCallback(async (badge) => {
   const formatTime = (timeStr) => {
     if (!timeStr) return ''
     return formatTime12Hour(timeStr)
+  }
+
+  if (!hasPermission('allow_scan')) {
+    return (
+      <div className="page pb-nav">
+        <div className="header">
+          <h2>Scanner</h2>
+        </div>
+        <div className="popup-error">
+          <Shield size={48} color="var(--red-light)" style={{ margin: '0 auto 16px', display: 'block' }} />
+          <div className="error-title">Access Denied</div>
+          <div className="error-msg">You do not have permission to use the scanner.</div>
+        </div>
+      </div>
+    )
   }
 
   return (

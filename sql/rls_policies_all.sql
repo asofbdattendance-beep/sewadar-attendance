@@ -874,6 +874,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_prevent_future_session ON public.attendance_sessions;
 CREATE TRIGGER trg_prevent_future_session
   BEFORE INSERT OR UPDATE ON public.attendance_sessions
   FOR EACH ROW
@@ -926,6 +927,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_check_session_overlap ON public.attendance_sessions;
 CREATE TRIGGER trg_check_session_overlap
   BEFORE INSERT OR UPDATE ON public.attendance_sessions
   FOR EACH ROW
@@ -969,6 +971,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_check_jatha_overlap ON public.jatha_attendance;
 CREATE TRIGGER trg_check_jatha_overlap
   BEFORE INSERT OR UPDATE ON public.jatha_attendance
   FOR EACH ROW
@@ -1378,6 +1381,10 @@ CREATE UNIQUE INDEX idx_jatha_unique_entry
   WHERE badge_number IS NOT NULL;
 
 -- ============================================================
+-- Guard: ensure overlap triggers are always active
+ALTER TABLE public.attendance_sessions ENABLE TRIGGER trg_check_session_overlap;
+ALTER TABLE public.jatha_attendance ENABLE TRIGGER trg_check_jatha_overlap;
+
 -- v2.6: Jatha centre filter — home-centre only; removed destination column
 -- ============================================================
 -- Changes:
