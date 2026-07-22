@@ -48,7 +48,20 @@ BEGIN
   END IF;
 
   -- Other roles: check the permissions JSONB column
-  IF v_permissions IS NULL OR jsonb_typeof(v_permissions) != 'object' THEN
+  IF v_permissions IS NULL THEN
+    RETURN FALSE;
+  END IF;
+
+  -- Handle stringified JSON (double-serialized)
+  IF jsonb_typeof(v_permissions) = 'string' THEN
+    BEGIN
+      v_permissions := (v_permissions #>> '{}')::JSONB;
+    EXCEPTION WHEN OTHERS THEN
+      RETURN FALSE;
+    END;
+  END IF;
+
+  IF jsonb_typeof(v_permissions) != 'object' THEN
     RETURN FALSE;
   END IF;
 
@@ -547,6 +560,15 @@ CREATE POLICY users_write ON public.users
   USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
   WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
 
+-- Prevent string-type JSONB values in permissions (double-serialization guard)
+ALTER TABLE public.users DROP CONSTRAINT IF EXISTS chk_users_permissions_is_object;
+ALTER TABLE public.users ADD CONSTRAINT chk_users_permissions_is_object
+  CHECK (
+    permissions IS NULL
+    OR jsonb_typeof(permissions) = 'object'
+    OR jsonb_typeof(permissions) = 'null'
+  );
+
 -- ============================================================
 -- TABLE: role_masters
 -- ============================================================
@@ -562,6 +584,15 @@ CREATE POLICY role_masters_write ON public.role_masters
   FOR ALL TO authenticated
   USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
   WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
+
+-- Prevent string-type JSONB values in permissions (double-serialization guard)
+ALTER TABLE public.role_masters DROP CONSTRAINT IF EXISTS chk_role_masters_permissions_is_object;
+ALTER TABLE public.role_masters ADD CONSTRAINT chk_role_masters_permissions_is_object
+  CHECK (
+    permissions IS NULL
+    OR jsonb_typeof(permissions) = 'object'
+    OR jsonb_typeof(permissions) = 'null'
+  );
 
 -- ============================================================
 -- TABLE: special_departments
@@ -826,6 +857,123 @@ CREATE TRIGGER trg_set_jatha_sewadar_centre
   FOR EACH ROW
   EXECUTE FUNCTION public.set_jatha_sewadar_centre();
 
+-- ============================================================
+-- TRIGGER: Prevent future-dated attendance sessions
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.prevent_future_session()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  IF NEW.in_date > CURRENT_DATE AND public.get_user_role() != 'super_admin' THEN
+    RAISE EXCEPTION 'Cannot create attendance session with a future date';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_prevent_future_session
+  BEFORE INSERT OR UPDATE ON public.attendance_sessions
+  FOR EACH ROW
+  EXECUTE FUNCTION public.prevent_future_session();
+
+-- ============================================================
+-- TRIGGER: Prevent overlapping attendance sessions
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.check_session_overlap()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_new_start TIMESTAMP;
+  v_new_end TIMESTAMP;
+BEGIN
+  IF NEW.badge_number IS NULL THEN
+    RETURN NEW;
+  END IF;
+  v_new_start := NEW.in_date + NEW.in_time;
+  v_new_end := CASE
+                WHEN NEW.out_date IS NOT NULL AND NEW.out_time IS NOT NULL
+                THEN NEW.out_date + NEW.out_time
+                ELSE NULL
+              END;
+
+  IF EXISTS (
+    SELECT 1 FROM public.attendance_sessions
+    WHERE badge_number = NEW.badge_number
+      AND id != COALESCE(NEW.id, -1)
+      AND (in_date + in_time) < COALESCE(v_new_end, 'infinity'::timestamp)
+      AND COALESCE(out_date + out_time, 'infinity'::timestamp) > v_new_start
+  ) THEN
+    RAISE EXCEPTION 'This sewadar already has an overlapping session';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM public.jatha_attendance
+    WHERE badge_number = NEW.badge_number
+      AND from_date IS NOT NULL
+      AND from_date <= COALESCE(NEW.out_date, NEW.in_date)
+      AND COALESCE(to_date, from_date) >= NEW.in_date
+  ) THEN
+    RAISE EXCEPTION 'This sewadar has a jatha entry overlapping this date';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_check_session_overlap
+  BEFORE INSERT OR UPDATE ON public.attendance_sessions
+  FOR EACH ROW
+  EXECUTE FUNCTION public.check_session_overlap();
+
+-- ============================================================
+-- TRIGGER: Prevent overlapping jatha entries
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.check_jatha_overlap()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  IF NEW.badge_number IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM public.jatha_attendance
+    WHERE badge_number = NEW.badge_number
+      AND id != COALESCE(NEW.id, -1)
+      AND from_date IS NOT NULL
+      AND from_date <= COALESCE(NEW.to_date, NEW.from_date)
+      AND COALESCE(to_date, from_date) >= NEW.from_date
+  ) THEN
+    RAISE EXCEPTION 'This sewadar already has a jatha entry overlapping this date range';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM public.attendance_sessions
+    WHERE badge_number = NEW.badge_number
+      AND in_date <= COALESCE(NEW.to_date, NEW.from_date)
+      AND COALESCE(out_date, in_date) >= NEW.from_date
+  ) THEN
+    RAISE EXCEPTION 'This sewadar has an attendance session overlapping this jatha';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_check_jatha_overlap
+  BEFORE INSERT OR UPDATE ON public.jatha_attendance
+  FOR EACH ROW
+  EXECUTE FUNCTION public.check_jatha_overlap();
+
 -- Temporarily disable overlap triggers for backfill (avoid false positives)
 ALTER TABLE public.attendance_sessions DISABLE TRIGGER trg_check_session_overlap;
 ALTER TABLE public.jatha_attendance DISABLE TRIGGER trg_check_jatha_overlap;
@@ -967,139 +1115,6 @@ CREATE UNIQUE INDEX idx_one_open_per_badge
   ON public.attendance_sessions(badge_number)
   WHERE status = 'OPEN';
 
--- ============================================================
--- TRIGGER: Prevent future-dated attendance sessions
--- (Gate entries and scans cannot have in_date > today)
--- Super admin bypasses this restriction
--- Jatha entries are NOT affected — they can be future-dated
--- ============================================================
-CREATE OR REPLACE FUNCTION public.prevent_future_session()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = ''
-AS $$
-BEGIN
-  IF NEW.in_date > CURRENT_DATE AND public.get_user_role() != 'super_admin' THEN
-    RAISE EXCEPTION 'Cannot create attendance session with a future date';
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
-DROP TRIGGER IF EXISTS trg_prevent_future_session ON public.attendance_sessions;
-CREATE TRIGGER trg_prevent_future_session
-  BEFORE INSERT OR UPDATE ON public.attendance_sessions
-  FOR EACH ROW
-  EXECUTE FUNCTION public.prevent_future_session();
-
--- ============================================================
--- CLEANUP: Delete existing future-dated attendance sessions
--- (These were entered in error before the trigger existed)
--- ============================================================
-DELETE FROM public.attendance_sessions
-WHERE in_date > CURRENT_DATE;
-
--- ============================================================
--- TRIGGER: Prevent overlapping attendance sessions
--- ============================================================
-CREATE OR REPLACE FUNCTION public.check_session_overlap()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = ''
-AS $$
-DECLARE
-  v_new_start TIMESTAMP;
-  v_new_end TIMESTAMP;
-BEGIN
-  IF NEW.badge_number IS NULL THEN
-    RETURN NEW;
-  END IF;
-  v_new_start := NEW.in_date + NEW.in_time;
-  v_new_end := CASE
-                WHEN NEW.out_date IS NOT NULL AND NEW.out_time IS NOT NULL
-                THEN NEW.out_date + NEW.out_time
-                ELSE NULL
-              END;
-
-  -- Check overlap with other attendance_sessions for same badge
-  IF EXISTS (
-    SELECT 1 FROM public.attendance_sessions
-    WHERE badge_number = NEW.badge_number
-      AND id != COALESCE(NEW.id, -1)
-      AND (in_date + in_time) < COALESCE(v_new_end, 'infinity'::timestamp)
-      AND COALESCE(out_date + out_time, 'infinity'::timestamp) > v_new_start
-  ) THEN
-    RAISE EXCEPTION 'This sewadar already has an overlapping session';
-  END IF;
-
-  -- Check overlap with jatha_attendance for same badge
-  IF EXISTS (
-    SELECT 1 FROM public.jatha_attendance
-    WHERE badge_number = NEW.badge_number
-      AND from_date IS NOT NULL
-      AND from_date <= COALESCE(NEW.out_date, NEW.in_date)
-      AND COALESCE(to_date, from_date) >= NEW.in_date
-  ) THEN
-    RAISE EXCEPTION 'This sewadar has a jatha entry overlapping this date';
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-DROP TRIGGER IF EXISTS trg_check_session_overlap ON public.attendance_sessions;
-CREATE TRIGGER trg_check_session_overlap
-  BEFORE INSERT OR UPDATE ON public.attendance_sessions
-  FOR EACH ROW
-  EXECUTE FUNCTION public.check_session_overlap();
-
--- ============================================================
--- TRIGGER: Prevent overlapping jatha entries
--- ============================================================
-CREATE OR REPLACE FUNCTION public.check_jatha_overlap()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = ''
-AS $$
-BEGIN
-  IF NEW.badge_number IS NULL THEN
-    RETURN NEW;
-  END IF;
-
-  -- Check overlap with other jatha_attendance for same badge
-  IF EXISTS (
-    SELECT 1 FROM public.jatha_attendance
-    WHERE badge_number = NEW.badge_number
-      AND id != COALESCE(NEW.id, -1)
-      AND from_date IS NOT NULL
-      AND from_date <= COALESCE(NEW.to_date, NEW.from_date)
-      AND COALESCE(to_date, from_date) >= NEW.from_date
-  ) THEN
-    RAISE EXCEPTION 'This sewadar already has a jatha entry overlapping this date range';
-  END IF;
-
-  -- Check overlap with attendance_sessions for same badge
-  IF EXISTS (
-    SELECT 1 FROM public.attendance_sessions
-    WHERE badge_number = NEW.badge_number
-      AND in_date <= COALESCE(NEW.to_date, NEW.from_date)
-      AND COALESCE(out_date, in_date) >= NEW.from_date
-  ) THEN
-    RAISE EXCEPTION 'This sewadar has an attendance session overlapping this jatha';
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-DROP TRIGGER IF EXISTS trg_check_jatha_overlap ON public.jatha_attendance;
-CREATE TRIGGER trg_check_jatha_overlap
-  BEFORE INSERT OR UPDATE ON public.jatha_attendance
-  FOR EACH ROW
-  EXECUTE FUNCTION public.check_jatha_overlap();
 
 -- ============================================================
 -- OPTIMIZED RPC: Get paginated session records with all filters

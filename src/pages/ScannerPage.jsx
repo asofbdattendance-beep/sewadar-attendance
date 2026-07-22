@@ -455,7 +455,7 @@ const handleScan = useCallback(async (badge) => {
 
     try {
       let data = null
-      if (profile?.role === ROLES.SC_SP_USER && profile?.centre) {
+      if (profile?.centre) {
         const scope = [profile.centre, ...childCentres]
         const { data: d } = await supabase.from('sewadars').select('*').in('centre', scope).or(`badge_number.ilike.%${term}%,sewadar_name.ilike.%${term}%`).limit(20)
         data = d

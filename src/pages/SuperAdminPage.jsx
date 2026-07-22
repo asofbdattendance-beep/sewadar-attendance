@@ -463,20 +463,15 @@ export default function SuperAdminPage() {
             payload.permissions = typeof rolePerms.permissions === 'string' ? JSON.parse(rolePerms.permissions) : rolePerms.permissions
           }
         }
-        // Convert permissions object to JSON string for storage
-        if (payload.permissions && typeof payload.permissions === 'object') {
-          payload.permissions = JSON.stringify(payload.permissions)
-        }
       }
       
-      if (activeTable === 'role_masters' && payload.permissions) {
-        if (typeof payload.permissions === 'string') {
-          try { payload.permissions = JSON.parse(payload.permissions) } catch {}
-        }
-        // Ensure permissions is an object for JSONB column
-        if (typeof payload.permissions !== 'object' || payload.permissions === null) {
-          payload.permissions = {}
-        }
+      if (payload.permissions && typeof payload.permissions === 'object') {
+        // Keep as object — Supabase client + JSONB column handle serialization
+      } else if (payload.permissions && typeof payload.permissions === 'string') {
+        try { payload.permissions = JSON.parse(payload.permissions) } catch {}
+      }
+      if (typeof payload.permissions !== 'object' || payload.permissions === null) {
+        payload.permissions = {}
       }
       
       // Filter out undefined/null values - but keep id for update
