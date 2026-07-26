@@ -10,8 +10,9 @@ import RecordsPage from './pages/RecordsPage'
 import ProfilePage from './pages/ProfilePage'
 import AttendanceEntryPage from './pages/AttendanceEntryPage'
 import ReportsPage from './pages/ReportsPage'
+import SchedulesPage from './pages/SchedulesPage'
 import SuperAdminPage from './pages/SuperAdminPage'
-import { LayoutDashboard, Scan, FileText, WifiOff, User, ClipboardList, FileBarChart, Settings } from 'lucide-react'
+import { LayoutDashboard, Scan, FileText, WifiOff, User, ClipboardList, FileBarChart, Settings, Calendar } from 'lucide-react'
 
 function AppLayout() {
   const { profile, loading, hasPermission } = useAuth()
@@ -48,6 +49,7 @@ function AppLayout() {
     { path: '/records', label: 'Records', icon: FileText, permission: 'allow_records' },
     { path: '/entry', label: 'Entry', icon: ClipboardList, permission: 'allow_gate_entry' },
     { path: '/reports', label: 'Reports', icon: FileBarChart, permission: 'allow_reports' },
+    { path: '/schedules', label: 'Schedules', icon: Calendar, permission: 'schedule_view' },
     { path: '/profile', label: 'Profile', icon: User },
   ]
 
@@ -80,6 +82,7 @@ function AppLayout() {
       <Routes>
         <Route path="/" element={hasPermission('allow_dashboard') ? <DashboardPage /> : <Navigate to="/profile" replace />} />
         <Route path="/reports" element={hasPermission('allow_reports') ? <ReportsPage /> : <Navigate to="/" replace />} />
+        <Route path="/schedules" element={hasPermission('schedule_view') ? <SchedulesPage /> : <Navigate to="/" replace />} />
         <Route path="/scan" element={hasPermission('allow_scan') ? <ScannerPage isOnline={isOnline} /> : <Navigate to="/" replace />} />
         <Route path="/records" element={hasPermission('allow_records') ? <RecordsPage /> : <Navigate to="/" replace />} />
         <Route path="/entry" element={hasPermission('allow_gate_entry') || hasPermission('allow_jatha') ? <AttendanceEntryPage /> : <Navigate to="/" replace />} />

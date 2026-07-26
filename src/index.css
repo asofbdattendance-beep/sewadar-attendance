@@ -2095,3 +2095,985 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .chip-dot.major { background:var(--purple); }
 .chip-dot.home { background:var(--green); }
 
+@media print {
+  html, body { width:100%; height:100%; margin:0; padding:0; }
+  * { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+
+  .navbar, .bottom-nav, .bottom-nav-item,
+  .toast-container, .toast,
+  .header, .header h2, .refresh-btn, .status-row, .header-date,
+  .report-filters, .report-main-tabs, .report-tab,
+  .report-sub-tabs, .report-sub-tab,
+  .report-title-bar, .report-count,
+  .downloads-content,
+  .schedules-refresh,
+  .planner-print-all, .planner-header h3 svg,
+  .records-tabs, .records-tab,
+  .records-toolbar, .search-box-v2, .btn-icon,
+  .pinned-filter-bar, .filters-panel, .quick-filters,
+  .pull-refresh,
+  .scanner-status-bar, .manual-entry-btn, .scanner-processing,
+  .popup-overlay, .popup-card,
+  .tab-container, .tab-btn,
+  .superadmin-tabs, .superadmin-toolbar,
+  .modal-overlay, .modal-content, .report-loading { display:none !important; }
+
+  .schedules-container { padding:8px; }
+  .schedules-header { display:flex !important; }
+  .schedules-header h3 { font-size:18px !important; }
+  .schedule-summary { display:flex !important; gap:8px; margin:8px 0; }
+  .summary-stat { padding:8px; min-width:70px; }
+  .summary-stat .stat-value { font-size:22px !important; }
+  .summary-stat .stat-label { font-size:10px !important; }
+  .schedules-table { display:table !important; font-size:13px !important; }
+  .schedules-table thead th { font-size:11px !important; padding:10px 12px !important; }
+  .schedules-table tbody td { padding:8px 12px !important; }
+  .schedules-table tbody tr { page-break-inside:avoid; }
+  .schedules-table tbody tr:nth-child(15n) { page-break-after:always; }
+  .sched-cell-title { font-size:13px !important; }
+  .sched-cell-dept { font-size:12px !important; }
+  .sched-cell-date { font-size:12px !important; }
+  .sched-cell-count { font-size:14px !important; }
+  .schedule-empty { display:none !important; }
+  .schedules-actions .btn, .schedules-actions button { display:none !important; }
+}
+
+/* ========== CENTRE SCHEDULE VIEW ========== */
+.centre-schedule {
+  display:flex; flex-direction:column; gap:20px;
+}
+.centre-schedule-month {
+  background:white; border:1px solid var(--border); border-radius:12px; overflow:hidden;
+}
+.centre-schedule-heading {
+  font-size:15px; font-weight:700; color:var(--excel-green);
+  padding:14px 16px; background:var(--bg);
+  border-bottom:1px solid var(--border);
+  text-align:center; letter-spacing:0.02em;
+}
+.centre-schedule-days {
+  display:flex; flex-direction:column;
+}
+.centre-schedule-day {
+  padding:12px 16px;
+  border-bottom:1px solid var(--border);
+}
+.centre-schedule-day:last-child { border-bottom:none; }
+.centre-day-label {
+  font-size:13px; font-weight:700; color:var(--text-primary);
+  margin-bottom:8px; text-transform:uppercase; letter-spacing:0.03em;
+}
+.centre-dept-list {
+  display:flex; flex-direction:column; gap:4px;
+  padding-left:8px;
+}
+.centre-dept-row {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:4px 8px; border-radius:6px;
+  font-size:13px;
+}
+.centre-dept-row:hover { background:var(--bg); }
+.centre-dept-name {
+  color:var(--text-primary); font-weight:500;
+}
+.centre-dept-count {
+  color:var(--excel-green); font-weight:700; font-size:15px;
+  background:rgba(33,115,70,0.08); padding:2px 12px; border-radius:6px;
+}
+
+/* ========== SCHEDULES PAGE ========== */
+.schedules-container {
+  padding:16px; padding-bottom:5.5rem;
+}
+.schedules-header {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;
+  margin-bottom:8px;
+}
+.schedules-header h3 {
+  font-size:15px; font-weight:700; color:var(--text-primary);
+}
+.schedules-actions {
+  display:flex; gap:8px;
+}
+.schedules-actions .btn {
+  padding:8px 14px; font-size:12px; min-height:36px;
+}
+.schedules-refresh {
+  display:flex; justify-content:flex-end; margin-bottom:12px;
+}
+.schedules-refresh .icon-btn {
+  width:30px; height:30px;
+}
+.schedules-refresh .spin { animation:spin 1s linear infinite; }
+
+.schedules-table {
+  width:100%; border-collapse:separate; border-spacing:0;
+  font-size:12px; background:white;
+  border:1px solid var(--border); border-radius:12px; overflow:hidden;
+}
+.schedules-table thead th {
+  background:var(--bg);
+  font-size:10px; font-weight:700; color:var(--text-muted);
+  text-transform:uppercase; letter-spacing:0.05em;
+  padding:12px 12px;
+  text-align:left;
+  border-bottom:1px solid var(--border);
+}
+.sched-th-type { width:80px; text-align:center; }
+.sched-th-title { max-width:0; width:auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sched-th-dept { width:130px; }
+.sched-th-date { width:150px; }
+.sched-th-count { width:60px; text-align:center; }
+.sched-th-actions { width:50px; }
+
+.sched-row {
+  cursor:pointer; transition:background 0.1s;
+}
+.sched-row:hover { background:var(--bg-hover); }
+.sched-row.expanded { background:var(--bg-secondary); }
+.sched-row td {
+  padding:10px 12px;
+  border-bottom:1px solid var(--border);
+  vertical-align:middle;
+}
+.sched-row:last-child td { border-bottom:none; }
+.sched-detail-row td {
+  padding:0;
+  border-bottom:1px solid var(--border);
+  background:var(--bg-secondary);
+}
+.sched-detail-row:last-child td { border-bottom:none; }
+
+.schedule-type-badge {
+  display:inline-block;
+  font-size:9px; font-weight:700; padding:3px 8px; border-radius:4px;
+  text-transform:uppercase; letter-spacing:0.05em; white-space:nowrap;
+  background:rgba(33,115,70,0.1); color:var(--excel-green);
+}
+.schedule-type-badge.specific {
+  background:rgba(37,99,235,0.1); color:var(--blue);
+}
+.sched-cell-type { text-align:center; }
+.sched-cell-title { font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:6px; }
+.sched-cell-dept { font-size:11px; color:var(--text-secondary); min-width:80px; text-align:center; }
+.sched-cell-date { font-size:11px; color:var(--text-muted); min-width:120px; text-align:center; }
+.sched-cell-count { text-align:center; font-weight:800; font-size:15px; color:var(--excel-green); min-width:40px; }
+.sched-cell-actions { text-align:right; white-space:nowrap; display:flex; align-items:center; justify-content:flex-end; gap:2px; }
+.sched-expand-icon { display:inline-flex; align-items:center; color:var(--text-muted); margin-left:4px; vertical-align:middle; }
+.sched-expand-icon.open { color:var(--text-secondary); }
+
+.schedule-delete-btn {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:26px; height:26px; border:none; background:none;
+  color:var(--text-muted); cursor:pointer; border-radius:5px;
+  transition:all 0.15s; vertical-align:middle;
+}
+.schedule-delete-btn:hover { background:var(--red-bg); color:var(--error); }
+
+.schedule-empty {
+  padding:16px; text-align:center; color:var(--text-muted); font-size:13px;
+}
+.sched-modal-content { max-width:650px; }
+.schedule-detail-bar {
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:8px 16px; background:var(--bg-secondary);
+  border-bottom:1px solid var(--border); font-size:12px;
+}
+.schedule-detail-bar .detail-date { color:var(--text-secondary); font-weight:600; }
+.schedule-detail-bar .detail-location { color:var(--text-muted); }
+.schedule-detail-bar .detail-total { margin-left:auto; font-size:13px; color:var(--text-secondary); }
+
+.schedule-groups { display:flex; flex-direction:column; gap:8px; }
+.schedule-group { border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--clr-surface, #fff); }
+.schedule-group-header {
+  display:grid; grid-template-columns:1fr auto auto 50px auto; align-items:center; gap:12px;
+  padding:12px 16px; cursor:pointer; transition:background 0.15s; user-select:none;
+  background:var(--clr-surface, #fff);
+}
+.schedule-group-header:hover { background:var(--bg); }
+.schedule-type-badge {
+  display:inline-block; font-size:9px; font-weight:800; letter-spacing:0.08em;
+  padding:2px 8px; border-radius:4px;
+  background:rgba(33,115,70,0.1); color:var(--excel-green);
+}
+.schedule-type-badge.specific { background:rgba(59,130,246,0.1); color:#2563eb; }
+
+.schedule-group-body { border-top:1px solid var(--border); padding:14px 16px; background:var(--bg); }
+.schedule-group-body .specific-rows { max-height:none; border:none; padding:0; gap:4px; }
+.sched-add-row-placeholder {
+  display:flex; align-items:center; justify-content:center; gap:6px;
+  padding:10px; margin-top:8px; border:1px dashed var(--border); border-radius:8px;
+  color:var(--text-muted); font-size:12px; cursor:pointer; transition:all 0.15s;
+}
+.sched-add-row-placeholder:hover { border-color:var(--excel-green); color:var(--excel-green); background:var(--green-bg); }
+.schedule-detail-bar .detail-total strong { color:var(--excel-green); font-size:15px; }
+.specific-edit-body { padding:0; }
+.sched-centre-cell { position:relative; }
+.sched-new-badge {
+  display:inline-block; font-size:8px; font-weight:700;
+  padding:1px 5px; border-radius:3px; margin-left:6px;
+  background:rgba(33,115,70,0.1); color:var(--excel-green);
+  text-transform:uppercase; letter-spacing:0.03em;
+  vertical-align:middle;
+}
+.sched-count-wrap { display:flex; align-items:center; justify-content:center; gap:4px; }
+.sched-remove-btn {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:18px; height:18px; border:none; background:var(--red-bg);
+  color:var(--error); border-radius:4px; cursor:pointer;
+}
+.sched-add-row {
+  display:flex; align-items:center; gap:6px; margin-top:10px;
+}
+.sched-add-input {
+  flex:1; padding:6px 10px; border:1px solid var(--border);
+  border-radius:6px; font-size:12px; outline:none;
+}
+.sched-add-input:focus { border-color:var(--excel-green); }
+.sched-add-count { flex:0 0 70px; text-align:center; }
+.sched-centre-picker { position:relative; flex:1; }
+.sched-centre-dropdown {
+  position:absolute; top:100%; left:0; right:0; z-index:10;
+  background:white; border:1px solid var(--border);
+  border-radius:6px; max-height:180px; overflow-y:auto;
+  box-shadow:0 8px 20px rgba(0,0,0,0.1); margin-top:2px;
+}
+.sched-centre-option {
+  padding:7px 10px; font-size:12px; cursor:pointer;
+  color:var(--text-primary); transition:background 0.1s;
+}
+.sched-centre-option:hover { background:var(--bg); }
+.sched-centre-option.selected { background:var(--excel-green-bg); font-weight:600; }
+.sched-modal-actions {
+  display:flex; justify-content:flex-end; gap:8px; margin-top:16px; padding-top:12px;
+  border-top:1px solid var(--border);
+}
+.btn-sm {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:6px 14px; border:none; border-radius:6px;
+  font-size:12px; font-weight:600; cursor:pointer;
+  background:var(--excel-green); color:white;
+  transition:opacity 0.15s; white-space:nowrap;
+}
+.btn-sm:disabled { opacity:0.5; cursor:default; }
+.btn-sm:hover:not(:disabled) { opacity:0.9; }
+.btn-secondary {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:8px 18px; border:1px solid var(--border);
+  border-radius:8px; font-size:12px; font-weight:600;
+  background:white; color:var(--text-secondary); cursor:pointer;
+  transition:all 0.15s;
+}
+.btn-secondary:hover { border-color:var(--text-muted); color:var(--text-primary); }
+
+.schedule-entry-table {
+  width:100%; border-collapse:collapse; font-size:12px; margin-top:8px;
+}
+.schedule-entry-table th {
+  text-align:left; padding:8px 10px;
+  font-size:10px; font-weight:600; color:var(--text-muted);
+  text-transform:uppercase; letter-spacing:0.05em;
+  border-bottom:1px solid var(--border);
+}
+.schedule-entry-table td {
+  padding:6px 10px; border-bottom:1px solid var(--border);
+  color:var(--text-primary);
+}
+.schedule-entry-table tbody tr:last-child td { border-bottom:none; }
+.schedule-entry-table tfoot td {
+  padding:8px 10px; font-size:11px;
+  border-top:2px solid var(--border-strong);
+  background:var(--bg);
+}
+.sched-num-col { text-align:center; width:60px; }
+.centre-total {
+  font-size:11px; color:var(--text-secondary); padding:1px 0;
+}
+
+/* Schedule Summary Dashboard */
+.schedule-summary {
+  display:flex; gap:10px; margin:8px 0 4px; flex-wrap:wrap;
+}
+.summary-stat {
+  display:flex; flex-direction:column; align-items:center; gap:2px;
+  flex:1; min-width:80px; padding:10px 8px;
+  background:white; border:1px solid var(--border); border-radius:10px;
+}
+.summary-stat .stat-value {
+  font-size:20px; font-weight:800; color:var(--text-primary); line-height:1;
+}
+.summary-stat .stat-label {
+  font-size:9px; font-weight:600; color:var(--text-muted);
+  text-transform:uppercase; letter-spacing:0.04em;
+}
+.summary-stat.bhati-stat { border-color:rgba(33,115,70,0.2); background:rgba(33,115,70,0.04); }
+.summary-stat.bhati-stat .stat-value { color:var(--excel-green); }
+.summary-stat.specific-stat { border-color:rgba(37,99,235,0.2); background:rgba(37,99,235,0.04); }
+.summary-stat.specific-stat .stat-value { color:var(--blue); }
+.summary-stat.pending-stat { border-color:rgba(234,179,8,0.25); background:rgba(234,179,8,0.05); }
+.summary-stat.pending-stat .stat-value { color:rgb(202,138,4); }
+
+.pending-months-bar {
+  display:flex; gap:6px; flex-wrap:wrap; margin:0 0 12px;
+}
+.pending-chip {
+  font-size:10px; font-weight:600; padding:3px 10px; border-radius:12px;
+  background:rgba(234,179,8,0.1); color:rgb(180,120,0); border:1px solid rgba(234,179,8,0.2);
+}
+
+/* Bhati Week Grid (new design) */
+.schedule-modal {
+  max-width:650px !important;
+}
+.schedule-form-row {
+  display:flex; gap:12px; margin-bottom:14px; flex-wrap:wrap;
+}
+.schedule-field {
+  display:flex; flex-direction:column; gap:4px; flex:1; min-width:120px;
+}
+.schedule-field label {
+  font-size:10px; font-weight:600; color:var(--text-muted); text-transform:uppercase;
+}
+.schedule-field input,
+.schedule-field select {
+  padding:8px 10px; border:1px solid var(--border); border-radius:8px;
+  font-size:13px; font-family:'Inter',sans-serif; background:white;
+}
+.schedule-field input:focus,
+.schedule-field select:focus { outline:none; border-color:var(--excel-green); }
+
+.bhati-week-grid {
+  display:flex; flex-direction:column; gap:10px;
+  max-height:420px; overflow-y:auto;
+  padding-right:4px;
+}
+.bhati-day-section {
+  background:var(--bg-secondary); border-radius:8px; border:1px solid var(--border); padding:8px 10px;
+}
+.bhati-day-header {
+  display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;
+}
+.bhati-day-label {
+  font-size:12px; font-weight:700; color:var(--text-primary); text-transform:uppercase; letter-spacing:0.03em;
+}
+.bhati-add-row-btn {
+  display:flex; align-items:center; gap:4px;
+  padding:4px 10px; border:1px dashed var(--border-strong); border-radius:6px;
+  background:white; color:var(--excel-green); font-size:11px; font-weight:600;
+  cursor:pointer; transition:all 0.15s;
+}
+.bhati-add-row-btn:hover { border-color:var(--excel-green); background:rgba(33,115,70,0.05); }
+.bhati-day-empty {
+  font-size:11px; color:var(--text-muted); padding:4px 0; text-align:center;
+}
+.bhati-row {
+  display:flex; align-items:center; gap:8px; margin-bottom:5px;
+}
+.bhati-row select {
+  flex:1; min-width:0;
+  padding:5px 8px; border:1px solid var(--border); border-radius:6px;
+  font-size:12px; font-family:'Inter',sans-serif; background:white;
+}
+.bhati-row select:focus { outline:none; border-color:var(--excel-green); }
+.bhati-centre-label {
+  flex:1; display:flex; align-items:center; gap:5px;
+  font-size:12px; font-weight:600; color:var(--text-primary);
+}
+.bhati-centre-label svg { color:var(--excel-green); flex-shrink:0; }
+.bhati-remove-btn {
+  display:flex; align-items:center; justify-content:center;
+  width:26px; height:26px; border:none; background:none;
+  color:var(--text-muted); cursor:pointer; border-radius:5px;
+  transition:all 0.15s; flex-shrink:0;
+}
+.bhati-remove-btn:hover { background:var(--red-bg); color:var(--error); }
+
+.sched-count-input {
+  width:55px; padding:5px 6px; border:1px solid var(--border);
+  border-radius:6px; font-size:12px; text-align:center;
+  font-family:'Inter',sans-serif; background:white; flex-shrink:0;
+  transition:border-color 0.15s, box-shadow 0.15s;
+}
+.sched-count-input:focus { outline:none; border-color:var(--excel-green); box-shadow:0 0 0 2px rgba(33,115,70,0.1); }
+.sched-count-input.changed { border-color:#f59e0b; background:#fffbeb; }
+.bhati-count-display {
+  width:55px; padding:5px 6px; font-size:13px; font-weight:700; text-align:center;
+  color:var(--text-primary); flex-shrink:0;
+}
+
+/* Bhati department tabs inside card */
+.bhati-dept-tabs {
+  display:flex; gap:4px; margin-bottom:10px; flex-wrap:wrap;
+}
+.bhati-dept-tab {
+  padding:5px 12px; border:1px solid var(--border); border-radius:14px;
+  background:white; font-size:11px; font-weight:600; color:var(--text-secondary);
+  cursor:pointer; transition:all 0.15s;
+}
+.bhati-dept-tab:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.bhati-dept-tab.active { background:var(--excel-green); color:white; border-color:var(--excel-green); }
+
+/* Save bar inside card */
+.bhati-save-bar {
+  padding:10px 0 0; display:flex; justify-content:flex-end;
+  border-top:1px solid var(--border); margin-top:10px;
+}
+
+/* Specific schedule centre list (replaces old grid) */
+.specific-rows {
+  display:flex; flex-direction:column; gap:6px;
+  max-height:350px; overflow-y:auto;
+  border:1px solid var(--border); border-radius:8px; padding:10px;
+}
+
+/* Distribution within Bhati rows */
+.bhati-row.has-distribute {
+  flex-wrap:wrap; padding-bottom:8px;
+  background:rgba(33,115,70,0.03); border-radius:8px;
+}
+.bhati-dist-btn {
+  display:flex; align-items:center; justify-content:center;
+  width:34px; height:34px; border:2px solid var(--border); border-radius:8px;
+  background:white; color:var(--text-muted); cursor:pointer;
+  font-size:16px; line-height:1; transition:all 0.15s;
+  flex-shrink:0;
+}
+.bhati-dist-btn:hover { border-color:var(--excel-green); color:var(--excel-green); background:rgba(33,115,70,0.05); }
+.bhati-dist-btn.active { background:rgba(33,115,70,0.1); border-color:var(--excel-green); color:var(--excel-green); }
+
+.bhati-dist-children {
+  width:100%; margin-top:6px; padding-top:6px;
+  border-top:1px dashed var(--border);
+  display:flex; flex-direction:column; gap:4px;
+}
+.bhati-dist-child {
+  display:flex; align-items:center; gap:6px;
+  padding-left:8px;
+}
+.bhati-dist-child-name {
+  flex:1; font-size:12px; font-weight:500; color:var(--text-primary);
+}
+.bhati-dist-child .dist-input {
+  width:60px; padding:4px 6px;
+}
+.bhati-dist-sum {
+  display:flex; align-items:center; gap:6px;
+  padding-left:8px; font-size:11px; font-weight:600; color:var(--text-muted);
+  margin-top:2px;
+}
+.bhati-dist-sum .mismatch { color:var(--error); }
+
+/* ========== MULTI-SELECT CENTRES ========== */
+.multi-select-container {
+  position:relative; flex:1; min-width:0;
+}
+.multi-select-chips {
+  display:flex; align-items:center; gap:4px; flex-wrap:wrap;
+  min-height:32px; padding:3px 28px 3px 6px;
+  border:1px solid var(--border); border-radius:6px;
+  background:white; cursor:pointer; font-size:12px;
+  position:relative;
+}
+.multi-select-placeholder {
+  color:var(--text-muted); font-size:12px;
+}
+.multi-chip {
+  display:inline-flex; align-items:center; gap:3px;
+  padding:2px 6px; border-radius:4px;
+  background:rgba(33,115,70,0.1); color:var(--excel-green);
+  font-size:11px; font-weight:600; line-height:1.4;
+}
+.multi-chip-remove {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:14px; height:14px; border:none; background:none;
+  color:var(--excel-green); cursor:pointer; border-radius:3px; padding:0;
+  opacity:0.6;
+}
+.multi-chip-remove:hover { opacity:1; background:rgba(33,115,70,0.2); }
+.multi-select-chevron {
+  position:absolute; right:8px; top:50%; transform:translateY(-50%);
+  color:var(--text-muted); transition:transform 0.15s;
+}
+.multi-select-chevron.open { transform:translateY(-50%) rotate(180deg); }
+.multi-select-dropdown {
+  position:absolute; top:100%; left:0; right:0; z-index:100;
+  margin-top:2px; border:1px solid var(--border); border-radius:8px;
+  background:white; box-shadow:0 4px 16px rgba(0,0,0,0.12);
+  max-height:240px; display:flex; flex-direction:column;
+}
+.multi-select-search {
+  padding:8px 10px; border:none; border-bottom:1px solid var(--border);
+  font-size:12px; font-family:'Inter',sans-serif; outline:none;
+  border-radius:8px 8px 0 0;
+}
+.multi-select-options {
+  overflow-y:auto; flex:1;
+}
+.multi-select-option {
+  display:flex; align-items:center; gap:8px;
+  padding:6px 10px; font-size:12px; cursor:pointer;
+  transition:background 0.1s;
+}
+.multi-select-option:hover { background:var(--bg-secondary); }
+.multi-select-option.checked { background:rgba(33,115,70,0.05); font-weight:600; }
+.multi-select-option input[type="checkbox"] { margin:0; }
+.multi-select-empty {
+  padding:10px; text-align:center; font-size:11px; color:var(--text-muted);
+}
+
+/* ========== BHATI GROUP CARD ========== */
+.group-card {
+  background:white; border:1px solid var(--border); border-radius:8px;
+  padding:10px 12px; margin-bottom:6px;
+}
+.group-card-new {
+  border-style:dashed; border-color:var(--border-strong);
+}
+.group-centres-row {
+  display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-bottom:8px;
+}
+.group-chip {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:4px 8px; border-radius:5px;
+  background:rgba(33,115,70,0.08); color:var(--text-primary);
+  font-size:12px; font-weight:600;
+}
+.group-chip svg { color:var(--excel-green); flex-shrink:0; }
+.group-chip-x {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:16px; height:16px; border:none; background:none;
+  color:var(--text-muted); cursor:pointer; border-radius:3px; padding:0;
+}
+.group-chip-x:hover { background:var(--red-bg); color:var(--error); }
+.group-add-chip {
+  display:inline-flex; align-items:center; gap:3px;
+  padding:4px 8px; border:1px dashed var(--border-strong); border-radius:5px;
+  background:white; color:var(--excel-green); font-size:11px; font-weight:600;
+  cursor:pointer; transition:all 0.15s;
+}
+.group-add-chip:hover { border-color:var(--excel-green); background:rgba(33,115,70,0.05); }
+.group-actions-row {
+  display:flex; align-items:center; gap:12px;
+}
+.group-count-wrap {
+  display:flex; align-items:center; gap:6px;
+}
+.group-count-label {
+  font-size:12px; font-weight:600; color:var(--text-secondary);
+}
+.group-count-input {
+  width:60px; padding:5px 8px; border:1px solid var(--border);
+  border-radius:6px; font-size:13px; text-align:center;
+  font-family:'Inter',sans-serif; background:white;
+}
+.group-count-input:focus { outline:none; border-color:var(--excel-green); }
+.group-count-display {
+  font-size:14px; font-weight:700; color:var(--text-primary);
+}
+.group-delete-btn {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:5px 10px; border:1px solid var(--border); border-radius:6px;
+  background:white; color:var(--text-muted); font-size:11px; font-weight:600;
+  cursor:pointer; transition:all 0.15s;
+}
+.group-delete-btn:hover { border-color:var(--error); color:var(--error); background:var(--red-bg); }
+.group-dist-section {
+  margin-top:8px; padding-top:8px; border-top:1px solid var(--border);
+  display:flex; flex-direction:column; gap:5px;
+}
+.group-dist-btn {
+  display:inline-flex; align-items:center; gap:5px;
+  padding:4px 10px; border:1px solid var(--border); border-radius:6px;
+  background:white; color:var(--text-secondary); font-size:11px; font-weight:600;
+  cursor:pointer; transition:all 0.15s;
+}
+.group-dist-btn:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.group-dist-btn.active { background:rgba(33,115,70,0.08); border-color:var(--excel-green); color:var(--excel-green); }
+.group-dist-children {
+  display:flex; flex-direction:column; gap:4px;
+  padding:6px 8px; margin-left:4px;
+  background:var(--bg-secondary); border-radius:6px;
+}
+.group-dist-child {
+  display:flex; align-items:center; gap:6px;
+}
+.group-dist-child-name {
+  flex:1; font-size:12px; font-weight:500; color:var(--text-primary);
+}
+.group-dist-input {
+  width:55px; padding:4px 6px; border:1px solid var(--border);
+  border-radius:5px; font-size:12px; text-align:center; background:white;
+}
+.group-dist-input:focus { outline:none; border-color:var(--excel-green); }
+.group-dist-sum {
+  display:flex; align-items:center; gap:8px;
+  font-size:11px; font-weight:600; color:var(--text-muted); margin-top:2px;
+}
+.group-dist-sum .mismatch { color:var(--error); }
+.group-add-bar {
+  display:flex; align-items:center; gap:6px; margin-top:8px; padding-top:8px;
+  border-top:1px dashed var(--border);
+}
+.group-add-confirm {
+  display:flex; align-items:center; justify-content:center;
+  width:28px; height:28px; border:none; border-radius:6px;
+  background:var(--excel-green); color:white; cursor:pointer; flex-shrink:0;
+}
+.group-add-confirm:disabled { opacity:0.4; cursor:default; }
+.group-add-cancel {
+  display:flex; align-items:center; justify-content:center;
+  width:28px; height:28px; border:none; border-radius:6px;
+  background:var(--red-bg); color:var(--text-muted); cursor:pointer; flex-shrink:0;
+}
+.group-add-cancel:hover { color:var(--error); }
+.group-add-count-input {
+  width:50px; padding:5px 6px; border:1px solid var(--border);
+  border-radius:6px; font-size:12px; text-align:center;
+  font-family:'Inter',sans-serif; background:white; flex-shrink:0;
+}
+.group-add-count-input:focus { outline:none; border-color:var(--excel-green); }
+
+/* ========== MONTHLY PLANNER V2 ========== */
+.monthly-planner { font-size:12px; }
+
+.planner-centre-tabs {
+  display:flex; flex-wrap:wrap; gap:4px; margin-bottom:10px;
+}
+.planner-centre-tab {
+  padding:4px 12px; border:1px solid var(--border); border-radius:6px;
+  font-size:10px; font-weight:600; cursor:pointer;
+  background:white; color:var(--text-secondary);
+  transition:all 0.12s;
+}
+.planner-centre-tab:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.planner-centre-tab.active {
+  background:var(--excel-green); color:white; border-color:var(--excel-green);
+}
+
+.compact-dept {
+  display:inline-flex; align-items:baseline; gap:0px;
+  font-size:10px; font-weight:700; margin-right:6px;
+  white-space:nowrap; cursor:help;
+}
+
+.planner-tooltip {
+  position:fixed; z-index:99999;
+  background:#fff; color:var(--text-primary);
+  border-radius:8px; font-size:12px;
+  pointer-events:none;
+  box-shadow:0 4px 16px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.04);
+  min-width:140px;
+  transform:translateY(-100%);
+  overflow:hidden;
+}
+.planner-tooltip-header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:5px 12px; font-size:10px; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.04em;
+  color:#fff;
+}
+.tooltip-edit-btn {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:24px; height:24px; border:none; border-radius:4px;
+  background:rgba(255,255,255,0.2); color:#fff; cursor:pointer;
+  transition:background 0.15s; flex-shrink:0;
+}
+.tooltip-edit-btn:hover { background:rgba(255,255,255,0.4); }
+.planner-tooltip-dates {
+  padding:5px 12px; background:var(--bg-secondary); border-bottom:1px solid var(--border);
+}
+.tooltip-date-row {
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap; font-size:11px; color:var(--text-secondary);
+}
+.tooltip-date-row strong { color:var(--text-primary); }
+.tooltip-total-badge {
+  margin-left:auto; font-size:11px;
+}
+.planner-tooltip-list {
+  padding:4px 0;
+}
+.planner-tooltip-row {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:3px 12px; gap:16px;
+}
+.planner-tooltip-name {
+  font-size:12px; font-weight:500; color:var(--text-primary);
+}
+.planner-tooltip-count {
+  font-size:12px; font-weight:700;
+}
+.planner-filters {
+  display:flex; flex-wrap:wrap; gap:8px 20px; margin-bottom:12px;
+  padding:10px 12px; background:var(--bg); border-radius:8px;
+  border:1px solid var(--border);
+}
+.planner-filter-group {
+  display:flex; align-items:center; gap:4px; flex-wrap:wrap;
+}
+.filter-label {
+  font-size:10px; font-weight:700; color:var(--text-muted);
+  text-transform:uppercase; letter-spacing:0.04em; margin-right:2px;
+}
+.filter-chip {
+  display:inline-flex; align-items:center;
+  padding:3px 9px; border:1px solid var(--border); border-radius:6px;
+  font-size:10px; font-weight:600; cursor:pointer;
+  background:white; color:var(--text-secondary);
+  transition:all 0.12s;
+}
+.filter-chip:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.filter-chip.active {
+  background:var(--excel-green); color:white; border-color:var(--excel-green);
+}
+.planner-header-bar {
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;
+  margin-bottom:16px;
+}
+.planner-nav { display:flex; align-items:center; gap:8px; }
+.planner-nav-label { font-size:18px; font-weight:700; color:var(--text-primary); margin:0; min-width:140px; text-align:center; }
+.planner-nav-btn {
+  display:flex; align-items:center; justify-content:center;
+  width:32px; height:32px; border:1px solid var(--border); border-radius:var(--radius);
+  background:var(--bg-white); color:var(--text-secondary); cursor:pointer;
+  transition:all 0.15s;
+}
+.planner-nav-btn:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.planner-actions { display:flex; gap:8px; }
+.planner-print-btn {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:6px 14px; border:1px solid var(--border); border-radius:var(--radius);
+  background:var(--bg-white); color:var(--text-secondary); cursor:pointer;
+  font-size:13px; transition:all 0.15s;
+}
+.planner-print-btn:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.planner-empty {
+  display:flex; flex-direction:column; align-items:center; gap:12px;
+  padding:60px 20px; color:var(--text-muted); text-align:center;
+}
+.planner-empty svg { opacity:0.4; }
+.planner-empty p { font-size:15px; margin:0; }
+
+.planner-centre-header {
+  display:flex; align-items:center; justify-content:center; gap:6px;
+  padding:8px 12px; margin-bottom:12px;
+  background:var(--excel-green); color:white;
+  border-radius:8px; font-size:14px; font-weight:700;
+  letter-spacing:0.02em;
+}
+
+.planner-grid {
+  display:grid;
+  grid-template-columns:repeat(7,1fr);
+  gap:1px;
+  background:var(--border);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  overflow:hidden;
+}
+.planner-weekday {
+  background:var(--bg-secondary);
+  padding:8px 10px;
+  font-size:11px;
+  font-weight:700;
+  color:var(--text-secondary);
+  text-transform:uppercase;
+  letter-spacing:0.03em;
+  text-align:center;
+}
+.planner-day {
+  background:var(--bg-white);
+  padding:5px 6px 3px;
+  min-height:65px;
+}
+.planner-day.empty { background:var(--bg-secondary); }
+
+.planner-date-num {
+  font-size:11px; font-weight:700; color:var(--text-primary);
+  margin-bottom:2px;
+}
+.planner-entry-group {
+  border-left:3px solid transparent;
+  border-radius:4px;
+  padding:3px 5px;
+  margin-bottom:3px;
+}
+.planner-group-label {
+  font-size:8px;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:0.03em;
+  line-height:1.4;
+}
+.planner-group-depts {
+  display:flex;
+  flex-wrap:wrap;
+  gap:2px;
+}
+.dept-pill {
+  display:inline-block;
+  padding:1px 5px;
+  border-radius:3px;
+  font-size:8px;
+  font-weight:700;
+  line-height:1.5;
+}
+.planner-footer {
+  margin-top:12px;
+  font-size:12px;
+  color:var(--text-muted);
+  text-align:center;
+}
+.planner-legend {
+  display:flex; flex-wrap:wrap; align-items:center; gap:10px;
+  margin-bottom:14px; font-size:12px;
+}
+.legend-item { display:inline-flex; align-items:center; gap:5px; color:var(--text-secondary); }
+.legend-swatch {
+  display:inline-block; width:10px; height:10px; border-radius:3px; flex-shrink:0;
+}
+
+.planner-filter-toggle {
+  display:inline-flex; align-items:center; gap:6px;
+  font-size:11px; font-weight:600; color:var(--text-secondary);
+  padding:4px 12px; margin-bottom:8px;
+  border:1px solid var(--border); border-radius:6px;
+  background:white; cursor:pointer; transition:all 0.12s;
+}
+.planner-filter-toggle:hover { border-color:var(--excel-green); color:var(--excel-green); }
+.filter-chevron { transition:transform 0.2s; }
+.filter-chevron.open { transform:rotate(180deg); }
+
+.planner-agenda { display:none; }
+
+@media (max-width: 599px) {
+  .planner-grid-wrapper { display:none; }
+  .planner-footer { display:none; }
+
+  .planner-tooltip {
+    display:block !important;
+    z-index:1001;
+  }
+  .planner-tooltip-backdrop {
+    display:block !important;
+    position:fixed; inset:0;
+    background:rgba(0,0,0,0.3);
+    z-index:1000;
+  }
+  .planner-agenda {
+    display:flex; flex-direction:column; gap:8px;
+    margin-top:12px;
+  }
+  .agenda-header {
+    font-size:11px; font-weight:700; color:var(--text-muted);
+    text-transform:uppercase; letter-spacing:0.05em;
+    margin:0 0 4px;
+  }
+  .agenda-day {
+    background:white; border:1px solid var(--border); border-radius:10px;
+    overflow:hidden;
+  }
+  .agenda-day--today {
+    border-color:var(--excel-green);
+    box-shadow:0 0 0 1px var(--excel-green);
+  }
+  .agenda-day-label {
+    display:flex; align-items:center; justify-content:space-between;
+    font-size:12px; font-weight:700; color:var(--text-primary);
+    padding:10px 14px; background:var(--bg);
+    border-bottom:1px solid var(--border);
+  }
+  .agenda-day-total {
+    font-size:13px; font-weight:800; color:var(--text-secondary);
+    background:var(--bg-white);
+    padding:2px 10px; border-radius:10px;
+  }
+  .agenda-entries {
+    display:flex; flex-wrap:wrap; gap:4px; padding:6px 10px;
+  }
+  .agenda-entries .planner-entry-group {
+    flex:1 1 calc(50% - 2px); min-width:0; cursor:pointer;
+  }
+  .agenda-entries .planner-entry-group:active {
+    opacity:0.7;
+  }
+  .agenda-entries .dept-pill { cursor:pointer; }
+  .agenda-entries .dept-pill:active { opacity:0.6; }
+  .agenda-entry {
+    display:flex; align-items:center; gap:8px;
+    padding:8px 14px; border-bottom:1px solid var(--border);
+    font-size:12px; border-left:3px solid transparent;
+  }
+  .agenda-entry:last-child { border-bottom:none; }
+  .agenda-dest { flex:1; font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .agenda-dept { font-size:10px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.03em; }
+  .agenda-count { font-weight:800; font-size:13px; min-width:24px; text-align:right; }
+}
+
+
+@media print {
+  @page {
+    size:A4 landscape;
+    margin:5mm;
+  }
+  html, body {
+    width:100%; height:100%; margin:0; padding:0;
+    -webkit-print-color-adjust:exact;
+    print-color-adjust:exact;
+  }
+
+  .monthly-planner {
+    width:100%; margin:0; padding:0;
+    box-sizing:border-box;
+  }
+
+  .planner-filters,
+  .planner-footer,
+  .planner-print-btn,
+  .planner-empty,
+  .planner-filter-toggle,
+  .planner-centre-header { display:none !important; }
+
+  .planner-grid-wrapper { page-break-inside:avoid; }
+
+  .planner-grid {
+    display:grid !important;
+    grid-template-columns:repeat(7, 1fr);
+    gap:1.5px;
+    -webkit-print-color-adjust:exact;
+    print-color-adjust:exact;
+  }
+  .planner-grid .planner-weekday {
+    font-size:10pt !important; font-weight:700;
+    padding:3mm 2mm;
+    text-align:center;
+    background:#f5f5f5;
+    border-bottom:1.5px solid #ddd;
+    -webkit-print-color-adjust:exact;
+    print-color-adjust:exact;
+  }
+  .planner-grid .planner-day {
+    min-height:30mm;
+    padding:2mm;
+    border:0.5px solid #eee;
+    -webkit-print-color-adjust:exact;
+    print-color-adjust:exact;
+    overflow:hidden;
+  }
+  .planner-grid .planner-day.empty { background:#fafafa; }
+  .planner-grid .planner-date-num {
+    font-size:11pt !important; font-weight:700;
+    color:#333; margin-bottom:0.5mm;
+  }
+  .planner-grid .planner-entry-group {
+    font-size:8pt !important;
+    padding:0.5mm 1mm;
+    margin-bottom:0.5mm;
+    border-left-width:2px;
+    -webkit-print-color-adjust:exact;
+    print-color-adjust:exact;
+    line-height:1.3;
+  }
+  .planner-grid .planner-group-label { font-size:7pt !important; }
+  .planner-grid .dept-pill { font-size:7pt !important; margin-right:2mm; }
+}
+

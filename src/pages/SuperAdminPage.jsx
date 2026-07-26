@@ -31,6 +31,8 @@ const PERMISSIONS_LIST = [
   { key: 'allow_gate_entry', label: 'Allow Gate Entry' },
   { key: 'allow_jatha', label: 'Allow Jatha Entry' },
   { key: 'allow_reports', label: 'Allow Reports' },
+  { key: 'schedule_view', label: 'View Schedules' },
+  { key: 'schedule_distribute', label: 'Divide in Child Centre' },
 ]
 
 function SkeletonRow({ cols }) {
