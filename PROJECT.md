@@ -1,59 +1,85 @@
 # Sewadar Attendance
 
-Attendance scanning app for Gurdwara sewadars. Users scan badges (QR/barcode) to mark IN/OUT, manage jatha group attendance, view records/dashboards.
+Attendance scanning app for Gurdwara sewadars (badge scanning IN/OUT, jatha group attendance, reports, dashboards, schedules).
 
 ## Tech Stack
 
-- **Frontend**: React 18, Vite 5, React Router v6, Lucide React icons
-- **Backend**: Supabase (PostgreSQL 15, Auth, RLS, Edge Functions)
-- **Auth**: Supabase Auth with custom roles
-- **Hosting**: Vercel (SPA with fallback)
+- **Frontend:** React 18 + Vite 5 + React Router v6
+- **Backend:** Supabase (PostgreSQL, Auth, RLS, Edge Functions)
+- **Auth:** Supabase Auth with custom roles: super_admin, aso, admin, centre_user, sc_sp_user
+- **Icons:** Lucide React
+- **Export:** xlsx (Excel), PDF via browser print
+- **Scanner:** @undecaf/barcode-detector-polyfill (camera barcode scanning)
 
 ## Project Structure
 
-| Path | Purpose |
+```
+src/
+├── main.jsx                          # Entry point, ErrorBoundary
+├── App.jsx                           # Router, nav layout, offline banner, role guards, bottom nav
+├── index.css                         # Theme & component styles (~1000 lines)
+├── context/
+│   └── AuthContext.jsx               # Auth state, profile, permissions, signIn/signOut
+├── lib/
+│   ├── supabase.js                   # Supabase client, ROLES enum, helper functions
+│   ├── logger.js                     # Action audit logging (inserts to logs table)
+│   └── deptColors.js                 # Department color/abbreviation maps
+├── components/
+│   ├── Toast.jsx                     # Toast notification context/provider
+│   ├── scanner/BarcodeScanner.jsx    # Camera scanner with device profiling, resolution chaining
+│   └── reports/CentreMonthlyPlanner.jsx  # Monthly calendar schedule planner
+└── pages/
+    ├── LoginPage.jsx                 # Email/password login
+    ├── DashboardPage.jsx             # Stats, attendance summary, centre splits, session counts
+    ├── ScannerPage.jsx               # Badge IN/OUT scanning, geofencing, manual entry, forgot-out
+    ├── AttendanceEntryPage.jsx       # Gate entry form + Jatha entry, overlap detection, Excel export
+    ├── RecordsPage.jsx               # Attendance records with filters, edit/delete, export
+    ├── ReportsPage.jsx               # Present/Absent/Inside/Late/ASO reports + downloads
+    ├── SchedulesPage.jsx             # Thin wrapper → ScheduleManager
+    ├── ProfilePage.jsx               # User profile & sign out
+    ├── SuperAdminPage.jsx            # CRUD for centres, jathas, roles, users, sewadars, logs
+    └── reports/ScheduleManager.jsx   # Multi-centre monthly schedule grid with drag-to-assign
+
+supabase/functions/
+├── create-auth-user/index.ts         # Edge fn: creates Supabase Auth users
+├── sync-to-sheets/index.ts           # Edge fn: syncs DB changes to Google Sheets
+└── monthly-archive/index.ts          # Edge fn: archives monthly data to Sheets
+
+sql/
+└── rls_policies_all.sql              # RLS policies, functions, triggers, indexes (~1400 lines)
+```
+
+## Database Tables
+
+| Table | Purpose |
 |---|---|
-| `src/lib/supabase.js` | Supabase client init |
-| `src/context/AuthContext.jsx` | Auth provider, permissions |
-| `src/App.jsx` | Routes, nav items, route guards |
-| `src/pages/ScannerPage.jsx` | Barcode scanning IN/OUT, manual entry |
-| `src/pages/AttendanceEntryPage.jsx` | Gate entry + Jatha entry forms |
-| `src/pages/SuperAdminPage.jsx` | ASO Panel: Settings, CRUD tables |
-| `src/pages/RecordsPage.jsx` | Session & jatha records with filters |
-| `src/pages/DashboardPage.jsx` | Dashboard stats |
-| `src/pages/LoginPage.jsx` | Login |
-| `src/pages/ReportsPage.jsx` | Reports & CSV downloads |
-| `src/pages/ProfilePage.jsx` | User profile |
-| `src/index.css` | CSS custom properties (theme) |
-| `sql/rls_policies_all.sql` | All database logic (run to deploy) |
-| `supabase/functions/create-auth-user/index.ts` | Edge function for auth users |
+| `sewadars` | Badge_number (PK), name, centre, department, badge_status, gender |
+| `attendance_sessions` | IN/OUT scans with denormalized sewadar_centre/dept |
+| `jatha_attendance` | Jatha group attendance with denormalized sewadar_centre |
+| `jatha_master` | Jatha definitions (destination, department, type) |
+| `centres` | Gurdwara locations with parent hierarchy, geofencing coords |
+| `users` | App users with role, centre, JSONB permissions |
+| `role_masters` | Role definitions with JSONB permissions |
+| `settings` | Key-value store (lock_date) |
+| `special_departments` | Cross-centre scanning departments |
+| `logs` | Action audit trail |
 
-## Database
+## Key Features
 
-- `users` — App users with roles, centre, permissions
-- `sewadars` — Sewadar records (badge_number PK)
-- `attendance_sessions` — IN/OUT scan records
-- `jatha_attendance` — Jatha group attendance
-- `jatha_master` — Jatha definitions
-- `centres` — Gurdwara locations
-- `role_masters` — Role definitions with JSONB permissions
-- `settings` — Key-value store (lock_date)
-- `special_departments` — Special department definitions
-- `logs` — Action audit trail
+- **Barcode Scanning** — Camera-based with native + WASM fallback, sliding-window confirmation, quality gating
+- **Geofencing** — Optional per-centre GPS radius check for scanning
+- **Gate Entry** — Multi-day attendance entry with overlap detection
+- **Jatha Entry** — Group travel attendance with duplicate/overlap checks
+- **Schedules** — Bhati (weekly repeat) + Specific (date-range) schedules with distribution to child centres
+- **Monthly Planner** — Calendar view of scheduled duties
+- **Reports** — Present/Absent/Late/Inside + CSV export + ASO overview
+- **RLS** — Full row-level security with role hierarchy + centre scoping + date locking
+- **Super Admin Panel** — CRUD for all tables: centres, jathas, roles, users, sewadars, departments, logs, settings
 
-## Permissions
+## Security Model
 
-Roles: `super_admin > admin > centre_user > aso > sc_sp_user > centre_user_level2`
-
-Key permissions: `allow_scan`, `allow_gate_entry`, `allow_jatha`, `allow_records`, `allow_dashboard`, `allow_reports`, `allow_settings`, `allow_view_logs`.
-
-- Super Admin bypasses all restrictions (RLS, lock date)
-- Centre scoping via `get_user_accessible_centres()` RPC
-- `allow_settings` is super_admin only
-
-## Deployment
-
-1. Run `sql/rls_policies_all.sql` in Supabase SQL Editor
-2. `npm run build` → deploy `dist/` to Vercel
-3. Env vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
-4. Edge Function env: `INTERNAL_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`
+Roles: `super_admin` > `admin` > `centre_user` > `sc_sp_user` (+ `aso` for read-only)
+- Users are scoped to one centre (except super_admin/aso)
+- RLS policies filter by user's centre and role
+- `lock_date` in settings blocks edits to past attendance records
+- Special departments allow cross-centre scanning
