@@ -465,13 +465,20 @@ export default function SuperAdminPage() {
         }
       }
       
-      if (payload.permissions && typeof payload.permissions === 'object') {
-        // Keep as object — Supabase client + JSONB column handle serialization
-      } else if (payload.permissions && typeof payload.permissions === 'string') {
-        try { payload.permissions = JSON.parse(payload.permissions) } catch {}
-      }
-      if (typeof payload.permissions !== 'object' || payload.permissions === null) {
-        payload.permissions = {}
+      // Only handle permissions for tables that actually have the column
+      // (users, role_masters). For other tables (jatha_master, centres, etc.)
+      // a stray permissions key causes PGRST204 (column not found) → 400.
+      if (activeTable === 'users' || activeTable === 'role_masters') {
+        if (payload.permissions && typeof payload.permissions === 'object') {
+          // Keep as object — Supabase client + JSONB column handle serialization
+        } else if (payload.permissions && typeof payload.permissions === 'string') {
+          try { payload.permissions = JSON.parse(payload.permissions) } catch {}
+        }
+        if (typeof payload.permissions !== 'object' || payload.permissions === null) {
+          payload.permissions = {}
+        }
+      } else {
+        delete payload.permissions
       }
       
       // Filter out undefined/null values - but keep id for update

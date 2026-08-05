@@ -149,8 +149,8 @@ CREATE POLICY settings_read ON public.settings
 
 CREATE POLICY settings_write ON public.settings
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
-  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
+  USING (public.get_user_role() = 'super_admin')
+  WITH CHECK (public.get_user_role() = 'super_admin');
 
 -- ============================================================
 -- FUNCTION: Check if a date is in a locked month
@@ -164,9 +164,14 @@ AS $$
 DECLARE
   v_lock_date DATE;
   v_prev_month_first DATE;
+  v_today DATE;
 BEGIN
+  -- "Today" in app timezone (IST). App sends local dates; DB runs UTC, so CURRENT_DATE would
+  -- be wrong between 00:00-05:30 IST (it'd still show the previous UTC day, falsely blocking scans)
+  v_today := (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE;
+
   -- Permanent rolling window: records before the 1st of the previous month are always locked
-  v_prev_month_first := (date_trunc('month', CURRENT_DATE - interval '1 month'))::DATE;
+  v_prev_month_first := (date_trunc('month', v_today - interval '1 month'))::DATE;
   IF p_date < v_prev_month_first THEN
     RETURN TRUE;
   END IF;
@@ -175,12 +180,12 @@ BEGIN
   SELECT value::DATE INTO v_lock_date FROM public.settings WHERE key = 'lock_date';
 
   -- No lock date set or lock hasn't activated yet
-  IF v_lock_date IS NULL OR CURRENT_DATE <= v_lock_date THEN
+  IF v_lock_date IS NULL OR v_today <= v_lock_date THEN
     RETURN FALSE;
   END IF;
 
   -- Lock is active: additionally lock records from months before the current month
-  RETURN date_trunc('month', p_date) < date_trunc('month', CURRENT_DATE);
+  RETURN date_trunc('month', p_date) < date_trunc('month', v_today);
 END;
 $$;
 
@@ -316,8 +321,8 @@ CREATE POLICY centres_read ON public.centres
 
 CREATE POLICY centres_write ON public.centres
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
-  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
+  USING (public.get_user_role() = 'super_admin')
+  WITH CHECK (public.get_user_role() = 'super_admin');
 
 -- ============================================================
 -- TABLE: jatha_master
@@ -335,8 +340,8 @@ CREATE POLICY jatha_read ON public.jatha_master
 
 CREATE POLICY jatha_write ON public.jatha_master
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
-  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
+  USING (public.get_user_role() = 'super_admin')
+  WITH CHECK (public.get_user_role() = 'super_admin');
 
 -- ============================================================
 -- TABLE: jatha_attendance
@@ -557,8 +562,8 @@ CREATE POLICY users_read ON public.users
 
 CREATE POLICY users_write ON public.users
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
-  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
+  USING (public.get_user_role() = 'super_admin')
+  WITH CHECK (public.get_user_role() = 'super_admin');
 
 -- Prevent string-type JSONB values in permissions (double-serialization guard)
 ALTER TABLE public.users DROP CONSTRAINT IF EXISTS chk_users_permissions_is_object;
@@ -582,8 +587,8 @@ CREATE POLICY role_masters_read ON public.role_masters
 
 CREATE POLICY role_masters_write ON public.role_masters
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
-  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
+  USING (public.get_user_role() = 'super_admin')
+  WITH CHECK (public.get_user_role() = 'super_admin');
 
 -- Prevent string-type JSONB values in permissions (double-serialization guard)
 ALTER TABLE public.role_masters DROP CONSTRAINT IF EXISTS chk_role_masters_permissions_is_object;
@@ -607,8 +612,8 @@ CREATE POLICY depts_read ON public.special_departments
 
 CREATE POLICY depts_write ON public.special_departments
   FOR ALL TO authenticated
-  USING (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'))
-  WITH CHECK (public.get_user_role() = 'super_admin' AND public.has_permission('allow_settings'));
+  USING (public.get_user_role() = 'super_admin')
+  WITH CHECK (public.get_user_role() = 'super_admin');
 
 -- ============================================================
 -- TABLE: logs
@@ -692,8 +697,8 @@ BEGIN
     RAISE EXCEPTION 'OUT date must be on or after IN date';
   END IF;
 
-  -- Block future OUT dates
-  IF p_out_date > CURRENT_DATE THEN
+  -- Block future OUT dates (IST-aware: DB runs UTC, app sends IST dates)
+  IF p_out_date > (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE THEN
     RAISE EXCEPTION 'OUT date cannot be in the future';
   END IF;
 
@@ -866,8 +871,15 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = ''
 AS $$
+DECLARE
+  v_today DATE;
 BEGIN
-  IF NEW.in_date > CURRENT_DATE AND public.get_user_role() != 'super_admin' THEN
+  -- IST-aware "today": Supabase DB runs UTC, but the app sends local (IST) dates.
+  -- Between 00:00-05:30 IST, CURRENT_DATE is still the previous UTC day, which falsely
+  -- made the trigger reject valid scans as "future date". Compute today in Asia/Kolkata.
+  v_today := (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::DATE;
+
+  IF NEW.in_date > v_today AND public.get_user_role() != 'super_admin' THEN
     RAISE EXCEPTION 'Cannot create attendance session with a future date';
   END IF;
   RETURN NEW;
