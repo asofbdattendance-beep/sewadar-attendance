@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react'
 import { CameraOff, RefreshCw, Zap, Sun } from 'lucide-react'
 
-const BADGE_REGEX = /^FB(597[1-9]|59[89]\d|600\d|601[01])(GA|LA)\d{4}$/
+const BADGE_REGEX = /^(FB(597[1-9]|59[89]\d|600\d|601[01])(GA|LA)|BH\d{4}[A-Z]{1,2})\d{4}$/
 
 const RESOLUTION_CHAIN = [
   { width: { max: 1280, ideal: 720 }, height: { max: 720, ideal: 480 } },

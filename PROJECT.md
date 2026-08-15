@@ -1,5 +1,7 @@
 # Sewadar Attendance
 
+> **Working context (bugs, fixes, deploy steps): see [`context.md`](context.md)**
+
 Attendance scanning app for Gurdwara sewadars. Users scan badges (QR/barcode) to mark IN/OUT, manage jatha group attendance, view records/dashboards.
 
 ## Tech Stack
@@ -53,7 +55,7 @@ Key permissions: `allow_scan`, `allow_gate_entry`, `allow_jatha`, `allow_records
 
 ## Deployment
 
-1. Run `sql/rls_policies_all.sql` in Supabase SQL Editor
+1. Run `sql/rls_policies_all.sql` in Supabase SQL Editor (or the minimal fix set in `context.md` §4 if the DB already matches)
 2. `npm run build` → deploy `dist/` to Vercel
 3. Env vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
 4. Edge Function env: `INTERNAL_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`
