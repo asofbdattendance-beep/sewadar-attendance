@@ -1318,7 +1318,7 @@ BEGIN
   ),
   ordered AS (
     SELECT * FROM scoped
-    ORDER BY in_date DESC, in_time DESC
+    ORDER BY in_date DESC, in_time DESC, id DESC
     LIMIT CASE WHEN p_page > 0 THEN p_page_size ELSE NULL END
     OFFSET CASE WHEN p_page > 0 THEN v_offset ELSE 0 END
   )
@@ -1405,7 +1405,7 @@ BEGIN
   ),
   ordered AS (
     SELECT * FROM scoped
-    ORDER BY from_date DESC, entered_at DESC
+    ORDER BY from_date DESC, entered_at DESC, id DESC
     LIMIT CASE WHEN p_page > 0 THEN p_page_size ELSE NULL END
     OFFSET CASE WHEN p_page > 0 THEN v_offset ELSE 0 END
   )

@@ -15,5 +15,17 @@ export default defineConfig({
       key: fs.readFileSync(path.join(certPath, 'localhost-key.pem')),
       cert: fs.readFileSync(path.join(certPath, 'localhost.pem')),
     } : false,
-  }
+  },
+  build: {
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          supabase: ['@supabase/supabase-js'],
+          xlsx: ['xlsx'],
+        },
+      },
+    },
+  },
 })

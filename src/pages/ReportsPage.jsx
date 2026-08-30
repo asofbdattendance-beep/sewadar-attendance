@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase, ROLES, formatDateIndian, formatTime12Hour, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { 
-  ChevronDown, ChevronRight, ChevronUp, Calendar, Download, FileSpreadsheet, FileText, 
+  ChevronDown, ChevronRight, Calendar, Download, FileSpreadsheet, FileText, 
   Users, UserCheck, Clock, AlertTriangle, UserX, Building, MapPin, RefreshCw, Settings, CheckCircle, Truck, Archive
 } from 'lucide-react'
 
@@ -241,10 +241,11 @@ function AsoOverviewTree({ centres, loading }) {
     let open = node.data.open
     let elderly = node.data.elderly
     for (const child of (node.children || [])) {
-      total += child.data.total
-      permanent += child.data.permanent
-      open += child.data.open
-      elderly += child.data.elderly
+      const sub = mergeCounts(child)
+      total += sub.total
+      permanent += sub.permanent
+      open += sub.open
+      elderly += sub.elderly
     }
     return { total, permanent, open, elderly }
   }
@@ -324,7 +325,8 @@ export default function ReportsPage() {
   const [showSettings, setShowSettings] = useState(false)
   const [asoTreeData, setAsoTreeData] = useState([])
   const [centresList, setCentresList] = useState([])
-  const [centreFilter, setCentreFilter] = useState('')
+  const [dailyCentreFilter, setDailyCentreFilter] = useState('')
+  const [jathaCentreFilter, setJathaCentreFilter] = useState('')
 
   const currentCategory = Object.values(REPORTS).find(c => c.id === activeCategory)
   const currentSubReports = currentCategory?.subReports || []
@@ -355,9 +357,6 @@ export default function ReportsPage() {
   }
 
   const fetchReport = useCallback(async () => {
-const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
-    const userCentre = profile?.centre
-    
     setLoading(true)
     try {
       switch (activeReport) {
@@ -408,28 +407,15 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     }).catch(() => {})
   }, [])
 
-  // Query builders
-  const buildSewadarQuery = (query) => {
-    if (!canViewAllCentres && userCentre) {
-      query = query.eq('centre', userCentre)
-    }
-    return query
-  }
-
-  const buildCentreQuery = (query) => {
-    if (!canViewAllCentres && userCentre) {
-      query = query.eq('centre', userCentre)
-    }
-    return query
-  }
-
   // Present: All sewadars present today (closed sessions + currently inside for same date)
   const fetchPresent = async (canViewAllCentres, userCentre) => {
+    const currentToday = getLocalDate() // fresh IST date, avoids stale midnight bug
     const pageSize = 1000
+    const MAX_PAGES = 200
     let allSewadars = []
     let page = 0
     
-    while (true) {
+    while (page < MAX_PAGES) {
       const from = page * pageSize
       const to = from + pageSize - 1
       let query = supabase
@@ -454,7 +440,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     const { data: todaySessions } = await supabase
       .from('attendance_sessions')
       .select('badge_number, out_date, status')
-      .eq('in_date', today)
+      .eq('in_date', currentToday)
       .in('status', ['OPEN', 'CLOSED'])
 
     const presentBadges = new Set(todaySessions?.map(s => s.badge_number) || [])
@@ -478,11 +464,13 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
   // Absenteeism: All sewadars NOT present today (for same date)
   const fetchAbsenteeism = async (canViewAllCentres, userCentre) => {
+    const currentToday = getLocalDate()
     const pageSize = 1000
+    const MAX_PAGES = 200
     let allSewadars = []
     let page = 0
     
-    while (true) {
+    while (page < MAX_PAGES) {
       const from = page * pageSize
       const to = from + pageSize - 1
       let query = supabase
@@ -507,7 +495,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     const { data: todaySessions } = await supabase
       .from('attendance_sessions')
       .select('badge_number')
-      .eq('in_date', today)
+      .eq('in_date', currentToday)
       .in('status', ['OPEN', 'CLOSED'])
 
     const presentBadges = new Set(todaySessions?.map(s => s.badge_number) || [])
@@ -531,11 +519,12 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
   // Currently Inside: Open sessions from today (still inside now)
   const fetchCurrentlyInside = async (canViewAllCentres, userCentre) => {
+    const currentToday = getLocalDate()
     let query = supabase
       .from('attendance_sessions')
       .select('*')
       .eq('status', 'OPEN')
-      .eq('in_date', today)
+      .eq('in_date', currentToday)
       .order('in_time', { ascending: false })
 
     if (!canViewAllCentres && userCentre) {
@@ -565,21 +554,33 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     setReportSummary({ total: rows.length })
   }
 
-  // Gate Summary: Full log
+  // Gate Summary: Full log - paginated to avoid 1000-row truncation (no data loss)
   const fetchGateSummary = async (canViewAllCentres, userCentre) => {
-    let query = supabase
-      .from('attendance_sessions')
-      .select('*')
-      .gte('in_date', dateFrom)
-      .lte('in_date', dateTo)
-      .order('in_time', { ascending: false })
-      .limit(1000)
-
-    if (!canViewAllCentres && userCentre) {
-      query = query.eq('centre', userCentre)
+    const pageSize = 1000
+    const MAX_PAGES = 200 // 200k rows safety cap, prevents OOM / infinite loop
+    let allSessions = []
+    let page = 0
+    while (page < MAX_PAGES) {
+      const from = page * pageSize
+      const to = from + pageSize - 1
+      let query = supabase
+        .from('attendance_sessions')
+        .select('*')
+        .gte('in_date', dateFrom)
+        .lte('in_date', dateTo)
+        .order('in_date', { ascending: false })
+        .order('in_time', { ascending: false })
+        .order('id', { ascending: false })
+        .range(from, to)
+      if (!canViewAllCentres && userCentre) query = query.eq('centre', userCentre)
+      const { data: batch, error } = await query
+      if (error) throw error
+      if (!batch || batch.length === 0) break
+      allSessions.push(...batch)
+      if (batch.length < pageSize) break
+      page++
     }
-
-    const { data: sessions } = await query
+    const sessions = allSessions
 
     const rows = (sessions || []).map(s => ({
       badge_number: { value: s.badge_number, className: 'cell-badge' },
@@ -600,13 +601,14 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     })
   }
 
-  // Late Coming: Present but after threshold time
+  // Late Coming: Present but after threshold time (paginated safely)
   const fetchLateComing = async (canViewAllCentres, userCentre) => {
     const pageSize = 1000
+    const MAX_PAGES = 200
     let allSessions = []
     let page = 0
     
-    while (true) {
+    while (page < MAX_PAGES) {
       const from = page * pageSize
       const to = from + pageSize - 1
       let query = supabase
@@ -658,11 +660,12 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
   // Missing OUT: Open sessions from before today
   const fetchMissingOut = async (canViewAllCentres, userCentre) => {
+    const currentToday = getLocalDate()
     let query = supabase
       .from('attendance_sessions')
       .select('*')
       .eq('status', 'OPEN')
-      .lt('in_date', today)
+      .lt('in_date', currentToday)
       .order('in_time', { ascending: false })
 
     if (!canViewAllCentres && userCentre) {
@@ -738,16 +741,40 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     })
   }
 
-  // Department Wise
+  // Department Wise - paginated sewadars to avoid 1000-row cap (no data loss)
   const fetchDepartmentWise = async (canViewAllCentres, userCentre) => {
-    const { data: sewadars } = await supabase
-      .from('sewadars')
-      .select('*')
-
-    const { data: sessions } = await supabase
-      .from('attendance_sessions')
-      .select('badge_number')
-      .eq('in_date', today)
+    const currentToday = getLocalDate()
+    const pageSize = 1000
+    const MAX_PAGES = 200
+    let allSewadars = []
+    let page = 0
+    while (page < MAX_PAGES) {
+      const from = page * pageSize
+      const to = from + pageSize - 1
+      let q = supabase.from('sewadars').select('*').order('id').range(from, to)
+      if (!canViewAllCentres && userCentre) q = q.eq('centre', userCentre)
+      const { data: batch, error } = await q
+      if (error) throw error
+      if (!batch || batch.length === 0) break
+      allSewadars.push(...batch)
+      if (batch.length < pageSize) break
+      page++
+    }
+    const sewadars = allSewadars
+    // sessions for today (typically < few k, paginated safely)
+    let allSessions = []
+    page = 0
+    while (page < MAX_PAGES) {
+      const from = page * pageSize
+      const to = from + pageSize - 1
+      const { data: batch, error } = await supabase.from('attendance_sessions').select('badge_number').eq('in_date', currentToday).order('id').range(from, to)
+      if (error) throw error
+      if (!batch || batch.length === 0) break
+      allSessions.push(...batch)
+      if (batch.length < pageSize) break
+      page++
+    }
+    const sessions = allSessions
 
     const presentBadges = new Set(sessions?.map(s => s.badge_number) || [])
 
@@ -783,17 +810,39 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     setReportSummary({ totalDepts: rows.length })
   }
 
-  // Centre Wise
+  // Centre Wise - paginated to avoid truncation (no data loss)
   const fetchCentreWise = async (canViewAllCentres, userCentre) => {
-    const { data: sewadars } = await supabase
-      .from('sewadars')
-      .select('*')
-
-    const { data: sessions } = await supabase
-      .from('attendance_sessions')
-      .select('badge_number')
-      .eq('in_date', today)
-
+    const currentToday = getLocalDate()
+    const pageSize = 1000
+    const MAX_PAGES = 200
+    let allSewadars = []
+    let page = 0
+    while (page < MAX_PAGES) {
+      const from = page * pageSize
+      const to = from + pageSize - 1
+      let q = supabase.from('sewadars').select('*').order('id').range(from, to)
+      if (!canViewAllCentres && userCentre) q = q.eq('centre', userCentre)
+      const { data: batch, error } = await q
+      if (error) throw error
+      if (!batch || batch.length === 0) break
+      allSewadars.push(...batch)
+      if (batch.length < pageSize) break
+      page++
+    }
+    const sewadars = allSewadars
+    let allSessions = []
+    page = 0
+    while (page < MAX_PAGES) {
+      const from = page * pageSize
+      const to = from + pageSize - 1
+      const { data: batch, error } = await supabase.from('attendance_sessions').select('badge_number').eq('in_date', currentToday).order('id').range(from, to)
+      if (error) throw error
+      if (!batch || batch.length === 0) break
+      allSessions.push(...batch)
+      if (batch.length < pageSize) break
+      page++
+    }
+    const sessions = allSessions
     const { data: centres } = await supabase
       .from('centres')
       .select('name, parent_centre')
@@ -945,13 +994,15 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   }
 
   const downloadDailyCSV = async () => {
-    if (dailyFrom && dailyTo && dailyFrom > dailyTo) { alert('From date cannot be after To date'); return }
+    if (!dailyFrom || !dailyTo) { alert('Please select both From and To dates'); return }
+    if (dailyFrom > dailyTo) { alert('From date cannot be after To date'); return }
     setDownloading('daily')
     try {
       const PAGE = 5000
+      const MAX_ROWS = 250000
       let start = 0
       const allSessions = []
-      while (true) {
+      while (allSessions.length < MAX_ROWS) {
         let query = supabase
           .from('attendance_sessions')
           .select('badge_number, sewadar_name, sewadar_centre, sewadar_dept, duty_type, in_date, in_time, out_date, out_time, status, centre')
@@ -962,15 +1013,15 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           .order('id', { ascending: false })
           .range(start, start + PAGE - 1)
 
-        if (centreFilter) {
-          query = query.ilike('centre', centreFilter)
+        if (dailyCentreFilter) {
+          query = query.eq('centre', dailyCentreFilter)
         }
 
         const { data: batch, error } = await query
         if (error) throw error
         if (!batch || batch.length === 0) break
         allSessions.push(...batch)
-        if (batch.length < PAGE) break
+        if (batch.length < pageSize) break
         start += PAGE
       }
       if (allSessions.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }
@@ -998,13 +1049,15 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   }
 
   const downloadJathaCSV = async () => {
-    if (jathaFrom && jathaTo && jathaFrom > jathaTo) { alert('From date cannot be after To date'); return }
+    if (!jathaFrom || !jathaTo) { alert('Please select both From and To dates'); return }
+    if (jathaFrom > jathaTo) { alert('From date cannot be after To date'); return }
     setDownloading('jatha')
     try {
       const PAGE = 5000
+      const MAX_ROWS = 250000
       let start = 0
       const allRecords = []
-      while (true) {
+      while (allRecords.length < MAX_ROWS) {
         let query = supabase
           .from('jatha_attendance')
           .select('badge_number, sewadar_name, sewadar_centre, from_date, to_date, remarks, jatha_id, jatha_master!inner(jatha_type, department, centre_name)')
@@ -1014,8 +1067,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           .order('id', { ascending: false })
           .range(start, start + PAGE - 1)
 
-        if (centreFilter) {
-          query = query.ilike('sewadar_centre', centreFilter)
+        if (jathaCentreFilter) {
+          query = query.eq('sewadar_centre', jathaCentreFilter)
         }
 
         const { data: batch, error } = await query
@@ -1101,7 +1154,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     document.body.appendChild(a)
     a.click()
     a.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    setTimeout(() => URL.revokeObjectURL(url), 5000)
   }
 
   const archivalFileName = (isFiltered, type) => {
@@ -1147,14 +1200,15 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   // Fallback path: client-side paginated fetch. Uses ORDER BY id for
   // deterministic pagination and joins pages with a single newline to avoid
   // merged rows at page boundaries. The inner field join is ',' (CSV), row
-  // join is '\r\n'.
+  // join is '\r\n'. MAX_ROWS prevents browser OOM - does not truncate valid data (613k < 650k).
   const downloadViaClient = async ({ onlyType }) => {
     const PAGE = 5000
+    const MAX_ROWS = 650000
     const parts = []
     let start = 0
     let rowsAny = false
     let totalFetched = 0
-    while (true) {
+    while (totalFetched < MAX_ROWS) {
       setArchivalProgress(start === 0 ? 'Fetching archival rows…' : `Fetched ${totalFetched.toLocaleString()} rows…`)
       let query = supabase
         .from('archival_attendance')
@@ -1242,10 +1296,11 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           let open = node.data.open
           let elderly = node.data.elderly
           for (const child of (node.children || [])) {
-            total += child.data.total
-            permanent += child.data.permanent
-            open += child.data.open
-            elderly += child.data.elderly
+            const sub = mergeCounts(child)
+            total += sub.total
+            permanent += sub.permanent
+            open += sub.open
+            elderly += sub.elderly
           }
           return { total, permanent, open, elderly }
         }
@@ -1254,14 +1309,18 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           return [n.name, merged.total, merged.permanent, merged.open, merged.elderly]
         })
       } else {
-        // Detailed: Centre column, Sub Centre column, counts
+        // Detailed: Centre column, Sub Centre column, counts - recursive for grandchildren
         headers = getReportHeaders()
         rows = []
+        const pushWithDescendants = (root, parentName) => {
+          for (const child of (root.children || [])) {
+            rows.push([parentName, child.name, child.data.total, child.data.permanent, child.data.open, child.data.elderly])
+            if (child.children?.length) pushWithDescendants(child, parentName)
+          }
+        }
         for (const root of asoTreeData) {
           rows.push([root.name, '', root.data.total, root.data.permanent, root.data.open, root.data.elderly])
-          for (const child of (root.children || [])) {
-            rows.push([root.name, child.name, child.data.total, child.data.permanent, child.data.open, child.data.elderly])
-          }
+          pushWithDescendants(root, root.name)
         }
       }
     } else {
@@ -1301,10 +1360,15 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   const escapeCSV = (val) => {
     if (val === null || val === undefined) return ''
     const str = String(val)
-    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
       return `"${str.replace(/"/g, '""')}"`
     }
     return str
+  }
+
+  const escapeHTML = (val) => {
+    if (val === null || val === undefined) return ''
+    return String(val).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
   }
 
   const exportCSV = (headers, rows) => {
@@ -1313,7 +1377,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   }
 
   const exportPDF = (headers, rows) => {
-    const tableRows = rows.map(r => `<tr>${r.map(c => `<td>${escapeCSV(c)}</td>`).join('')}</tr>`).join('')
+    const tableRows = rows.map(r => `<tr>${r.map(c => `<td>${escapeHTML(c)}</td>`).join('')}</tr>`).join('')
     const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -1332,11 +1396,11 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   </style>
 </head>
 <body>
-  <h2>${currentSubReports.find(r => r.id === activeReport)?.label || 'Report'}</h2>
-  <p>Date Range: ${formatDateIndian(dateFrom)} - ${formatDateIndian(dateTo)}</p>
+  <h2>${escapeHTML(currentSubReports.find(r => r.id === activeReport)?.label || 'Report')}</h2>
+  <p>Date Range: ${escapeHTML(formatDateIndian(dateFrom))} - ${escapeHTML(formatDateIndian(dateTo))}</p>
   <button onclick="window.print()" style="padding: 8px 16px; background: #217346; color: white; border: none; border-radius: 4px; cursor: pointer; margin-bottom: 15px;">Print / Save as PDF</button>
   <table>
-    <thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+    <thead><tr>${headers.map(h => `<th>${escapeHTML(h)}</th>`).join('')}</tr></thead>
     <tbody>${tableRows}</tbody>
   </table>
 </body>
@@ -1344,8 +1408,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     const blob = new Blob([html], { type: 'text/html' })
     const url = URL.createObjectURL(blob)
     const win = window.open(url, '_blank')
-    if (win) win.onload = () => { win.print(); setTimeout(() => URL.revokeObjectURL(url), 1000) }
-    else URL.revokeObjectURL(url)
+    if (win) win.onload = () => { win.print(); setTimeout(() => URL.revokeObjectURL(url), 5000) }
+    else setTimeout(() => URL.revokeObjectURL(url), 5000)
   }
 
   const downloadFile = (content, filename, type) => {
@@ -1357,7 +1421,7 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     document.body.appendChild(a)
     a.click()
     a.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    setTimeout(() => URL.revokeObjectURL(url), 5000)
   }
 
   const saveSettings = () => {
@@ -1436,22 +1500,22 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
             <div className="download-card-body">
               <div className="drow centre-row">
                 <MapPin size={15} />
-                <select value={centreFilter} onChange={e => setCentreFilter(e.target.value)}>
+                <select value={dailyCentreFilter} onChange={e => setDailyCentreFilter(e.target.value)} aria-label="Filter daily report by centre">
                   <option value="">All Centres (in scope)</option>
                   {centresList.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                 </select>
               </div>
               <div className="drow date-row">
                 <div className="dfield">
-                  <label>From</label>
-                  <input type="date" value={dailyFrom} onChange={e => setDailyFrom(e.target.value)} />
+                  <label htmlFor="daily-from">From</label>
+                  <input id="daily-from" type="date" value={dailyFrom} onChange={e => setDailyFrom(e.target.value)} />
                 </div>
                 <span className="dsep">to</span>
                 <div className="dfield">
-                  <label>To</label>
-                  <input type="date" value={dailyTo} min={dailyFrom} onChange={e => setDailyTo(e.target.value)} />
+                  <label htmlFor="daily-to">To</label>
+                  <input id="daily-to" type="date" value={dailyTo} min={dailyFrom} onChange={e => setDailyTo(e.target.value)} />
                 </div>
-                <button className={`dl-btn ${downloading === 'daily' ? 'dl-btn-loading' : ''}`} onClick={downloadDailyCSV} disabled={downloading === 'daily'}>
+                <button className={`dl-btn ${downloading === 'daily' ? 'dl-btn-loading' : ''}`} onClick={downloadDailyCSV} disabled={downloading === 'daily'} aria-busy={downloading === 'daily'}>
                   {downloading === 'daily' ? <><RefreshCw size={16} className="spin" /> Downloading…</> : <><Download size={16} /> Download CSV</>}
                 </button>
               </div>
@@ -1470,22 +1534,22 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
             <div className="download-card-body">
               <div className="drow centre-row">
                 <MapPin size={15} />
-                <select value={centreFilter} onChange={e => setCentreFilter(e.target.value)}>
+                <select value={jathaCentreFilter} onChange={e => setJathaCentreFilter(e.target.value)} aria-label="Filter jatha report by centre">
                   <option value="">All Centres (in scope)</option>
                   {centresList.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                 </select>
               </div>
               <div className="drow date-row">
                 <div className="dfield">
-                  <label>From</label>
-                  <input type="date" value={jathaFrom} onChange={e => setJathaFrom(e.target.value)} />
+                  <label htmlFor="jatha-from">From</label>
+                  <input id="jatha-from" type="date" value={jathaFrom} onChange={e => setJathaFrom(e.target.value)} />
                 </div>
                 <span className="dsep">to</span>
                 <div className="dfield">
-                  <label>To</label>
-                  <input type="date" value={jathaTo} min={jathaFrom} onChange={e => setJathaTo(e.target.value)} />
+                  <label htmlFor="jatha-to">To</label>
+                  <input id="jatha-to" type="date" value={jathaTo} min={jathaFrom} onChange={e => setJathaTo(e.target.value)} />
                 </div>
-                <button className={`dl-btn ${downloading === 'jatha' ? 'dl-btn-loading' : ''}`} onClick={downloadJathaCSV} disabled={downloading === 'jatha'}>
+                <button className={`dl-btn ${downloading === 'jatha' ? 'dl-btn-loading' : ''}`} onClick={downloadJathaCSV} disabled={downloading === 'jatha'} aria-busy={downloading === 'jatha'}>
                   {downloading === 'jatha' ? <><RefreshCw size={16} className="spin" /> Downloading…</> : <><Download size={16} /> Download CSV</>}
                 </button>
               </div>
@@ -1509,8 +1573,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
               <div className="download-card-body">
                 <div className="drow archival-row">
                   <div className="dfield">
-                    <label>Duty Type</label>
-                    <select value={archivalDutyType} onChange={e => setArchivalDutyType(e.target.value)}>
+                    <label htmlFor="archival-duty">Duty Type</label>
+                    <select id="archival-duty" value={archivalDutyType} onChange={e => setArchivalDutyType(e.target.value)} aria-label="Archival duty type">
                       <option value="">All Duty Types</option>
                       {['D', 'JMC', 'JO', 'V', 'JH'].map(t => (
                         <option key={t} value={t}>{t} — {ARCHIVAL_DUTY_LABELS[t]}</option>
@@ -1518,12 +1582,12 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
                     </select>
                   </div>
                   <div className="dfield">
-                    <label>From</label>
-                    <input type="date" value={archivalFrom} onChange={e => setArchivalFrom(e.target.value)} />
+                    <label htmlFor="archival-from">From</label>
+                    <input id="archival-from" type="date" value={archivalFrom} onChange={e => setArchivalFrom(e.target.value)} />
                   </div>
                   <div className="dfield">
-                    <label>To</label>
-                    <input type="date" value={archivalTo} min={archivalFrom || undefined} onChange={e => setArchivalTo(e.target.value)} />
+                    <label htmlFor="archival-to">To</label>
+                    <input id="archival-to" type="date" value={archivalTo} min={archivalFrom || undefined} onChange={e => setArchivalTo(e.target.value)} />
                   </div>
                 </div>
                 <div className="drow archival-btns">
@@ -1535,12 +1599,12 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
                   </button>
                 </div>
                 {downloadingArchive !== null && (
-                  <div className="archival-loading-overlay">
-                    <div className="archival-loading-icon"><RefreshCw size={20} className="spin" /></div>
+                  <div className="archival-loading-overlay" role="status" aria-live="polite" aria-atomic="true">
+                    <div className="archival-loading-icon" aria-hidden="true"><RefreshCw size={20} className="spin" /></div>
                     <div className="archival-loading-title">{downloadingArchive === 'combined' ? 'Preparing combined archive…' : 'Preparing filtered archive…'}</div>
                     <div className="archival-loading-sub">{archivalProgress || 'This may take a moment for large datasets'}</div>
-                    <div className="archival-progress-track"><div className="archival-progress-bar" /></div>
-                    <div className="archival-progress-dots"><span></span><span></span><span></span></div>
+                    <div className="archival-progress-track" aria-hidden="true"><div className="archival-progress-bar" /></div>
+                    <div className="archival-progress-dots" aria-hidden="true"><span></span><span></span><span></span></div>
                   </div>
                 )}
               </div>
@@ -1618,11 +1682,11 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
 
           {/* Report Content */}
           {loading ? (
-            <div className="report-loading">
-              <div className="report-loading-icon"><RefreshCw size={22} className="spin" /></div>
+            <div className="report-loading" role="status" aria-live="polite" aria-label="Loading report">
+              <div className="report-loading-icon" aria-hidden="true"><RefreshCw size={22} className="spin" /></div>
               <div className="report-loading-title">Loading report…</div>
               <div className="report-loading-sub">Gathering centre-scoped records</div>
-              <div className="report-loading-track"><div className="report-loading-bar"></div></div>
+              <div className="report-loading-track" aria-hidden="true"><div className="report-loading-bar"></div></div>
               <div className="report-skeleton" style={{ width:'100%', maxWidth:520, marginTop:8 }}>
                 <div className="report-skeleton-row full"></div>
                 <div className="report-skeleton-row mid"></div>

@@ -543,6 +543,15 @@ export default function RecordsPage() {
     pullStartY.current = 0
   }
 
+  const escapeCsv = (val) => {
+    if (val === null || val === undefined) return ''
+    const str = String(val)
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+      return `"${str.replace(/"/g, '""')}"`
+    }
+    return str
+  }
+
   const exportCSV = async () => {
     let records = []
     if (activeTab === 'gate') {
@@ -573,7 +582,7 @@ export default function RecordsPage() {
     if (activeTab === 'gate') {
       headers = ['Badge', 'Name', 'Centre', 'Duty', 'Type', 'Status', 'IN Date', 'IN Time', 'OUT Date', 'OUT Time', 'Duration', 'IN By', 'OUT By']
       rows = records.map(r => [
-        r.badge_number, `"${r.sewadar_name}"`, r.centre || '', r.duty_type || '',
+        r.badge_number, r.sewadar_name, r.centre || '', r.duty_type || '',
         r.is_gate_entry ? 'GATE' : r.is_manual ? 'MANUAL' : 'SCAN', r.status,
         r.in_date, r.in_time || '', r.out_date || '', r.out_time || '',
         calculateDuration(r.in_date, r.in_time, r.out_date, r.out_time) || '',
@@ -582,20 +591,22 @@ export default function RecordsPage() {
     } else {
       headers = ['Badge', 'Name', 'Sewadar Centre', 'Destination', 'Type', 'Department', 'From Date', 'To Date', 'Remarks', 'Entered By']
       rows = records.map(r => [
-        r.badge_number, `"${r.sewadar_name}"`, r.sewadar_centre || '',
+        r.badge_number, r.sewadar_name, r.sewadar_centre || '',
         r.destination_centre || '',
         getJathaTypeLabel(r.jatha_type), r.jatha_department || '',
         r.in_date, r.out_date, r.remarks || '', r.entered_by_name || ''
       ])
     }
 
-    const csv = [headers.join(','), ...rows.map(row => row.join(','))].join('\n')
+    const csv = [headers.map(escapeCsv).join(','), ...rows.map(row => row.map(escapeCsv).join(','))].join('\n')
     const a = document.createElement('a')
     const blobUrl = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
     a.href = blobUrl
     a.download = `${activeTab}_records_${dateFrom}_to_${dateTo}.csv`
+    document.body.appendChild(a)
     a.click()
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
   }
 
   const isLoading = activeTab === 'gate' ? gateLoading : jathaLoading
