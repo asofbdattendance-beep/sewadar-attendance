@@ -1,0 +1,4 @@
+# Badges to NEVER delete or merge, even if absent from the dump.
+# One badge number per line. Lines starting with '#' are ignored.
+# YASHWANT RAJ BHADANA - scanner test record, keep forever
+BH0011GC4808

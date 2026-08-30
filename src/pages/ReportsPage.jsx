@@ -3,7 +3,7 @@ import { supabase, ROLES, formatDateIndian, formatTime12Hour, getLocalDate } fro
 import { useAuth } from '../context/AuthContext'
 import { 
   ChevronDown, ChevronRight, ChevronUp, Calendar, Download, FileSpreadsheet, FileText, 
-  Users, UserCheck, Clock, AlertTriangle, UserX, Building, MapPin, RefreshCw, Settings, CheckCircle, Truck
+  Users, UserCheck, Clock, AlertTriangle, UserX, Building, MapPin, RefreshCw, Settings, CheckCircle, Truck, Archive
 } from 'lucide-react'
 
 const REPORTS = {
@@ -928,6 +928,13 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   const [jathaTo, setJathaTo] = useState(getLocalDate())
   const [downloading, setDownloading] = useState(null)
 
+  // Archival Reports (backed by archival_attendance table)
+  const [archivalDutyType, setArchivalDutyType] = useState('')
+  const [archivalFrom, setArchivalFrom] = useState('')
+  const [archivalTo, setArchivalTo] = useState('')
+  const [downloadingArchive, setDownloadingArchive] = useState(null) // 'combined' | 'filtered'
+  const [archivalProgress, setArchivalProgress] = useState('')
+
   const escapeCsv = (val) => {
     if (val === null || val === undefined) return ''
     const str = String(val)
@@ -938,28 +945,38 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
   }
 
   const downloadDailyCSV = async () => {
+    if (dailyFrom && dailyTo && dailyFrom > dailyTo) { alert('From date cannot be after To date'); return }
     setDownloading('daily')
     try {
-      const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
-      const userCentre = profile?.centre
-      let query = supabase
-        .from('attendance_sessions')
-        .select('badge_number, sewadar_name, sewadar_centre, sewadar_dept, duty_type, in_date, in_time, out_date, out_time, status, centre')
-        .gte('in_date', dailyFrom)
-        .lte('in_date', dailyTo)
-        .order('in_date', { ascending: false })
-        .order('in_time', { ascending: false })
-        .limit(10000)
+      const PAGE = 5000
+      let start = 0
+      const allSessions = []
+      while (true) {
+        let query = supabase
+          .from('attendance_sessions')
+          .select('badge_number, sewadar_name, sewadar_centre, sewadar_dept, duty_type, in_date, in_time, out_date, out_time, status, centre')
+          .gte('in_date', dailyFrom)
+          .lte('in_date', dailyTo)
+          .order('in_date', { ascending: false })
+          .order('in_time', { ascending: false })
+          .order('id', { ascending: false })
+          .range(start, start + PAGE - 1)
 
-      if (centreFilter) {
-        query = query.ilike('centre', centreFilter)
+        if (centreFilter) {
+          query = query.ilike('centre', centreFilter)
+        }
+
+        const { data: batch, error } = await query
+        if (error) throw error
+        if (!batch || batch.length === 0) break
+        allSessions.push(...batch)
+        if (batch.length < PAGE) break
+        start += PAGE
       }
-
-      const { data: sessions } = await query
-      if (!sessions || sessions.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }
+      if (allSessions.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }
 
       const headers = ['Date', 'Badge Number', 'Name', 'Home Centre', 'Department', 'Duty Type', 'IN Time', 'OUT Time', 'Status']
-      const rows = sessions.map(s => [
+      const rows = allSessions.map(s => [
         s.in_date,
         s.badge_number,
         s.sewadar_name,
@@ -975,28 +992,40 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       downloadFile(csv, `daily_attendance_${dailyFrom}_to_${dailyTo}.csv`, 'text/csv')
     } catch (err) {
       console.error('Download error:', err)
+      alert('Failed to download daily report. Please try again.')
     }
     setDownloading(null)
   }
 
   const downloadJathaCSV = async () => {
+    if (jathaFrom && jathaTo && jathaFrom > jathaTo) { alert('From date cannot be after To date'); return }
     setDownloading('jatha')
     try {
-      const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
-      const userCentre = profile?.centre
-      let query = supabase
-        .from('jatha_attendance')
-        .select('badge_number, sewadar_name, sewadar_centre, from_date, to_date, remarks, jatha_id, jatha_master!inner(jatha_type, department, centre_name)')
-        .gte('from_date', jathaFrom)
-        .lte('from_date', jathaTo)
-        .order('from_date', { ascending: false })
-        .limit(10000)
+      const PAGE = 5000
+      let start = 0
+      const allRecords = []
+      while (true) {
+        let query = supabase
+          .from('jatha_attendance')
+          .select('badge_number, sewadar_name, sewadar_centre, from_date, to_date, remarks, jatha_id, jatha_master!inner(jatha_type, department, centre_name)')
+          .gte('from_date', jathaFrom)
+          .lte('from_date', jathaTo)
+          .order('from_date', { ascending: false })
+          .order('id', { ascending: false })
+          .range(start, start + PAGE - 1)
 
-      if (centreFilter) {
-        query = query.ilike('sewadar_centre', centreFilter)
+        if (centreFilter) {
+          query = query.ilike('sewadar_centre', centreFilter)
+        }
+
+        const { data: batch, error } = await query
+        if (error) throw error
+        if (!batch || batch.length === 0) break
+        allRecords.push(...batch)
+        if (batch.length < PAGE) break
+        start += PAGE
       }
-
-      const { data: records } = await query
+      const records = allRecords
       if (!records || records.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }
 
       const isAso = profile?.role === ROLES.SUPER_ADMIN || profile?.role === ROLES.ASO
@@ -1043,8 +1072,158 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
       downloadFile(csv, `jatha_attendance_${jathaFrom}_to_${jathaTo}.csv`, 'text/csv')
     } catch (err) {
       console.error('Download error:', err)
+      alert('Failed to download jatha report. Please try again.')
     }
     setDownloading(null)
+  }
+
+  // --- Archival Reports (archival_attendance table) ---
+  const ARCHIVAL_HEADERS = [
+    'Sewadar Name', 'Badge Number', 'Father/Husband Name', 'gender', 'age',
+    'Department Name', 'Department Id', 'Area Name', 'Centre Name', 'Status',
+    'Duty Type', 'Duty Date', 'Deployed Department', 'Deployed Centre',
+  ]
+  const ARCHIVAL_DUTY_LABELS = {
+    D: 'Daily Duty',
+    JMC: 'Jatha Major Centre',
+    JO: 'Jatha Others',
+    V: 'Visit',
+    JH: 'Jatha Home',
+  }
+  // duty_date arrives as ISO "YYYY-MM-DD" — output DD-MM-YYYY to match the source file
+  const toDDMMYYYY = (iso) => (iso ? String(iso).split('-').reverse().join('-') : '')
+
+  const downloadBlob = (blob, filename) => {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  const archivalFileName = (isFiltered, type) => {
+    const label = isFiltered ? `archival_${type}` : 'archival_all'
+    const range = (archivalFrom || archivalTo) ? `_${archivalFrom || 'start'}_to_${archivalTo || 'end'}` : ''
+    return `${label}${range}.csv`
+  }
+
+  // Fast path: build the CSV in Postgres via the chunked RPC. Returns a Blob,
+  // or null if the RPC is not deployed / returns nothing (caller falls back).
+  const downloadViaRpc = async ({ onlyType }) => {
+    const CHUNK = 100000
+    const parts = []
+    let chunk = 0
+    let dataRowsSeen = 0
+    while (true) {
+      setArchivalProgress(chunk === 0 ? 'Preparing archival export…' : `Downloading chunk ${chunk + 1}…`)
+      const { data, error } = await supabase.rpc('get_archival_csv_chunk', {
+        p_chunk: chunk,
+        p_duty_type: onlyType || null,
+        p_from: archivalFrom || null,
+        p_to: archivalTo || null,
+        p_limit: CHUNK,
+      })
+      if (error) throw error // -> fall back to client
+      if (!data || data === '') break // empty string = no more rows
+      setArchivalProgress(`Processing chunk ${chunk + 1}…`)
+      const isHeaderChunk = chunk === 0
+      const partText = isHeaderChunk ? data : `\n${data}`
+      // Count data rows ~ occurrences of line breaks (coarse but enough here)
+      dataRowsSeen += partText.split('\n').length - (isHeaderChunk ? 1 : 0)
+      parts.push(new Blob([partText], { type: 'text/csv' }))
+      // A full chunk holds ~CHUNK data rows. If this chunk had fewer, it's the last one.
+      const dataLen = isHeaderChunk ? data.split('\n').length - 1 : data.split('\n').length
+      if (dataLen < CHUNK) break
+      chunk += 1
+    }
+    if (dataRowsSeen === 0) return null
+    setArchivalProgress('Finalising file…')
+    return new Blob(parts, { type: 'text/csv' })
+  }
+
+  // Fallback path: client-side paginated fetch. Uses ORDER BY id for
+  // deterministic pagination and joins pages with a single newline to avoid
+  // merged rows at page boundaries. The inner field join is ',' (CSV), row
+  // join is '\r\n'.
+  const downloadViaClient = async ({ onlyType }) => {
+    const PAGE = 5000
+    const parts = []
+    let start = 0
+    let rowsAny = false
+    let totalFetched = 0
+    while (true) {
+      setArchivalProgress(start === 0 ? 'Fetching archival rows…' : `Fetched ${totalFetched.toLocaleString()} rows…`)
+      let query = supabase
+        .from('archival_attendance')
+        .select('sewadar_name,badge_number,father_husband_name,gender,age,department_name,department_id,area_name,centre_name,status,duty_type,duty_date,deployed_department,deployed_centre')
+        .order('id', { ascending: true })
+        .range(start, start + PAGE - 1)
+
+      if (onlyType) query = query.eq('duty_type', onlyType)
+      if (archivalFrom) query = query.gte('duty_date', archivalFrom)
+      if (archivalTo) query = query.lte('duty_date', archivalTo)
+
+      const { data: rows, error } = await query
+      if (error) throw error
+
+      if (!rows || rows.length === 0) break
+      rowsAny = true
+      totalFetched += rows.length
+
+      const pageLines = rows.map(r => [
+        r.sewadar_name, r.badge_number, r.father_husband_name, r.gender, r.age,
+        r.department_name, r.department_id, r.area_name, r.centre_name, r.status,
+        r.duty_type, toDDMMYYYY(r.duty_date), r.deployed_department, r.deployed_centre,
+      ].map(escapeCsv).join(',')).join('\r\n')
+      parts.push(pageLines)
+
+      if (rows.length < PAGE) break
+      start += PAGE
+    }
+    if (!rowsAny) return null
+    setArchivalProgress(`Building CSV — ${totalFetched.toLocaleString()} rows…`)
+    return new Blob([`${ARCHIVAL_HEADERS.join(',')}\r\n` + parts.join('\r\n')], { type: 'text/csv' })
+  }
+
+  const downloadArchivalCSV = async (scope) => {
+    const isFiltered = scope === 'filtered'
+    const type = isFiltered ? archivalDutyType : ''
+    if (isFiltered && !type) { alert('Please select a duty type for the filtered download'); return }
+    if (archivalFrom && archivalTo && archivalFrom > archivalTo) { alert('From date cannot be after To date'); return }
+
+    setDownloadingArchive(isFiltered ? 'filtered' : 'combined')
+    setArchivalProgress('Starting…')
+    const filename = archivalFileName(isFiltered, type)
+    try {
+      const opts = { onlyType: type }
+      let blob = null
+      try {
+        blob = await downloadViaRpc(opts) // fast path (requires deployed RPC)
+      } catch (rpcErr) {
+        console.warn('Archival RPC unavailable, using client download:', rpcErr?.message || rpcErr)
+      }
+      if (blob === null) {
+        // RPC absent/broken OR produced no rows -> use the reliable client path
+        blob = await downloadViaClient(opts)
+      }
+      if (blob === null) {
+        // No rows at all
+        setDownloadingArchive(null)
+        setArchivalProgress('')
+        alert('No archival records found for the selected filters')
+        return
+      }
+      setArchivalProgress('Saving file…')
+      downloadBlob(blob, filename)
+    } catch (err) {
+      console.error('Archival download error:', err)
+      alert('Failed to download archival report. Please try again.')
+    }
+    setDownloadingArchive(null)
+    setArchivalProgress('')
   }
 
   // Export handlers
@@ -1175,8 +1354,10 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
     const a = document.createElement('a')
     a.href = url
     a.download = filename
+    document.body.appendChild(a)
     a.click()
-    URL.revokeObjectURL(url)
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
   const saveSettings = () => {
@@ -1270,9 +1451,8 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
                   <label>To</label>
                   <input type="date" value={dailyTo} min={dailyFrom} onChange={e => setDailyTo(e.target.value)} />
                 </div>
-                <button className="dl-btn" onClick={downloadDailyCSV} disabled={downloading === 'daily'}>
-                  <Download size={16} />
-                  {downloading === 'daily' ? 'Downloading...' : 'Download CSV'}
+                <button className={`dl-btn ${downloading === 'daily' ? 'dl-btn-loading' : ''}`} onClick={downloadDailyCSV} disabled={downloading === 'daily'}>
+                  {downloading === 'daily' ? <><RefreshCw size={16} className="spin" /> Downloading…</> : <><Download size={16} /> Download CSV</>}
                 </button>
               </div>
             </div>
@@ -1305,10 +1485,65 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
                   <label>To</label>
                   <input type="date" value={jathaTo} min={jathaFrom} onChange={e => setJathaTo(e.target.value)} />
                 </div>
-                <button className="dl-btn" onClick={downloadJathaCSV} disabled={downloading === 'jatha'}>
-                  <Download size={16} />
-                  {downloading === 'jatha' ? 'Downloading...' : 'Download CSV'}
+                <button className={`dl-btn ${downloading === 'jatha' ? 'dl-btn-loading' : ''}`} onClick={downloadJathaCSV} disabled={downloading === 'jatha'}>
+                  {downloading === 'jatha' ? <><RefreshCw size={16} className="spin" /> Downloading…</> : <><Download size={16} /> Download CSV</>}
                 </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Archival Reports */}
+          <div className="downloads-section">
+            <div className="downloads-section-title">
+              <Archive size={18} />
+              <h3>Archival Reports</h3>
+            </div>
+            <div className="download-card">
+              <div className="download-card-header">
+                <Archive size={20} />
+                <div>
+                  <h3>Full Data Archive</h3>
+                  <p className="download-desc">Download the complete archival dataset — combined (all duty types) or filtered by duty type and date range</p>
+                </div>
+              </div>
+              <div className="download-card-body">
+                <div className="drow archival-row">
+                  <div className="dfield">
+                    <label>Duty Type</label>
+                    <select value={archivalDutyType} onChange={e => setArchivalDutyType(e.target.value)}>
+                      <option value="">All Duty Types</option>
+                      {['D', 'JMC', 'JO', 'V', 'JH'].map(t => (
+                        <option key={t} value={t}>{t} — {ARCHIVAL_DUTY_LABELS[t]}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="dfield">
+                    <label>From</label>
+                    <input type="date" value={archivalFrom} onChange={e => setArchivalFrom(e.target.value)} />
+                  </div>
+                  <div className="dfield">
+                    <label>To</label>
+                    <input type="date" value={archivalTo} min={archivalFrom || undefined} onChange={e => setArchivalTo(e.target.value)} />
+                  </div>
+                </div>
+                <div className="drow archival-btns">
+                  <button className={`dl-btn ${downloadingArchive === 'combined' ? 'dl-btn-loading' : ''}`} onClick={() => downloadArchivalCSV('combined')} disabled={downloadingArchive !== null}>
+                    {downloadingArchive === 'combined' ? <><RefreshCw size={16} className="spin" /> Downloading…</> : <><Archive size={16} /> Download Combined CSV</>}
+                  </button>
+                  <button className={`dl-btn dl-btn-ghost ${downloadingArchive === 'filtered' ? 'dl-btn-loading' : ''}`} onClick={() => downloadArchivalCSV('filtered')} disabled={downloadingArchive !== null}>
+                    {downloadingArchive === 'filtered' ? <><RefreshCw size={16} className="spin" /> Downloading…</> : <><Download size={16} /> Download Filtered CSV</>}
+                  </button>
+                </div>
+                <p className="archival-note">Centre-scoped users see only their own centre&apos;s records; ASO &amp; Super Admin can download everything.</p>
+                {downloadingArchive !== null && (
+                  <div className="archival-loading-overlay">
+                    <div className="archival-loading-icon"><RefreshCw size={20} className="spin" /></div>
+                    <div className="archival-loading-title">{downloadingArchive === 'combined' ? 'Preparing combined archive…' : 'Preparing filtered archive…'}</div>
+                    <div className="archival-loading-sub">{archivalProgress || 'This may take a moment for large datasets'}</div>
+                    <div className="archival-progress-track"><div className="archival-progress-bar" /></div>
+                    <div className="archival-progress-dots"><span></span><span></span><span></span></div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1385,8 +1620,15 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
           {/* Report Content */}
           {loading ? (
             <div className="report-loading">
-              <RefreshCw size={24} className="spin" />
-              <p>Loading report...</p>
+              <div className="report-loading-icon"><RefreshCw size={22} className="spin" /></div>
+              <div className="report-loading-title">Loading report…</div>
+              <div className="report-loading-sub">Gathering centre-scoped records</div>
+              <div className="report-loading-track"><div className="report-loading-bar"></div></div>
+              <div className="report-skeleton" style={{ width:'100%', maxWidth:520, marginTop:8 }}>
+                <div className="report-skeleton-row full"></div>
+                <div className="report-skeleton-row mid"></div>
+                <div className="report-skeleton-row short"></div>
+              </div>
             </div>
           ) : activeReport === 'aso_overview' ? (
             <AsoOverviewTree centres={asoTreeData} loading={false} />
