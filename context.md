@@ -4,6 +4,76 @@ Session context for contributing to this repo. Read `PROJECT.md` first for the o
 
 ---
 
+## 0. Recent issue — Records page 400 "Could not find the function get_session_records"
+
+### Symptom
+On the Sewadar Attendance tab of the Records page, the app logs `Failed to fetch gate records: Object` and the Supabase request to
+`/rest/v1/rpc/get_session_records` returns **400**.
+
+### Diagnosis
+The **deployed frontend is current** (the error comes from `dist/assets/index-CIKxYgMU.js`, which matches a fresh `npm run build`), and the repo's `get_session_records` (sql/rls_policies_all.sql:1164) accepts exactly the 9 args the frontend sends in `RecordsPage.jsx:367`/`549`:
+`p_page, p_page_size, p_date_from, p_date_to, p_centre, p_duty_type, p_search, p_status, p_quick_filter`.
+
+A PostgREST **400** on an RPC means **no matching function signature exists in the deployed DB** (PGRST113 / 42883), so the **live Supabase database has a stale `get_session_records`** — likely created before the `p_quick_filter` / `p_status` params were added (first introduced in commit `82c9b27`). The frontend now calls with params the old DB function doesn't have → PostgREST can't resolve an overload → 400.
+
+This is the same class of problem as Bug 2 (stale deployed DB relative to repo). The **SQL file is the source of truth; the DB is not versioned in CI.**
+
+### Fix
+Re-run **`sql/rls_policies_all.sql`** in the Supabase SQL Editor (or at minimum the `get_session_records` / `get_jatha_records` DO-block + `CREATE OR REPLACE FUNCTION` section). The signature currently in the repo:
+```sql
+CREATE OR REPLACE FUNCTION public.get_session_records(
+  p_page INT DEFAULT 1,
+  p_page_size INT DEFAULT 50,
+  p_date_from DATE DEFAULT NULL,
+  p_date_to DATE DEFAULT NULL,
+  p_centre TEXT DEFAULT NULL,
+  p_duty_type TEXT DEFAULT NULL,
+  p_search TEXT DEFAULT NULL,
+  p_status TEXT DEFAULT NULL,
+  p_quick_filter TEXT DEFAULT NULL
+)
+```
+After the DB is refreshed, the Records page (both tabs) should load. No frontend code change needed — the deployed bundle already matches the repo.
+
+---
+
+## 0b. ROOT CAUSE: two projects share ONE Supabase database (CRITICAL)
+
+**The `sewadar-attendance` app and the `sewadar-deployment-portal` both point at the SAME
+Supabase project** (`lnznhbwgkusgdcmvgznf.supabase.co`). They independently define
+conflicting versions of overlapping objects:
+
+| Object | Attendance app (`rls_policies_all.sql`) | Portal `v26_attendance.sql` |
+|---|---|---|
+| `attendance_sessions` | `id BIGINT`, `duty_type`, `is_gate_entry`, `entered_by_*`, TEXT `sewadar_dept` | `id uuid`, `schedule_id uuid NOT NULL`, uuid `sewadar_dept`, no `duty_type` |
+| `get_sewadar_by_badge` | `RETURNS SETOF public.sewadars` | `RETURNS jsonb` |
+| policies | `sessions_read/insert/update/delete` | `att_read`, `att_insert`, `att_update` |
+
+### What running portal v25/v26/v27 did to the shared DB
+- **v25** — only portal tables (`portal_users`, `deployment_*`, `department_incharge_selections`). No effect on attendance objects. Safe.
+- **v27** — `centres ADD COLUMN IF NOT EXISTS is_faridabad` (additive) + two new `is_faridabad_*` helpers. No breaking effect.
+- **v26** — **BREAKING for the attendance app**:
+  1. Its DO-block `DROP TABLE public.attendance_sessions CASCADE` when the table lacks
+     `schedule_id` → **erased the attendance app's `attendance_sessions` (and data)** and
+     replaced it with the portal's incompatible schema.
+  2. `DROP FUNCTION get_sewadar_by_badge(text)` + `CREATE OR REPLACE ... RETURNS jsonb`
+     → this is the exact **42P13 "cannot change return type"** hit when re-running the attendance SQL.
+  3. Recreated `att_read`/`att_insert`/`att_update` referencing the portal schema's
+     `sewadar_dept` → this is the exact **2BP01 "policy att_read depends on sewadar_dept"** hit.
+
+### Decision (user-approved)
+Separate the two apps into their **own Supabase databases**. The attendance app's schema
+is now versioned in `sql/attendance_sessions_schema.sql` (previously only existed in the
+live DB / old git history, which is how v26 silently clobbered it). New DB build order:
+1. run `sql/attendance_sessions_schema.sql` (creates the table + populate trigger + indexes),
+2. run `sql/rls_policies_all.sql` (policies, helper functions, RPCs),
+3. migrate/export data, point each app's env vars at its own project, redeploy.
+4. The attendance SQL now also defends against legacy/portal objects (drops `att_read`/
+   `att_write` and drops/recreates `get_sewadar_by_badge`, `search_sewadars_all` before
+   `CREATE OR REPLACE`).
+
+---
+
 ## 1. High-level architecture
 
 - **Frontend**: React 18 + Vite 5 SPA. Deployed from `dist/` (Vercel).
@@ -253,3 +323,84 @@ ORDER BY tablename, cmd;
 - `src/pages/SuperAdminPage.jsx`: `handleSubmit()` only touches `permissions` for `users`/`role_masters` tables (fixes PGRST204 → 400 on jatha_master/centres saves).
 - Committed as `f84729e "Fixed the issues"`.
 - `context.md` created (this file).
+
+---
+
+## 9. Archival Reports (branch: data-archival)
+
+### What it is
+A new section under **Reports → Downloads → Archival Reports** that lets users
+download the full historical/deployment archival dataset — **combined** (all duty
+types) or **filtered by duty type + optional date range**. The data originally
+arrived as a ~29MB Excel export (`Archival Sheet.xlsx`, 613,470 rows, 14 columns).
+
+### Data source — new table `archival_attendance`
+- DDL: **`sql/archival_attendance_schema.sql`** (table + RLS + indexes). Run it in
+  the Supabase SQL Editor BEFORE loading data.
+- **Duty-type normalisation at LOAD time** (not runtime): source has 7 raw codes
+  (D, JMC, JO, V, JH, J, W). We map **J → JMC** and **W → D**, leaving exactly 5
+  canonical types stored in the table:
+  - D = Daily duty, JMC = Jatha Major Centre, JO = Jatha Others, V = Visit, JH = Jatha Home
+  - Enforced by a CHECK constraint. Resulting counts: D=496,955, JMC=72,072, JO=24,124, V=20,301, JH=18.
+- Bulk loader: **`scripts/load_archival.mjs`** — reads the xlsx, normalises duty
+  type + date (DD-MM-YYYY → ISO), inserts in batches. Needs `scripts/.env`
+  (`VITE_SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`; both gitignored). To re-run
+  clean, `TRUNCATE public.archival_attendance RESTART IDENTITY;` first.
+  ```
+  node scripts/load_archival.mjs --file "/Users/jai/Downloads/Archival Sheet.xlsx"
+  ```
+
+### Centre scoping (RLS)
+Single policy `archival_read` scopes by centre:
+`has_permission('allow_reports') AND centre_name IN (SELECT public.get_user_accessible_centres())`.
+- Centre-scoped users (admin / centre_user) → only their centre + children.
+- ASO / SUPER_ADMIN → all centres (the function already returns every centre for them).
+The UI shows "Combined" and "Filtered" buttons; the CSV is built client-side from the
+RLS-filtered query, so no role-specific query logic is needed in the frontend.
+
+### Files changed (branch: data-archival)
+- `sql/archival_attendance_schema.sql` (new)
+- `scripts/load_archival.mjs` (new; `scripts/` already gitignored)
+- `src/pages/ReportsPage.jsx` (archival state, `downloadArchivalCSV(scope)`,
+  `fetchArchivalRows`, duty-type labels, UI replacing the placeholder)
+- `src/index.css` (archival controls layout, ghost button)
+- `CONTEXT.md` (this doc)
+
+### Deploy order
+1. Run `sql/archival_attendance_schema.sql` in the SQL Editor (creates table + RLS + indexes).
+2. Create `scripts/.env` with the service-role key and run `node scripts/load_archival.mjs`.
+3. `npm run build` → deploy `dist/` (Vercel).
+
+### Verify after deploy
+- `SELECT COUNT(*), COUNT(DISTINCT duty_type) FROM archival_attendance;` → `613470 / 5`.
+- UI: as ASO/superadmin, Combined download returns all rows; each duty-type filter
+  returns only that type; date-range filter works; as a centre-scoped user the
+  download only contains their centre's records.
+
+---
+
+## 10. Mark latest-Sunday Daily duty as "present today" in the archive
+
+### What it is
+Copies the Daily (D) duty records of the sewadars present on the LATEST SUNDAY
+into the archive under today's date, marking them present today.
+
+- **Source:** D records on `2026-08-23` (latest Sunday in the archive; data spans
+  2024-01-01 → 2026-08-29, same 5 duty types). 2,254 unique sewadars (no dups).
+- **Target:** new D records on `2026-08-30` (0 rows existed).
+- **Result:** 2,254 rows inserted on 08-30, all local fields copied unchanged
+  (name, badge, father/husband, gender, age, dept, area, centre, status); only
+  `duty_date` changes. JMC and other types NOT copied.
+
+### Files
+- `sql/mark_sunday_present_today.sql` — idempotent `INSERT … SELECT … NOT EXISTS`
+  (run in SQL Editor when direct SQL access is available).
+- `scripts/mark_sunday_present_today.mjs` — REST-equivalent using the service-role
+  key (used here because raw SQL can't run via PostgREST). Supports `--from`,
+  `--to`, `--dry-run`; idempotent (skips badges already having a target-date D
+  record).
+
+### Verified
+- 08-30 count = 2254, all duty_type D.
+- Spot-check (badge FB5971GA0024) shows identical 08-23 and 08-30 rows, date-only change.
+- Re-run inserts 0 (idempotent). No existing rows modified/deleted.

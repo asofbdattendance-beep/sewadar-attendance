@@ -257,6 +257,19 @@ $$;
 
 -- SECURITY DEFINER: Get full sewadar record by badge number
 -- Bypasses RLS so any authenticated user can scan out-of-centre sewadars
+-- NOTE: DROP all overloads first so a recreate works even if the live DB has
+--       this function with a different return type (42P13 "cannot change return type").
+DO $$ BEGIN
+  PERFORM p.oid::regprocedure FROM pg_catalog.pg_proc p
+    WHERE p.proname = 'get_sewadar_by_badge' AND p.pronamespace = 'public'::regnamespace;
+  IF FOUND THEN
+    EXECUTE (
+      SELECT string_agg('DROP FUNCTION ' || p.oid::regprocedure || ' CASCADE;', ' ')
+      FROM pg_catalog.pg_proc p
+      WHERE p.proname = 'get_sewadar_by_badge' AND p.pronamespace = 'public'::regnamespace
+    );
+  END IF;
+END $$;
 CREATE OR REPLACE FUNCTION public.get_sewadar_by_badge(p_badge TEXT)
 RETURNS SETOF public.sewadars
 LANGUAGE plpgsql
@@ -275,6 +288,19 @@ $$;
 -- Performance: create trigram index for fast ILIKE:
 --   CREATE EXTENSION IF NOT EXISTS pg_trgm;
 --   CREATE INDEX idx_sewadars_search ON public.sewadars USING gin (badge_number gin_trgm_ops, sewadar_name gin_trgm_ops);
+-- NOTE: DROP all overloads first so a recreate works even if the live DB has
+--       this function with a different return type (42P13).
+DO $$ BEGIN
+  PERFORM p.oid::regprocedure FROM pg_catalog.pg_proc p
+    WHERE p.proname = 'search_sewadars_all' AND p.pronamespace = 'public'::regnamespace;
+  IF FOUND THEN
+    EXECUTE (
+      SELECT string_agg('DROP FUNCTION ' || p.oid::regprocedure || ' CASCADE;', ' ')
+      FROM pg_catalog.pg_proc p
+      WHERE p.proname = 'search_sewadars_all' AND p.pronamespace = 'public'::regnamespace
+    );
+  END IF;
+END $$;
 CREATE OR REPLACE FUNCTION public.search_sewadars_all(p_term TEXT)
 RETURNS SETOF public.sewadars
 LANGUAGE plpgsql
@@ -425,6 +451,11 @@ DROP POLICY IF EXISTS sessions_read ON public.attendance_sessions;
 DROP POLICY IF EXISTS sessions_insert ON public.attendance_sessions;
 DROP POLICY IF EXISTS sessions_update ON public.attendance_sessions;
 DROP POLICY IF EXISTS sessions_delete ON public.attendance_sessions;
+-- Legacy policy names from older schemas that this file no longer creates but may
+-- still exist on the deployed DB; must be dropped so the denormalized-column drop
+-- below (sewadar_centre / sewadar_dept) doesn't fail with 2BP01 "objects depend on it".
+DROP POLICY IF EXISTS att_read ON public.attendance_sessions;
+DROP POLICY IF EXISTS att_write ON public.attendance_sessions;
 
 CREATE POLICY sessions_read ON public.attendance_sessions
   FOR SELECT TO authenticated
@@ -750,6 +781,33 @@ $$;
 -- DENORMALIZED COLUMNS: sewadar_centre + sewadar_dept
 -- ============================================================
 -- attendance_sessions: snapshot of sewadar's home centre and department at scan time
+-- Drop legacy views that depend on these columns before dropping them (the app
+-- queries tables directly; these views are not used by the frontend).
+DROP VIEW IF EXISTS public.vw_open_sessions;
+DROP VIEW IF EXISTS public.vw_attendance_with_details;
+
+-- Drop any remaining policy on attendance_sessions that references sewadar_dept or
+-- sewadar_centre (e.g. legacy att_read/att_write that this file no longer recreates).
+-- The current sessions_* policies don't reference these columns, so they're untouched.
+DO $$
+DECLARE
+  v_rec RECORD;
+BEGIN
+  FOR v_rec IN
+    SELECT p.policyname, p.qual, p.with_check
+    FROM pg_policies p
+    WHERE p.schemaname = 'public' AND p.tablename = 'attendance_sessions'
+  LOOP
+    IF COALESCE(v_rec.qual, '') ILIKE '%sewadar_dept%'
+       OR COALESCE(v_rec.qual, '') ILIKE '%sewadar_centre%'
+       OR COALESCE(v_rec.with_check, '') ILIKE '%sewadar_dept%'
+       OR COALESCE(v_rec.with_check, '') ILIKE '%sewadar_centre%'
+    THEN
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.attendance_sessions', v_rec.policyname);
+    END IF;
+  END LOOP;
+END $$;
+
 ALTER TABLE public.attendance_sessions DROP COLUMN IF EXISTS sewadar_centre;
 ALTER TABLE public.attendance_sessions ADD COLUMN sewadar_centre TEXT;
 ALTER TABLE public.attendance_sessions DROP COLUMN IF EXISTS sewadar_dept;
@@ -1041,11 +1099,30 @@ CREATE INDEX IF NOT EXISTS idx_jatha_dates
 -- FOREIGN KEY CONSTRAINTS (drop first — FKs depend on UNIQUE index)
 -- ON DELETE SET NULL preserves attendance history when sewadar is deleted
 -- ============================================================
-ALTER TABLE public.attendance_sessions
-  DROP CONSTRAINT IF EXISTS fk_attendance_sessions_badge;
-
-ALTER TABLE public.jatha_attendance
-  DROP CONSTRAINT IF EXISTS fk_jatha_attendance_badge;
+-- Drop ANY foreign key from attendance_sessions / jatha_attendance that points at
+-- sewadars. The FK name varies (legacy fk_attendance_sessions_badge vs the
+-- auto-generated attendance_sessions_badge_number_fkey from a REFERENCES clause),
+-- so drop dynamically to avoid 2BP01 "cannot drop constraint ... because other
+-- objects depend on it".
+DO $$
+DECLARE v_rec RECORD;
+BEGIN
+  FOR v_rec IN
+    SELECT tc.table_name, tc.constraint_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+    JOIN information_schema.constraint_column_usage ccu
+      ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+      AND tc.table_schema = 'public'
+      AND tc.table_name IN ('attendance_sessions', 'jatha_attendance')
+      AND ccu.table_schema = 'public'
+      AND ccu.table_name = 'sewadars'
+  LOOP
+    EXECUTE format('ALTER TABLE public.%I DROP CONSTRAINT IF EXISTS %I', v_rec.table_name, v_rec.constraint_name);
+  END LOOP;
+END $$;
 
 -- ============================================================
 -- UNIQUE CONSTRAINT on sewadars.badge_number (safe after FKs dropped)
@@ -1066,6 +1143,14 @@ ALTER TABLE public.jatha_attendance
   ADD CONSTRAINT fk_jatha_attendance_badge
   FOREIGN KEY (badge_number) REFERENCES public.sewadars(badge_number)
   ON DELETE SET NULL;
+
+-- ============================================================
+-- badge_number must be nullable for the FK's ON DELETE SET NULL
+-- to work (deleting a sewadar keeps attendance history w/ NULL badge).
+-- Without this, deleting a sewadar with sessions fails with 23502.
+-- ============================================================
+ALTER TABLE public.attendance_sessions ALTER COLUMN badge_number DROP NOT NULL;
+ALTER TABLE public.jatha_attendance ALTER COLUMN badge_number DROP NOT NULL;
 
 -- ============================================================
 -- FIX: Swap in_date/out_date for rows where in_date > out_date
@@ -1233,7 +1318,7 @@ BEGIN
   ),
   ordered AS (
     SELECT * FROM scoped
-    ORDER BY in_date DESC, in_time DESC
+    ORDER BY in_date DESC, in_time DESC, id DESC
     LIMIT CASE WHEN p_page > 0 THEN p_page_size ELSE NULL END
     OFFSET CASE WHEN p_page > 0 THEN v_offset ELSE 0 END
   )
@@ -1320,7 +1405,7 @@ BEGIN
   ),
   ordered AS (
     SELECT * FROM scoped
-    ORDER BY from_date DESC, entered_at DESC
+    ORDER BY from_date DESC, entered_at DESC, id DESC
     LIMIT CASE WHEN p_page > 0 THEN p_page_size ELSE NULL END
     OFFSET CASE WHEN p_page > 0 THEN v_offset ELSE 0 END
   )
@@ -1373,16 +1458,24 @@ ORDER BY tablename, cmd;
 -- --   ORDER BY dup_count DESC;
 -- --
 -- STEP 2: Delete duplicates (keep lowest id per group)
+--
+-- ** NON-DESTRUCTIVE **
+-- The original DELETE removed duplicate jatha_attendance rows. The user
+-- requires a migration that deletes NOTHING, so this DELETE is now disabled.
+-- On a fresh/empty project it is a no-op anyway (the table is empty), and on a
+-- populated one it would only have removed true duplicates — but per requirement
+-- we never run a DELETE here. The unique index below still prevents future
+-- duplicates from being created.
 -- Disable trigger since we're cleaning, not creating new overlaps
 ALTER TABLE public.jatha_attendance DISABLE TRIGGER trg_check_jatha_overlap;
 
-DELETE FROM public.jatha_attendance ja
-WHERE ja.id NOT IN (
-  SELECT MIN(id)
-  FROM public.jatha_attendance
-  WHERE badge_number IS NOT NULL
-  GROUP BY badge_number, jatha_id, from_date, to_date
-);
+-- DELETE FROM public.jatha_attendance ja
+-- WHERE ja.id NOT IN (
+--   SELECT MIN(id)
+--   FROM public.jatha_attendance
+--   WHERE badge_number IS NOT NULL
+--   GROUP BY badge_number, jatha_id, from_date, to_date
+-- );
 
 ALTER TABLE public.jatha_attendance ENABLE TRIGGER trg_check_jatha_overlap;
 
