@@ -1677,6 +1677,18 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
   .archival-btns .dl-btn { flex:1; justify-content:center; min-height:44px; }
   .archival-loading-overlay { padding:16px; }
 }
+.archival-banner {
+  display:flex; align-items:center; gap:6px;
+  background:var(--green-bg); border:1px solid rgba(33,115,70,0.15);
+  color:var(--text-primary); font-size:13px; font-weight:500;
+  padding:10px 14px; border-radius:10px; margin-bottom:14px;
+}
+.archival-banner svg { color:var(--excel-green); flex-shrink:0; }
+.archival-here-link {
+  color:var(--excel-green); font-weight:700; text-decoration:underline;
+  text-underline-offset:2px; cursor:pointer;
+}
+.archival-here-link:hover { color:var(--excel-green-hover); }
 
 .report-title-bar {
   display:flex; align-items:center; justify-content:space-between;

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useLocation } from 'react-router-dom'
 import { supabase, ROLES, formatDateIndian, formatTime12Hour, getLocalDate } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { 
@@ -313,10 +314,24 @@ export default function ReportsPage() {
   
   const today = getLocalDate()
   
+  const location = useLocation()
   const [activeCategory, setActiveCategory] = useState('gate')
   const [activeReport, setActiveReport] = useState('present')
   const [dateFrom, setDateFrom] = useState(today)
   const [dateTo, setDateTo] = useState(today)
+
+  // Redirect from Records → Reports > Downloads > Archival
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const cat = params.get('category') || params.get('tab')
+    if (cat === 'downloads') {
+      setActiveCategory('downloads')
+      // scroll to archival section after render
+      setTimeout(() => {
+        document.querySelector('.downloads-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 150)
+    }
+  }, [location.search])
   
   const [reportData, setReportData] = useState([])
   const [reportSummary, setReportSummary] = useState({})

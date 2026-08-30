@@ -3,7 +3,8 @@ import { supabase, ROLES, formatTime12Hour, formatDateIndian, getLocalDate } fro
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../components/Toast'
 import { logAction } from '../lib/logger'
-import { Search, Download, Filter, Calendar, Clock, Scan, Timer, Edit3, DoorOpen, RefreshCw, Truck, MapPin, Briefcase, ArrowRight, LayoutGrid, Table2, Trash2, ChevronLeft, ChevronRight, AlertTriangle, Plus } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Search, Download, Filter, Calendar, Clock, Scan, Timer, Edit3, DoorOpen, RefreshCw, Truck, MapPin, Briefcase, ArrowRight, LayoutGrid, Table2, Trash2, ChevronLeft, ChevronRight, AlertTriangle, Plus, Archive } from 'lucide-react'
 
 const PAGE_SIZE = 50
 
@@ -632,6 +633,10 @@ export default function RecordsPage() {
           {activeTab === 'gate' && openCount > 0 && <span className="stat-open">{openCount} IN</span>}
           {activeTab === 'gate' && closedCount > 0 && <span className="stat-closed">{closedCount} OUT</span>}
         </div>
+      </div>
+
+      <div className="archival-banner">
+        <Archive size={14} /> Previous records available <Link to="/reports?category=downloads" className="archival-here-link">here</Link>
       </div>
 
       <div className="records-tabs">
