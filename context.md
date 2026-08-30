@@ -37,11 +37,13 @@ After the DB is refreshed, the Records page (both tabs) should load. No frontend
 
 ---
 
-## 0b. ROOT CAUSE: two projects share ONE Supabase database (CRITICAL)
+## 0b. ROOT CAUSE: two projects SHARED one Supabase database (RESOLVED 2025-08-30)
 
-**The `sewadar-attendance` app and the `sewadar-deployment-portal` both point at the SAME
-Supabase project** (`lnznhbwgkusgdcmvgznf.supabase.co`). They independently define
-conflicting versions of overlapping objects:
+**History:** the `sewadar-attendance` app and the `sewadar-deployment-portal` previously
+pointed at the SAME Supabase project (`lnznhbwgkusgdcmvgznf.supabase.co`). **Separated
+2025-08-30:** attendance keeps `lnznhb…` (ASMS-FBD), portal now uses `wgavvihuwwwoqpbqntgp`.
+Portal leftovers on the attendance DB are removed via `sql/cleanup_deployment_leftovers.sql`.
+They independently defined conflicting versions of overlapping objects:
 
 | Object | Attendance app (`rls_policies_all.sql`) | Portal `v26_attendance.sql` |
 |---|---|---|

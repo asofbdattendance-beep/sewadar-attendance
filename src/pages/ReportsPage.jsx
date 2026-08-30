@@ -1036,7 +1036,7 @@ export default function ReportsPage() {
         if (error) throw error
         if (!batch || batch.length === 0) break
         allSessions.push(...batch)
-        if (batch.length < pageSize) break
+        if (batch.length < PAGE) break
         start += PAGE
       }
       if (allSessions.length === 0) { alert('No records found for selected date range'); setDownloading(null); return }

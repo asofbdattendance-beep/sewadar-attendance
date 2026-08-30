@@ -881,6 +881,9 @@ CREATE POLICY jatha_att_write ON public.jatha_attendance
   );
 
 -- Trigger: auto-populate sewadar_centre + sewadar_dept on attendance_sessions INSERT
+-- Deduplicate: attendance_sessions_schema.sql already creates trg_att_populate_sewadar
+-- with COALESCE logic. Drop it here so only one trigger survives after both files run.
+DROP TRIGGER IF EXISTS trg_att_populate_sewadar ON public.attendance_sessions;
 CREATE OR REPLACE FUNCTION public.set_session_sewadar_details()
 RETURNS TRIGGER
 LANGUAGE plpgsql
