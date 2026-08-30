@@ -1534,7 +1534,6 @@ const canViewAllCentres = profile?.role === ROLES.SUPER_ADMIN || profile?.role =
                     {downloadingArchive === 'filtered' ? <><RefreshCw size={16} className="spin" /> Downloading…</> : <><Download size={16} /> Download Filtered CSV</>}
                   </button>
                 </div>
-                <p className="archival-note">Centre-scoped users see only their own centre&apos;s records; ASO &amp; Super Admin can download everything.</p>
                 {downloadingArchive !== null && (
                   <div className="archival-loading-overlay">
                     <div className="archival-loading-icon"><RefreshCw size={20} className="spin" /></div>
