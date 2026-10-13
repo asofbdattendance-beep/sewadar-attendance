@@ -67,6 +67,35 @@ describe('probe-gated native selection', () => {
     await pool.init()
     expect(pool.getActiveId()).toBe('Native')
   })
+
+  it('falls back to ZXing when the probe throws synchronously', async () => {
+    vi.stubGlobal('window', {
+      BarcodeDetector: class {
+        // A platform getter that raises instead of returning a promise —
+        // seen on WebView builds where the detector object exists but the
+        // backing service is gone. Must be "no native", never a wedged init.
+        static getSupportedFormats = () => { throw new Error('service gone') }
+        detect = () => Promise.resolve([])
+      },
+    })
+    const pool = createEnginePool(false)
+    await pool.init()
+    expect(pool.isReady()).toBe(true)
+    expect(pool.getActiveId()).toBe('ZXing')
+  })
+
+  it('falls back to ZXing when the probe answers with garbage', async () => {
+    vi.stubGlobal('window', {
+      BarcodeDetector: class {
+        static getSupportedFormats = () => Promise.resolve(undefined)
+        detect = () => Promise.resolve([])
+      },
+    })
+    const pool = createEnginePool(false)
+    await pool.init()
+    expect(pool.isReady()).toBe(true)
+    expect(pool.getActiveId()).toBe('ZXing')
+  })
 })
 
 describe('inverted-native scratch canvas reuse', () => {

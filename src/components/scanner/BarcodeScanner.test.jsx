@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import React from 'react'
-import { render, act, cleanup } from '@testing-library/react'
+import { render, act, cleanup, waitFor } from '@testing-library/react'
 
 const mocks = vi.hoisted(() => ({ openCamera: vi.fn(), applyTapFocus: vi.fn() }))
 
@@ -633,5 +633,50 @@ describe('BarcodeScanner rear-camera recovery', () => {
     await settle()
     expect(container.querySelector('video').srcObject).toBe(front)
     expect(front.track.stop).not.toHaveBeenCalled()
+  })
+  it('unmount mid-recovery: the late pinned stream is stopped on arrival, nothing throws', async () => {
+    const front = labeledStream('front-1', 'user')
+    const rear = labeledStream('rear-9', 'environment')
+    mocks.openCamera.mockResolvedValue({ stream: front, track: front.track, torchSupported: false, deviceId: null, resolutionIndex: 0, adopted: false })
+    grantLabels()
+    // Pin the recovery's getUserMedia open mid-flight: the FIRST gUM call is
+    // the pinned re-open (the initial open is mocked and never touches gUM).
+    const gum = window.navigator.mediaDevices.getUserMedia
+    let releasePinned
+    const pinnedInFlight = new Promise(res => { releasePinned = res })
+    gum.mockReturnValueOnce(pinnedInFlight)
+
+    const { unmount } = render(<BarcodeScanner onScan={vi.fn()} />)
+    await act(async () => {
+      await waitFor(() => expect(gum).toHaveBeenCalledTimes(1))
+    })
+    // Tear down while the pinned open is still pending, then let it land.
+    // The arrival must be stopped (no orphaned camera LED), not adopted.
+    unmount()
+    await act(async () => { releasePinned(rear) })
+    await settle()
+    expect(rear.track.stop).toHaveBeenCalled()
+  })
+
+  it('StrictMode double-mount with recovery: exactly one live stream survives', async () => {
+    // React 18 StrictMode mounts, unmounts, and remounts: the first mount's
+    // recovery must release everything it grabbed, and the second mount must
+    // still land on the rear camera. Any leak here is a camera LED stuck on
+    // with a black preview on every dev-mode (and iOS permission-prompt)
+    // double start.
+    const front = labeledStream('front-1', 'user')
+    const rear = labeledStream('rear-9', 'environment')
+    mocks.openCamera.mockResolvedValue({ stream: front, track: front.track, torchSupported: false, deviceId: null, resolutionIndex: 0, adopted: false })
+    grantLabels()
+    window.navigator.mediaDevices.getUserMedia.mockResolvedValue(rear)
+
+    const { container } = render(
+      <React.StrictMode><BarcodeScanner onScan={vi.fn()} /></React.StrictMode>,
+    )
+    await settle()
+    await settle()
+    expect(container.querySelector('video').srcObject).toBe(rear)
+    expect(front.track.stop).toHaveBeenCalled()
+    expect(rear.track.stop).not.toHaveBeenCalled()
   })
 })

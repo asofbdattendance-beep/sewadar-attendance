@@ -939,12 +939,26 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
     // is not the track we got, swap to a stream pinned to it. The swap keeps
     // the old stream until the pinned open succeeds, so a failed re-open can
     // never leave the session streamless.
+    //
+    // The one-shot guard below is set ONLY by the live session and ONLY after
+    // labels resolve. Setting it at block entry (before the awaits) deadlocks
+    // the feature under StrictMode double-effects and stop→restart: the first
+    // attempt marks it spent, goes stale, and the attempt that could have done
+    // the work finds the flag set and skips — recovery silently never fires.
     if (!opened.adopted && !opened.deviceId && !rearRecoveryRef.current) {
-      rearRecoveryRef.current = true
       try {
         const rearId = await pickRearDeviceId()
         const currentId = opened.track?.getSettings?.()?.deviceId || null
-        if (rearId && currentId && rearId !== currentId && isCurrent(session) && mountedRef.current) {
+        if (!rearId || !currentId) {
+          // Labels still hidden: unresolved — a later restart may retry.
+        } else if (!isCurrent(session) || !mountedRef.current) {
+          // Went stale mid-flight: touch nothing. The live session runs its
+          // own recovery; only it may spend the one shot.
+        } else if (rearId === currentId) {
+          rearRecoveryRef.current = true // already rear: resolved, no shot needed
+        } else {
+          // The live session spends the one recovery shot here, repin or fail.
+          rearRecoveryRef.current = true
           if (debugOn) pushDebug('rear recovery: re-opening pinned to rear camera')
           let repinned = null
           try {

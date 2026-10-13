@@ -100,4 +100,31 @@ describe('sanitizeScannedBadge', () => {
     const once = sanitizeScannedBadge('*fb5971ga292o*')
     expect(sanitizeScannedBadge(once)).toBe(once)
   })
+
+  it('fuzz: 500 hostile inputs never throw, never retype, valid outputs are fixed points', () => {
+    // Deterministic PRNG (mulberry32) — same 500 inputs on every run.
+    let seed = 0xC0FFEE
+    const rand = () => {
+      seed |= 0; seed = (seed + 0x6D2B79F5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+    const alphabet = 'FBGLA59710OIlS5B8Z2* xyz\t\n-_.#'
+    for (let i = 0; i < 500; i++) {
+      const len = Math.floor(rand() * 24)
+      let raw = ''
+      for (let j = 0; j < len; j++) raw += alphabet[Math.floor(rand() * alphabet.length)]
+      let out
+      expect(() => { out = sanitizeScannedBadge(raw) }).not.toThrow()
+      expect(typeof out).toBe('string')
+      // Fixed point: feeding the output back changes nothing (a repair that
+      // keeps "repairing" could walk one badge into another's — retyping).
+      expect(sanitizeScannedBadge(out)).toBe(out)
+      // No hallucinations: output is either regex-valid or honestly invalid.
+      if (out !== '' && !BADGE_REGEX.test(out)) {
+        expect(isValidBadgeFormat(out)).toBe(false)
+      }
+    }
+  })
 })
