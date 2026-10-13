@@ -23,6 +23,11 @@ export default defineConfig({
         manualChunks: {
           vendor: ['react', 'react-dom', 'react-router-dom'],
           supabase: ['@supabase/supabase-js'],
+          // ZXing is statically imported by the scanner engine (offline-first:
+          // no lazy chunk may gate a mid-scan fallback). It lives in its own
+          // chunk so the entry stays lean; Vite's default modulePreload
+          // injects the preload link for it automatically at build time.
+          zxing: ['@zxing/library'],
           xlsx: ['xlsx'],
         },
       },

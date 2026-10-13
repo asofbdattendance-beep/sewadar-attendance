@@ -559,7 +559,10 @@ export function beginFocusHunt(track, opts = {}) {
  * race MUST NOT stop the returned stream — that is the caller's job only when
  * it has actually become the owner (see `stopStream`).
  *
- * @param {{startIndex?: number, debug?: boolean}} [opts]
+ * @param {{startIndex?: number, debug?: boolean, exactDeviceId?: string|null}} [opts]
+ *   — exactDeviceId pins the open to one camera (post-grant rear recovery in
+ *   BarcodeScanner); an OverconstrainedError on it still falls back to
+ *   facingMode rather than failing the session.
  * @returns {Promise<{stream: MediaStream, track: MediaStreamTrack, torchSupported: boolean, deviceId: string|null, resolutionIndex: number, adopted: boolean}>}
  */
 export function openCamera(opts = {}) {
@@ -596,8 +599,43 @@ export function openCamera(opts = {}) {
   return attempt
 }
 
-async function openCameraInner({ startIndex = 0, debug = false } = {}) {
-  let deviceId = await pickRearDeviceId()
+/**
+ * Open a SECOND stream pinned to one device, bypassing the `_active` adoption
+ * shortcut. The public openCamera() hands back the live `_active` stream when
+ * one exists — correct for a fresh start, fatal for a caller that already
+ * holds that stream and wants to swap cameras (it would "swap" onto the same
+ * stream and then stop it). Used by post-grant rear-camera recovery only.
+ *
+ * Ownership: on success `_active` moves to the new stream; the caller stops
+ * the OLD stream after the swap. If the open is abandoned mid-flight the
+ * fresh stream is stopped on arrival (same contract as openCamera).
+ *
+ * @param {string} exactDeviceId
+ * @param {{startIndex?: number, debug?: boolean}} [opts]
+ */
+export function openPinnedCamera(exactDeviceId, opts = {}) {
+  const abandonMark = _abandonedOpens
+  return openCameraInner({ ...opts, exactDeviceId }).then(
+    res => {
+      if (_abandonedOpens !== abandonMark) {
+        safeCall(() => res.stream?.getTracks?.().forEach(t => t.stop()))
+        const err = new Error('Camera open was abandoned')
+        err.name = 'AbortError'
+        throw err
+      }
+      _active = {
+        stream: res.stream,
+        track: res.track,
+        torchSupported: res.torchSupported,
+        deviceId: res.deviceId,
+      }
+      return { ...res, adopted: false }
+    },
+  )
+}
+
+async function openCameraInner({ startIndex = 0, debug = false, exactDeviceId = null } = {}) {
+  let deviceId = exactDeviceId || await pickRearDeviceId()
   const chain = RESOLUTION_CHAIN.slice(Math.max(0, startIndex))
   let lastError = null
 

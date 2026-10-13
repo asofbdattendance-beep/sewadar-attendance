@@ -12,10 +12,12 @@
  *     preview black while the camera LED stayed on. A stale session now walks
  *     away without touching the video element, React state, or a stream that a
  *     newer session has adopted.
- *  2. CAMERA FIRST, ENGINES SECOND. The preview must be on screen as fast as the
- *     hardware allows; the detector bundle is loaded in the background
- *     afterwards. The previous order (engine → camera → 5-frame profiling) left
- *     a black box for seconds on a slow phone.
+  *  2. CAMERA FIRST, ENGINES SECOND. The preview must be on screen as fast as the
+  *     hardware allows; the native probe runs in the background afterwards.
+  *     (ZXing ships inside the bundle — statically imported, zero load delay —
+  *     so only the native capability probe can ever hold up detection.) The
+  *     previous order (engine → camera → 5-frame profiling) left a black box
+  *     for seconds on a slow phone.
  *  3. DETECT ON A CROP. Frames are cropped to a centred band and downscaled
  *     before decoding (see `computeRoi`), which is what keeps low-end phones
  *     above a usable frame rate. The band widens to the full frame if repeated
@@ -32,6 +34,7 @@ import { CameraOff, RefreshCw, Zap, Focus } from 'lucide-react'
 import { withTimeout, CAMERA_INIT_TIMEOUT, computeRoi, waitForVideoReady, isSecureCameraContext, isEdgeDetection, detectionBox, rgbaToGray } from '../../lib/scannerUtils'
 import {
   openCamera,
+  openPinnedCamera,
   stopStream,
   cancelPendingOpen,
   isStreamLive,
@@ -39,6 +42,7 @@ import {
   applyTapFocus,
   toggleTorch,
   describeCamera,
+  pickRearDeviceId,
   platform,
 } from './cameraManager'
 import { BADGE_REGEX, sanitizeScannedBadge } from '../../lib/badge'
@@ -86,6 +90,13 @@ const HARD_PASS_EVERY = 10
 // onScan every frame for the whole RPC. 1500ms damps the storm while the
 // operator's retry after ~1.5s still goes through.
 const DECLINED_DAMP_MS = 1500
+// Upper bound for one detect()/hardPass() pass. A hung native promise (seen on
+// backends whose OS service died mid-session: detect() neither resolves nor
+// rejects) would otherwise freeze the loop forever, because scheduleNext only
+// runs after the await. Legit decodes finish in <2s even on slow phones; a
+// pass that exceeds this is treated as a clean miss so the miss path (ROI
+// widen, hardPass, empty-handoff, 20s watchdog) can recover.
+const DETECT_TIMEOUT_MS = 6000
 
 // ─── Quality Analysis ─────────────────────────────────────────────────────────
 
@@ -238,6 +249,9 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
   // Aim overlay: the last published box (for throttling) and its fade timer.
   const aimBoxRef = useRef(null)
   const aimTimerRef = useRef(null)
+  // Post-grant rear-camera recovery runs once per mount (a working stream is
+  // never churned on later restarts).
+  const rearRecoveryRef = useRef(false)
 
   const [status, setStatus] = useState('starting')
   const [errorMsg, setErrorMsg] = useState('')
@@ -254,6 +268,17 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
   const [debugLogs, setDebugLogs] = useState([])
   const [tapFocusActive, setTapFocusActive] = useState(false)
   const [aimBox, setAimBox] = useState(null)
+  // Autoplay-policy fallback: video.play() needs a user gesture on some
+  // browsers. When it rejects with NotAllowedError the stream is released and
+  // this overlay offers a one-tap retry — the tap IS the gesture, so the
+  // re-run startScanner's play() is allowed.
+  const [needsTapToPlay, setNeedsTapToPlay] = useState(false)
+  // iOS home-screen (standalone) web apps have a documented black-video
+  // history (WebKit #252465) plus non-persistent camera permission (#215884).
+  // The meta tag stays (installed behaviour unchanged); the scanner instead
+  // tells a standalone user exactly where to go when the preview is black.
+  const isIosStandalone = platform.isIOS
+    && typeof navigator !== 'undefined' && navigator.standalone === true
 
   onScanRef.current = onScan
 
@@ -496,7 +521,18 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
     if (!surface) { scheduleNext(); return }
 
     const t0 = performance.now()
-    const { barcodes, engine } = await engineRef.current.detect(surfaceRef.current)
+    // Watchdog: a hung detector promise never resolves, and scheduleNext only
+    // runs after this await — so an unguarded detect() freezes the whole loop
+    // on a black live preview. Bound it; a timeout is a clean miss.
+    let barcodes = []
+    let engine = engineRef.current.getActiveId()
+    try {
+      const res = await withTimeout(engineRef.current.detect(surfaceRef.current), DETECT_TIMEOUT_MS, 'detect')
+      barcodes = res.barcodes
+      engine = res.engine
+    } catch (e) {
+      if (debugOn) pushDebug(`detect timeout (${DETECT_TIMEOUT_MS}ms) — treated as miss`)
+    }
     const elapsedMs = performance.now() - t0
     detectMsRef.current.last = elapsedMs
     detectMsRef.current.avg = detectMsRef.current.avg ? detectMsRef.current.avg * 0.8 + elapsedMs * 0.2 : elapsedMs
@@ -545,7 +581,9 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
       // normal reads.
       if (consecutiveFailsRef.current >= HARD_PASS_AFTER && frameCountRef.current % HARD_PASS_EVERY === 0) {
         try {
-          const hard = await engineRef.current?.hardPass?.(surfaceRef.current)
+          // Watchdog, same as the base pass: a hung engine must not wedge the
+          // loop inside the "second look".
+          const hard = await withTimeout(engineRef.current?.hardPass?.(surfaceRef.current), DETECT_TIMEOUT_MS, 'hardPass')
           if (!isCurrent(session) || !mountedRef.current) return
           if (gen !== loopGenRef.current) return
           if (visibilityPausedRef.current || decisionPausedRef.current) return
@@ -714,7 +752,12 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
         const roi = computeRoi(v.videoWidth, v.videoHeight, { mode: roiModeRef.current, maxWidth: DETECT_MAX_WIDTH })
         if (!surfaceRef.current?.grab(v, roi)) break
         const t0 = performance.now()
-        await pool.detect(surfaceRef.current)
+        // Watchdog: profiling runs in the background, but a hung detect would
+        // pin engineLoadingRef forever and block the online retry. A timeout
+        // just ends profiling; the live loop is unaffected.
+        try {
+          await withTimeout(pool.detect(surfaceRef.current), DETECT_TIMEOUT_MS, 'profile detect')
+        } catch { break }
         frames.push(performance.now() - t0)
       }
       if (frames.length === 3 && isCurrent(session) && mountedRef.current) {
@@ -736,7 +779,14 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
     cancelFrame()
     if (refocusTimerRef.current) { clearInterval(refocusTimerRef.current); refocusTimerRef.current = null }
     if (rejectHintTimerRef.current) { clearTimeout(rejectHintTimerRef.current); rejectHintTimerRef.current = null }
-    channelRef.current?.close(); channelRef.current = null
+    // Close (and detach) the leader channel: close() drops the listener, but
+    // nulling onmessage first makes the release explicit even on runtimes
+    // with a quirky BroadcastChannel implementation.
+    if (channelRef.current) {
+      try { channelRef.current.onmessage = null } catch {}
+      try { channelRef.current.close() } catch {}
+      channelRef.current = null
+    }
     if (tapFocusCleanupRef.current) { try { tapFocusCleanupRef.current() } catch {} tapFocusCleanupRef.current = null }
     if (stopCamera) {
       // Abandon any open still in flight so its stream is stopped on arrival
@@ -833,6 +883,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
     setDebugLogs([])
     setLastRaw(null)
     setEngineLabel('')
+    setNeedsTapToPlay(false)
     startTimeRef.current = Date.now()
 
     // L-22: the error screen unmounts <video>, so on Retry this ref is null
@@ -880,6 +931,43 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
     }
     if (!opened?.stream) { if (isCurrent(session)) { setStatus('error'); setErrorMsg('Camera failed to start') } return }
 
+    // Post-grant rear-camera recovery: the open above ran while device labels
+    // were still empty (pre-grant enumerateDevices hides them), so
+    // pickRearDeviceId() inside openCamera could only return null and the pool
+    // fell back to facingMode — occasionally the FRONT camera. Labels exist
+    // now, so re-enumerate once per mount: if a rear camera is listed and it
+    // is not the track we got, swap to a stream pinned to it. The swap keeps
+    // the old stream until the pinned open succeeds, so a failed re-open can
+    // never leave the session streamless.
+    if (!opened.adopted && !opened.deviceId && !rearRecoveryRef.current) {
+      rearRecoveryRef.current = true
+      try {
+        const rearId = await pickRearDeviceId()
+        const currentId = opened.track?.getSettings?.()?.deviceId || null
+        if (rearId && currentId && rearId !== currentId && isCurrent(session) && mountedRef.current) {
+          if (debugOn) pushDebug('rear recovery: re-opening pinned to rear camera')
+          let repinned = null
+          try {
+            // Pinned open on purpose: the public openCamera() would adopt the
+            // live _active stream (the one we already hold) and hand it back,
+            // and the swap below would then stop our own working stream. The
+            // stream-identity guard is the second lock on that door.
+            repinned = await withTimeout(openPinnedCamera(rearId, { debug: debugOn }), CAMERA_INIT_TIMEOUT, 'Camera')
+          } catch { /* keep the working facingMode stream */ }
+          if (repinned?.stream && repinned.stream !== opened.stream && isCurrent(session) && mountedRef.current) {
+            stopStream(opened.stream)
+            opened = repinned
+          } else if (repinned?.stream && repinned.stream !== opened.stream) {
+            // Pinned open succeeded but the session moved on: release the
+            // spare. The identity check is load-bearing — the spare must never
+            // be the working stream (a platform deduping getUserMedia onto one
+            // object), or this would kill the live preview it just saved.
+            stopStream(repinned.stream)
+          }
+        }
+      } catch { /* keep the working stream */ }
+    }
+
     // A stale session must not touch the video element, React state, or a
     // stream a newer session has adopted. It only reclaims its own stream when
     // nothing is left alive to own it (a real unmount).
@@ -899,7 +987,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
     video.srcObject = stream
     try {
       await video.play()
-    } catch {
+    } catch (err) {
       if (!isCurrent(session)) { if (!mountedRef.current) stopStream(stream); return }
       // V8: a rejected play() leaves the track live with a black preview and
       // the camera LED on — release the stream through the teardown path
@@ -908,6 +996,15 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
       streamRef.current = null
       trackRef.current = null
       try { video.srcObject = null } catch {}
+      // Autoplay policy (NotAllowedError): the browser wants a user gesture,
+      // not a bug report. Offer a one-tap overlay whose tap re-runs
+      // startScanner INSIDE the gesture, so play() is allowed then.
+      if (err?.name === 'NotAllowedError' && isCurrent(session) && mountedRef.current) {
+        if (debugOn) pushDebug('play() blocked by autoplay policy — waiting for tap')
+        setNeedsTapToPlay(true)
+        setStatus('ready')
+        return
+      }
       setStatus('error'); setErrorMsg('Could not start video playback — tap Retry')
       return
     }
@@ -1030,9 +1127,11 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [cancelFrame, detectLoop, startScanner, isCurrent])
 
-  // Offline engine retry: the ZXing chunk is lazily imported, so an uncached
-  // first load with no network leaves a live preview that can never decode —
-  // and nothing re-ran ensureEngines on reconnect. Retry once per reconnect.
+  // Offline engine retry: both engines are bundled (ZXing is statically
+  // imported, native needs no network), so there is no lazy chunk to miss on
+  // a cold offline load. This listener stays as the backstop for the only
+  // remaining network-sensitive failure: pool init throwing on BOTH engines
+  // while offline. Retry once per reconnect.
   useEffect(() => {
     const onOnline = () => {
       if (!mountedRef.current) return
@@ -1114,6 +1213,19 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
         </div>
       )}
 
+      {/* Autoplay-policy fallback: the browser blocked video.play() without a
+          user gesture. This tap IS the gesture — the re-run startScanner's
+          play() is allowed inside it. */}
+      {needsTapToPlay && (
+        <button
+          onClick={() => { setNeedsTapToPlay(false); startScanner() }}
+          style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', background: 'rgba(0,0,0,0.65)', color: '#fff', fontWeight: 700, fontSize: '1rem', border: 'none', cursor: 'pointer' }}
+        >
+          <span style={{ fontSize: '2rem' }}>📷</span>
+          Tap to start camera
+        </button>
+      )}
+
       {tapFocusActive && (
         <div style={{
           position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
@@ -1132,6 +1244,7 @@ const BarcodeScanner = forwardRef(function BarcodeScanner({ onScan, debug = fals
           {ENGINE_LABELS[engineLabel] || engineLabel || '…'} {fps ? `${fps} fps` : ''}
         </span>
         {platform.isIOS && <span className="pill" style={{ background: 'rgba(16,185,129,0.9)', color: '#fff', fontSize: '0.62rem' }}>iOS</span>}
+        {isIosStandalone && <span className="pill" style={{ background: 'rgba(245,158,11,0.95)', color: '#fff', fontSize: '0.62rem' }}>Home-screen app: black preview? Open in Safari</span>}
         {lastRaw && <span className="pill" style={{ background: 'rgba(59,130,246,0.9)', color: '#fff', fontSize: '0.62rem' }}>{lastRaw}</span>}
       </div>
 

@@ -22,13 +22,31 @@
  *    and TRY_HARDER on the very first frame (decoding every symbology the
  *    library ships while Native stayed tier-filtered).
  *  - Empty-result handoff: an engine that reliably finds NOTHING (tilted /
- *    low-res badges make Native return [] without throwing) no longer pins
- *    the pool forever — after a run of clean misses it hands off to the
- *    other ready engine exactly once, mirroring fallback()'s anti-flapping.
+ *    low-res badges make Native return [] without throwing — and a Chromium
+ *    build whose Play-Services vision backend is not operational returns []
+ *    for EVERY frame) no longer pins the pool forever — after a run of clean
+ *    misses it hands off to the other ready engine exactly once, mirroring
+ *    fallback()'s anti-flapping.
  *  - hardPass(surface): the "hard path" second look — every ready engine,
  *    normal, inverted, and rotated luminance, merged + deduped, never throws.
+ *
+ * Engine-selection doctrine (cross-device):
+ *  - Native first ONLY when it proves itself: presence in window is not
+ *    enough (the object can exist while the OS backend is absent — macOS
+ *    without the bundled lib, Android without operational Play Services
+ *    vision). initNative() therefore probes getSupportedFormats() under a
+ *    timeout and filters the tier list down to usable symbologies; an empty
+ *    usable set, a hanging probe, or a constructor throw all mean "no native".
+ *  - The empty-result handoff is the second gate: a native that probes fine
+ *    but decodes nothing (dead backend) is demoted after `emptyHandoffAfter`
+ *    consecutive clean misses and ZXing takes over automatically.
+ *  - ZXing is statically imported (top of this module), never lazily fetched:
+ *    the fallback switch is instant and works fully offline — no network
+ *    chunk is ever needed mid-scan. iOS Safari (no web-native decoder on any
+ *    version) therefore runs ZXing from the first frame with zero load delay.
  */
-import { rgbaToGray, rotateGray, SCAN_ROTATIONS } from '../../lib/scannerUtils'
+import * as zxStatic from '@zxing/library'
+import { rgbaToGray, rotateGray, SCAN_ROTATIONS, withTimeout } from '../../lib/scannerUtils'
 import { BASE_1D_FORMATS, EXTENDED_1D_FORMATS, HARD_PATH_2D_FORMATS } from '../../lib/deviceCapabilities'
 
 /**
@@ -100,13 +118,23 @@ const invertImageData = (imageData) => {
  * jsdom has no 2d context, so a test surface yields null and the caller skips
  * the inverted native pass rather than throwing. Production always has one.
  *
+ * One module-level scratch canvas is reused across calls (resized only when
+ * the frame size changes): the hard path runs every ~10 frames and allocating
+ * a canvas per call stalls low-end phones in GC.
+ *
  * @param {{data: Uint8ClampedArray, width: number, height: number}} imageData
  * @returns {HTMLCanvasElement|null}
  */
+let _invertScratch = null
+export const _resetInvertScratchForTests = () => { _invertScratch = null }
 const invertCanvas = (imageData) => {
   try {
     const inv = invertImageData(imageData)
-    const c = document.createElement('canvas')
+    let c = _invertScratch
+    if (!c) {
+      c = document.createElement('canvas')
+      _invertScratch = c
+    }
     c.width = inv.width
     c.height = inv.height
     const ctx = c.getContext && c.getContext('2d')
@@ -188,10 +216,22 @@ export function createEnginePool(debug, opts = {}) {
     return engine.detector.detect(canvas)
   }
 
+  /**
+   * Probe-gated native init: presence of `window.BarcodeDetector` is NOT
+   * enough — the object can exist while the OS backend is absent (macOS
+   * without the bundled detector, Android with non-operational Play Services
+   * vision). We therefore require a live getSupportedFormats() answer (under
+   * a timeout so a hanging platform probe can never wedge init) AND at least
+   * one usable symbology before marking native ready.
+   */
   const initNative = async () => {
     if (!('BarcodeDetector' in window)) return false
     try {
-      const fmts = await window.BarcodeDetector.getSupportedFormats()
+      const fmts = await withTimeout(
+        window.BarcodeDetector.getSupportedFormats(),
+        3000,
+        'Native format probe',
+      )
       // Never ask native for a format it doesn't support — filter the tier
       // list down to what this build can actually decode.
       const usable = formats.filter(f => fmts.includes(f))
@@ -210,7 +250,12 @@ export function createEnginePool(debug, opts = {}) {
       // naturalWidth/videoWidth and replays a capture pipeline), which is wrong
       // for a canvas ROI and is much heavier per frame. MultiFormatReader +
       // HybridBinarizer over the ROI's ImageData is the fast path we want.
-      const zx = await import('@zxing/library')
+      //
+      // The module is STATICALLY imported (top of file), never lazily fetched:
+      // the fallback switch is instant and works fully offline — no network
+      // chunk is ever needed mid-scan. A static import also means a missing
+      // bundle fails here, deterministically, instead of mid-session.
+      const zx = zxStatic
       const zxFormats = toZxingFormats(zx, formats)
       if (!zxFormats.length) return false
 
