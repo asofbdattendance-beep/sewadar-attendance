@@ -2246,3 +2246,30 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .chip-dot.major { background:var(--purple); }
 .chip-dot.home { background:var(--green); }
 
+/* ═══ Ported scanner engine (from sewadar-deployment-portal) ═══
+   Classes rendered by src/components/scanner/BarcodeScanner.jsx.
+   `.spin` + `@keyframes spin` already exist above and are reused here. */
+.pill {
+  display:inline-flex; align-items:center; gap:0.3rem;
+  padding:0.18rem 0.55rem; border-radius:999px;
+  font-size:0.7rem; font-weight:700; letter-spacing:0.02em;
+}
+.scanner-init-spinner {
+  width:22px; height:22px; border:3px solid rgba(255,255,255,0.35);
+  border-top-color:#fff; border-radius:50%;
+  animation:spin 0.6s linear infinite; flex-shrink:0;
+}
+@keyframes tapFocusPulse {
+  0% { opacity:1; transform:translate(-50%,-50%) scale(1); }
+  100% { opacity:0; transform:translate(-50%,-50%) scale(2); }
+}
+@media (max-width: 768px) {
+  /* Dynamic viewport: the preview no longer jumps when browser chrome
+     collapses mid-scan. Unsupported browsers ignore dvh and keep 52vh. */
+  .scanner-video { height:clamp(220px, 46dvh, 420px) !important; touch-action:manipulation; }
+  .scanner-torch { min-height:44px; min-width:44px; touch-action:manipulation; }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .scanner-video { height:clamp(150px, 44dvh, 240px) !important; }
+}
+
