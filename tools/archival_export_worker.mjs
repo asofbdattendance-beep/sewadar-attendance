@@ -33,83 +33,40 @@
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-export const CSV_EOL = '\r\n';
+// CSV writing lives in src/lib/csv.js — one implementation for the browser, the
+// SQL mirror and this worker. Re-exported under the names this CLI already used
+// so the queue/fetch code below and the test suite are unchanged.
+import {
+  ARCHIVAL_COLUMNS,
+  ARCHIVAL_HEADERS,
+  ARCHIVAL_SELECT,
+  CSV_EOL,
+  archivalFilename,
+  buildCsv,
+  csvEscapeCell,
+  csvHeader,
+  toDDMMYYYY,
+} from '../src/lib/csv.js';
+
+export {
+  ARCHIVAL_COLUMNS,
+  ARCHIVAL_HEADERS,
+  ARCHIVAL_SELECT,
+  CSV_EOL,
+  csvEscapeCell,
+  csvHeader,
+  toDDMMYYYY,
+};
+
 export const DUTY_TYPES = ['D', 'JMC', 'JO', 'V', 'JH'];
+export const rowsToCsv = buildCsv;
 
-// Column keys are the PostgREST column names; headers are the shipped header
-// row. Order is pinned to the RPC's SELECT order in sql/archival_download_rpc.sql.
-export const ARCHIVAL_COLUMNS = [
-  { key: 'sewadar_name', header: 'Sewadar Name' },
-  { key: 'badge_number', header: 'Badge Number' },
-  { key: 'father_husband_name', header: 'Father/Husband Name' },
-  { key: 'gender', header: 'gender' },
-  { key: 'age', header: 'age' },
-  { key: 'department_name', header: 'Department Name' },
-  { key: 'department_id', header: 'Department Id' },
-  { key: 'area_name', header: 'Area Name' },
-  { key: 'centre_name', header: 'Centre Name' },
-  { key: 'status', header: 'Status' },
-  { key: 'duty_type', header: 'Duty Type' },
-  { key: 'duty_date', header: 'Duty Date' },
-  { key: 'deployed_department', header: 'Deployed Department' },
-  { key: 'deployed_centre', header: 'Deployed Centre' },
-];
-
-export const ARCHIVAL_HEADERS = ARCHIVAL_COLUMNS.map((c) => c.header);
-export const ARCHIVAL_SELECT = ARCHIVAL_COLUMNS.map((c) => c.key).join(',');
-
-// A cell that STARTS with one of these is interpreted as a formula by Excel /
-// Sheets / LibreOffice. Mirrors `t ~ '^[=+@\t\r-]'` in sql/archival_download_rpc.sql;
-// the test suite reads that file and fails if the two drift apart.
-const DANGEROUS_LEAD = /^[=+@\t\r-]/;
-const NEEDS_QUOTE = /[",\n\r]/;
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]{1,120}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Raised when a job row carries an empty centre set. See resolveJobScope.
 export const EMPTY_SCOPE_ERROR =
   'job has an empty centre_scope — refusing to export the whole table';
-
-// ---------------------------------------------------------------------------
-// CSV
-// ---------------------------------------------------------------------------
-
-/** Escape one cell exactly as public.csv_field() does. */
-export function csvEscapeCell(value) {
-  if (value === null || value === undefined) return '';
-  let s = String(value);
-  if (s === '') return '';
-  if (DANGEROUS_LEAD.test(s)) s = `'${s}`;
-  if (NEEDS_QUOTE.test(s)) s = `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-export function csvHeader() {
-  return ARCHIVAL_HEADERS.join(',');
-}
-
-/** ISO date -> DD-MM-YYYY, matching the source file and the RPC's to_char(). */
-export function toDDMMYYYY(value) {
-  if (value === null || value === undefined || value === '') return '';
-  const iso = String(value).slice(0, 10);
-  const parts = iso.split('-');
-  if (parts.length !== 3) return iso;
-  return parts.reverse().join('-');
-}
-
-/** Full CSV text for rows already fetched from PostgREST. */
-export function rowsToCsv(rows) {
-  const lines = [csvHeader()];
-  for (const row of rows || []) {
-    lines.push(
-      ARCHIVAL_COLUMNS.map((col) => {
-        const raw = row ? row[col.key] : null;
-        return csvEscapeCell(col.key === 'duty_date' ? toDDMMYYYY(raw) : raw);
-      }).join(','),
-    );
-  }
-  return lines.join(CSV_EOL);
-}
 
 // ---------------------------------------------------------------------------
 // Scope fingerprint / paths
@@ -140,11 +97,9 @@ export function isSafePathSegment(seg) {
   return SAFE_SEGMENT.test(seg);
 }
 
-/** Filename shown to the user; mirrors archivalFileName() in ReportsPage.jsx. */
-export function artifactFilename({ dutyType = null, dateFrom = null, dateTo = null } = {}) {
-  const label = dutyType ? `archival_${dutyType}` : 'archival_all';
-  const range = dateFrom || dateTo ? `_${dateFrom || 'start'}_to_${dateTo || 'end'}` : '';
-  return `${label}${range}.csv`;
+/** Filename shown to the user — the same rule the browser download uses. */
+export function artifactFilename(options = {}) {
+  return archivalFilename(options);
 }
 
 /**
