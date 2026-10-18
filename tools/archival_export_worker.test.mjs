@@ -26,6 +26,8 @@ import {
   buildObjectPath,
   artifactFilename,
   parseArgs,
+  EMPTY_SCOPE_ERROR,
+  resolveJobScope,
 } from './archival_export_worker.mjs';
 
 const md5 = (s) => createHash('md5').update(s).digest('hex');
@@ -372,4 +374,34 @@ test('drift: JS scope fingerprint matches the SQL sort/filter rules', () => {
   assert.match(sql, /md5\(/, 'SQL fingerprint must use md5');
   // The empty-set answer is '' on both sides, never md5('').
   assert.notEqual(scopeFingerprint([]), md5(''));
+});
+
+// --- resolveJobScope: NULL scope means whole table, [] means refuse ---------
+// The request Edge Function writes NULL for an unrestricted caller; an empty
+// array is never legitimate and must not be read as "everything".
+
+test('resolveJobScope: NULL centre_scope is a legitimate whole-table job', () => {
+  assert.deepEqual(resolveJobScope({ centre_scope: null }), { scope: 'global', centreScope: null });
+});
+
+test('resolveJobScope: a missing centre_scope column also reads as whole-table', () => {
+  assert.deepEqual(resolveJobScope({}), { scope: 'global', centreScope: null });
+  assert.deepEqual(resolveJobScope(undefined), { scope: 'global', centreScope: null });
+});
+
+test('resolveJobScope: a non-empty centre set is a centre-scoped job', () => {
+  assert.deepEqual(resolveJobScope({ centre_scope: ['A', 'B'] }), { scope: 'centre', centreScope: ['A', 'B'] });
+});
+
+test('resolveJobScope: an empty array is refused, never widened to everything', () => {
+  assert.throws(() => resolveJobScope({ centre_scope: [] }), { message: EMPTY_SCOPE_ERROR });
+});
+
+test('resolveJobScope: blank-only and non-string entries are refused too', () => {
+  assert.throws(() => resolveJobScope({ centre_scope: [null, ' ', ''] }), { message: EMPTY_SCOPE_ERROR });
+  assert.throws(() => resolveJobScope({ centre_scope: [42] }), { message: EMPTY_SCOPE_ERROR });
+});
+
+test('resolveJobScope: blanks mixed with real centres are dropped, not fatal', () => {
+  assert.deepEqual(resolveJobScope({ centre_scope: ['A', ' ', null] }), { scope: 'centre', centreScope: ['A'] });
 });

@@ -66,6 +66,10 @@ const NEEDS_QUOTE = /[",\n\r]/;
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]{1,120}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// Raised when a job row carries an empty centre set. See resolveJobScope.
+export const EMPTY_SCOPE_ERROR =
+  'job has an empty centre_scope — refusing to export the whole table';
+
 // ---------------------------------------------------------------------------
 // CSV
 // ---------------------------------------------------------------------------
@@ -227,6 +231,28 @@ function resolveConfig(args) {
   return { url, key, bucket };
 }
 
+/**
+ * Decide a queued job's export scope from its `centre_scope` column.
+ *
+ * NULL is meaningful and different from '{}':
+ *   NULL / undefined -> whole table. The request Edge Function writes NULL only
+ *                       after resolving the caller as unrestricted (super_admin
+ *                       or aso), so a global, optionally date-filtered export on
+ *                       a queue row is legitimate.
+ *   [] / [null] / [' '] -> malformed or forged. Treating it as "whole table"
+ *                       would silently widen a centre-scoped request to every
+ *                       centre on the deployment, so refuse it instead.
+ */
+export function resolveJobScope(job) {
+  const raw = job?.centre_scope;
+  if (raw === null || raw === undefined) return { scope: 'global', centreScope: null };
+  const list = Array.isArray(raw)
+    ? raw.filter((c) => typeof c === 'string' && c.trim() !== '')
+    : [];
+  if (list.length === 0) throw new Error(EMPTY_SCOPE_ERROR);
+  return { scope: 'centre', centreScope: list };
+}
+
 const PAGE = 1000; // PostgREST default max-rows
 
 async function fetchAllRows(client, { dutyType = null, dateFrom = null, dateTo = null, centreScope = null }, onPage) {
@@ -353,16 +379,13 @@ async function runJobs(client, cfg, args) {
       .eq('id', job.id)
       .eq('status', 'queued');
     try {
-      const centreScope = Array.isArray(job.centre_scope) ? job.centre_scope : [];
-      if (centreScope.length === 0) {
-        throw new Error('job has an empty centre_scope — refusing to export the whole table');
-      }
+      const { scope, centreScope } = resolveJobScope(job);
       const meta = {
-        scope: 'centre',
+        scope,
         dutyType: job.duty_type,
         dateFrom: job.date_from,
         dateTo: job.date_to,
-        fingerprint: job.scope_fingerprint || scopeFingerprint(centreScope),
+        fingerprint: job.scope_fingerprint || scopeFingerprint(centreScope || []),
         centreScope,
       };
       const rows = await fetchAllRows(client, {

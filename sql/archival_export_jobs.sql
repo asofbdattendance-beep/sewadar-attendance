@@ -32,10 +32,11 @@
 --                              policies, so anon/authenticated read zero rows
 --                              even by accident; an explicit REVOKE removes the
 --                              default Supabase grant as well.
---   archival_export_jobs      : owner-scoped. A user may SELECT their own jobs
---                              and INSERT their own job; nothing else. status
---                              transitions are performed by the worker running
---                              as service_role (which bypasses RLS).
+--   archival_export_jobs      : owner-scoped READ. A user may SELECT their own
+--                              jobs and nothing else; every write (enqueue, status
+--                              transition) is performed by the request Edge
+--                              Function or the worker, both running as
+--                              service_role (which bypasses RLS).
 --
 -- HOW TO READ
 --   Each § section is ONE self-contained statement. Expected results are in
@@ -52,8 +53,14 @@
 --   SELECT policyname, cmd, roles, qual
 --     FROM pg_policies WHERE schemaname = 'public'
 --      AND tablename IN ('archival_export_jobs','archival_export_artifacts');
---   -- expect: exactly 2 rows, both on archival_export_jobs (SELECT, INSERT);
+--   -- expect: exactly 1 row: archival_jobs_select (SELECT, {authenticated});
 --   --         archival_export_artifacts has NO policies.
+--
+--   SELECT grantee, privilege_type
+--     FROM information_schema.role_table_grants
+--    WHERE table_schema = 'public' AND table_name = 'archival_export_jobs';
+--   -- expect: authenticated -> SELECT only (no INSERT/UPDATE/DELETE);
+--   --         service_role -> all.
 --
 --   SELECT public.archival_scope_fingerprint(ARRAY['B','A','A',NULL,'']);
 --   -- expect: '685d9b3124d3d6e4e6260e32506211d7'  ( = md5('A|B') )
@@ -154,7 +161,7 @@ CREATE TABLE IF NOT EXISTS public.archival_export_jobs (
 ALTER TABLE public.archival_export_jobs ENABLE ROW LEVEL SECURITY;
 
 COMMENT ON TABLE public.archival_export_jobs IS
-  'Async queue for archival CSV export jobs. Owner-scoped read/insert; worker (service_role) transitions status.';
+  'Async queue for archival CSV export jobs. Owner-scoped READ; the Edge Function enqueues and the worker (service_role) transitions status.';
 
 CREATE INDEX IF NOT EXISTS idx_archival_jobs_queue
   ON public.archival_export_jobs (status, created_at)
@@ -163,10 +170,21 @@ CREATE INDEX IF NOT EXISTS idx_archival_jobs_queue
 CREATE INDEX IF NOT EXISTS idx_archival_jobs_owner
   ON public.archival_export_jobs (requested_by, created_at DESC);
 
--- §3 — jobs RLS: owner-scoped, permission-gated ------------------------------
--- UPDATE/DELETE are deliberately absent: the worker owns status transitions and
--- runs as service_role (bypasses RLS). A user who could UPDATE their own job row
--- could forge status='ready' and a bogus artifact_path.
+-- §3 — jobs RLS: owner-scoped READ, service-role-only write -------------------
+-- SELECT is owner-scoped so a user can poll their own job's status.
+--
+-- INSERT, UPDATE and DELETE are deliberately absent, so RLS denies them to
+-- `authenticated` (no policy = no access):
+--   * INSERT — jobs are enqueued by the request-archival-export Edge Function
+--     with the service role, AFTER it has re-derived the caller's permission and
+--     their accessible centres. Letting a client insert its own job row would let
+--     it choose `centre_scope` (and therefore forge a wider export than it may
+--     read) and let it spam the heavy worker queue.
+--   * UPDATE — a user who could UPDATE their own row could forge status='ready'
+--     plus a bogus artifact_path.
+--   * DELETE — the worker owns the lifecycle; terminal rows are pruned by
+--     expires_at, not by the requester.
+-- The worker owns every status transition and runs as service_role.
 
 DROP POLICY IF EXISTS archival_jobs_select ON public.archival_export_jobs;
 CREATE POLICY archival_jobs_select ON public.archival_export_jobs
@@ -174,12 +192,9 @@ CREATE POLICY archival_jobs_select ON public.archival_export_jobs
   USING (requested_by = (SELECT auth.uid()) AND public.has_permission('allow_reports'));
 
 DROP POLICY IF EXISTS archival_jobs_insert ON public.archival_export_jobs;
-CREATE POLICY archival_jobs_insert ON public.archival_export_jobs
-  FOR INSERT TO authenticated
-  WITH CHECK (requested_by = (SELECT auth.uid()) AND public.has_permission('allow_reports'));
 
 REVOKE ALL ON public.archival_export_jobs FROM anon;
-GRANT SELECT, INSERT ON public.archival_export_jobs TO authenticated;
+GRANT SELECT ON public.archival_export_jobs TO authenticated;
 GRANT ALL ON public.archival_export_jobs TO service_role;
 
 -- §4 — scope fingerprint helper ----------------------------------------------
