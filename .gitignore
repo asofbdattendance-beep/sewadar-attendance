@@ -12,6 +12,8 @@ AGENTS.md
 Dump - Excel Sheets
 scripts
 .env.tmp
+.env.tools
+.superpowers/
 validation/Input.xlsx
 validation/validation-report.sql
 validation/validation-report.xlsx
