@@ -406,3 +406,132 @@ into the archive under today's date, marking them present today.
 - 08-30 count = 2254, all duty_type D.
 - Spot-check (badge FB5971GA0024) shows identical 08-23 and 08-30 rows, date-only change.
 - Re-run inserts 0 (idempotent). No existing rows modified/deleted.
+
+---
+
+## 11. Archival export — fast, uncapped downloads (branch: feat/archival-export-artifacts)
+
+### Why this exists
+The old download path had one real route: the browser paged `archival_attendance`
+itself (`range()` in 5,000-row batches) with a hard `MAX_ROWS = 650000` cap. The
+live table is **615,724 rows** (41 centres, 2024-01-01 → 2026-08-30, table +
+indexes ≈ 135 MB), so the cap was ~34k rows from silently truncating, and every
+download moved all rows through the user's tab. A server-side CSV RPC existed but
+was never referenced in this file's deploy order, had no `REVOKE` (so `anon` held
+`EXECUTE`), re-sorted the whole table per 100k-row `OFFSET` chunk, and quoted CSV
+without neutralising spreadsheet formula prefixes.
+
+### Three strategies, in order (`src/lib/archivalExport.js`)
+1. **`artifact`** — a pre-built CSV in a private Storage bucket, returned as a
+   short-lived signed URL. Only used for a *matching, still-fresh, in-scope*
+   artifact. `request-archival-export` resolves the caller's scope server-side
+   and will also serve a centre-scoped artifact when its `centre_scope` is a
+   subset of the caller's accessible centres.
+2. **`rpc`** — `get_archival_csv_chunk(...)`, Postgres builds the CSV chunk by
+   chunk (default 100k rows/chunk). Still O(rows) server work, but no per-row
+   round trip and no browser memory ceiling.
+3. **`client`** — the old browser pager, kept as a bounded last resort (cap
+   unchanged at 650,000 so behaviour on an undeployed project is identical).
+   Hitting the cap now returns `truncated: true` with a message the page shows
+   **and** alerts on — a partial file that looks complete is the failure this
+   work exists to prevent. Nothing is ever truncated silently.
+
+The page surfaces which strategy ran and to which file, via the
+`.archival-notice` status line; `status:'queued'` is surfaced as
+"no prepared file yet — a job was queued (`<jobId>`), run the worker, then try
+again".
+
+### Files
+- `sql/verify_archival_export.sql` — **read-only** baseline diagnostics (row/duty
+  counts, sizes, RLS + effective `EXECUTE`, `relrowsecurity`). Run before changing
+  anything so you have a before/after. Contains no write statement by design.
+- `sql/archival_download_rpc.sql` — hardened `csv_field` (RFC4180 quoting **plus**
+  a `^[=+@\t\r-]` formula guard), `get_archival_csv_chunk` (bounded `p_limit` ≤
+  100k, rejects negative `p_chunk` and reversed date ranges, `id` tie-breaker so
+  chunk boundaries are stable), a supporting index
+  `idx_archival_export_order (duty_date DESC, sewadar_name ASC, id ASC)`, and the
+  grant line: `REVOKE ALL … FROM PUBLIC` then `GRANT EXECUTE … TO authenticated,
+  service_role` — **no `anon`**.
+- `sql/archival_export_jobs.sql` — `archival_export_artifacts` (artifact metadata;
+  RLS on with **no** policy, `service_role` only), `archival_export_jobs`
+  (owner-scoped **read**; every write is `service_role`), and
+  `archival_scope_fingerprint(text[])` — `md5` of the sorted, de-duplicated centre
+  list joined with `|` (`''` for an empty list), using `COLLATE "C"` so Postgres
+  orders the same way JS `Array#sort()` does.
+- `tools/archival_export_worker.mjs` — `service_role`-only CLI.
+  `--snapshots` rebuilds the global + per-duty-type CSVs; `--jobs` drains queued
+  jobs at most `--limit` (default 25) per run. Credentials come from the
+  environment only (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+  `ARCHIVAL_EXPORT_BUCKET` or `--bucket`) — **never** from `scripts/.env`, which
+  is a load-time-only file. `--dry-run` validates args and env without touching
+  the network. A job with an empty `centre_scope` is refused rather than exported
+  as the whole table; `centre_scope IS NULL` means global by design (only the
+  endpoint writes NULL, and only for super_admin/aso).
+- `supabase/functions/request-archival-export/index.ts` — the only thing that ever
+  holds the service key. Verifies the caller's JWT, checks
+  `has_permission('allow_reports')`, resolves the centre scope server-side from
+  `get_user_accessible_centres()` (a client-supplied scope is never read), signs
+  the artifact URL with `{ download: filename }`, or enqueues a job.
+- `src/lib/csv.js` — **the** single CSV writer (escaping, header, filenames,
+  `buildCsv`), shared by the browser, the worker and the drift test that reads
+  `sql/archival_download_rpc.sql` and fails if the SQL guard class and the JS
+  regex ever disagree. `src/lib/archivalExport.js` orchestrates the strategies.
+- Tests: `src/lib/csv.test.js`, `src/lib/archivalExport.test.js`,
+  `src/pages/ReportsPage.archival.test.jsx`, `tools/archival_export_worker.test.mjs`,
+  `tools/edge_functions.test.mjs` (`node --test tools/`).
+
+### Deploy order
+1. `sql/verify_archival_export.sql` (read-only — note the baseline numbers).
+2. `sql/archival_download_rpc.sql`, then `sql/archival_export_jobs.sql`, in the
+   Supabase SQL Editor. Both are idempotent; re-run either safely.
+3. Create a **private** Storage bucket (default name `archival-exports`). No
+   public access — every download is a signed URL.
+4. Run the worker once with the service key in its environment:
+   `node tools/archival_export_worker.mjs --snapshots` (add `--dry-run` first to
+   see what it would do). This is what makes the fast path exist at all.
+5. Deploy `request-archival-export` as an Edge Function; set
+   `ARCHIVAL_EXPORT_BUCKET`, and optionally `ARCHIVAL_EXPORT_ALLOWED_ORIGIN` and
+   `ARCHIVAL_EXPORT_URL_TTL_SECONDS` (clamped 60–86400).
+6. `npm run build` → deploy `dist/`. Optionally set
+   `VITE_ARCHIVAL_EXPORT_ENDPOINT`; without it the page derives
+   `${VITE_SUPABASE_URL}/functions/v1/request-archival-export`.
+7. Schedule the worker (`--jobs`) if you want queued exports to drain without a
+   human running it.
+
+**Until 1–4 are done the feature is inert but not broken:** every request falls
+through to the RPC, then to the browser fallback, exactly as before.
+
+### Verify after deploy
+- `sql/verify_archival_export.sql` §4b: `anon_can_execute = false`,
+  `authenticated_can_execute = true`, `acl_is_open_to_public = false`.
+- §3a/§3b: `archival_attendance` has exactly the `archival_read` SELECT policy;
+  `archival_export_artifacts` has **no** policy and no `authenticated` grant;
+  `archival_export_jobs` has exactly **one** policy (`archival_jobs_select`) and
+  `authenticated` holds `SELECT` only.
+- The fingerprint examples in `sql/archival_export_jobs.sql`'s header return
+  exactly the documented md5 values.
+- A combined download as ASO returns `strategy: 'artifact'` and a
+  `Content-Disposition: attachment` response; as a centre-scoped user it returns
+  only their centre tree.
+- A request with a duty type that has no snapshot yet returns `status:'queued'`,
+  and after `--jobs` the same request returns the artifact.
+- `npm test`, `node --test tools/`, `npm run build` green.
+
+### Retention / PII (needs a human decision)
+Artifacts are CSVs of personal data (name, badge, father/husband name, gender,
+age, centre) sitting in Storage. The worker stamps `expires_at` at **7 days** and
+uploads each rebuild to a new versioned path (never overwriting — a CDN-cached
+stale object would be served otherwise), but it does not delete anything: nothing
+here removes objects or expires rows automatically. Decide and then enforce a
+retention job (delete expired objects + set `is_current = false`) before this is
+used at scale. A signed URL is a bearer token: it stays valid until it expires
+regardless of any later permission change, so keep the TTL short and re-check
+authorization on every new request.
+
+### Known gaps
+- No runtime numbers were captured: `pg_stat_statements` was not readable with
+  the read-only account, so the `OFFSET`-re-sorting cost is a static hypothesis,
+  not a measurement. §5 of the verifier says how to capture the before/after.
+- Nothing in this section has been executed against Supabase — the SQL files are
+  authored and verified by static read only; the tests cover the JS/SQL contract,
+  not the deployed database.

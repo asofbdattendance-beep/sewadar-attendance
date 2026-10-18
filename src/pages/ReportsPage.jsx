@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useLocation } from 'react-router-dom'
 import { supabase, ROLES, formatDateIndian, formatTime12Hour, getLocalDate } from '../lib/supabase'
+import { csvEscapeCell, downloadBlob, downloadUrl } from '../lib/csv'
+import { requestArchivalArtifact, runArchivalExport } from '../lib/archivalExport'
 import { useAuth } from '../context/AuthContext'
 import { 
   ChevronDown, ChevronRight, Calendar, Download, FileSpreadsheet, FileText, 
@@ -998,15 +1000,11 @@ export default function ReportsPage() {
   const [archivalTo, setArchivalTo] = useState('')
   const [downloadingArchive, setDownloadingArchive] = useState(null) // 'combined' | 'filtered'
   const [archivalProgress, setArchivalProgress] = useState('')
+  const [archivalNotice, setArchivalNotice] = useState('')
 
-  const escapeCsv = (val) => {
-    if (val === null || val === undefined) return ''
-    const str = String(val)
-    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-      return `"${str.replace(/"/g, '""')}"`
-    }
-    return str
-  }
+  // CSV escaping lives in src/lib/csv.js — one implementation for every export
+  // on this page (and for the download worker), so the escaping rule can only
+  // drift in one place.
 
   const downloadDailyCSV = async () => {
     if (!dailyFrom || !dailyTo) { alert('Please select both From and To dates'); return }
@@ -1054,7 +1052,7 @@ export default function ReportsPage() {
         s.status || '',
       ])
 
-      const csv = [headers.join(','), ...rows.map(r => r.map(escapeCsv).join(','))].join('\n')
+      const csv = [headers.join(','), ...rows.map(r => r.map(csvEscapeCell).join(','))].join('\n')
       downloadFile(csv, `daily_attendance_${dailyFrom}_to_${dailyTo}.csv`, 'text/csv')
     } catch (err) {
       console.error('Download error:', err)
@@ -1136,7 +1134,7 @@ export default function ReportsPage() {
         })
       }
 
-      const csv = [headers.join(','), ...rows.map(r => r.map(escapeCsv).join(','))].join('\n')
+      const csv = [headers.join(','), ...rows.map(r => r.map(csvEscapeCell).join(','))].join('\n')
       downloadFile(csv, `jatha_attendance_${jathaFrom}_to_${jathaTo}.csv`, 'text/csv')
     } catch (err) {
       console.error('Download error:', err)
@@ -1146,11 +1144,10 @@ export default function ReportsPage() {
   }
 
   // --- Archival Reports (archival_attendance table) ---
-  const ARCHIVAL_HEADERS = [
-    'Sewadar Name', 'Badge Number', 'Father/Husband Name', 'gender', 'age',
-    'Department Name', 'Department Id', 'Area Name', 'Centre Name', 'Status',
-    'Duty Type', 'Duty Date', 'Deployed Department', 'Deployed Centre',
-  ]
+  // How an archive is produced lives in src/lib/archivalExport.js:
+  // signed artifact → chunked RPC → bounded browser fallback, in that order.
+  // This page maps UI state onto it and reports what actually happened — it no
+  // longer builds the CSV itself, and it never silently ships a partial file.
   const ARCHIVAL_DUTY_LABELS = {
     D: 'Daily Duty',
     JMC: 'Jatha Major Centre',
@@ -1158,141 +1155,87 @@ export default function ReportsPage() {
     V: 'Visit',
     JH: 'Jatha Home',
   }
-  // duty_date arrives as ISO "YYYY-MM-DD" — output DD-MM-YYYY to match the source file
-  const toDDMMYYYY = (iso) => (iso ? String(iso).split('-').reverse().join('-') : '')
 
-  const downloadBlob = (blob, filename) => {
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 5000)
-  }
-
-  const archivalFileName = (isFiltered, type) => {
-    const label = isFiltered ? `archival_${type}` : 'archival_all'
-    const range = (archivalFrom || archivalTo) ? `_${archivalFrom || 'start'}_to_${archivalTo || 'end'}` : ''
-    return `${label}${range}.csv`
-  }
-
-  // Fast path: build the CSV in Postgres via the chunked RPC. Returns a Blob,
-  // or null if the RPC is not deployed / returns nothing (caller falls back).
-  const downloadViaRpc = async ({ onlyType }) => {
-    const CHUNK = 100000
-    const parts = []
-    let chunk = 0
-    let dataRowsSeen = 0
-    while (true) {
-      setArchivalProgress(chunk === 0 ? 'Preparing archival export…' : `Downloading chunk ${chunk + 1}…`)
-      const { data, error } = await supabase.rpc('get_archival_csv_chunk', {
-        p_chunk: chunk,
-        p_duty_type: onlyType || null,
-        p_from: archivalFrom || null,
-        p_to: archivalTo || null,
-        p_limit: CHUNK,
-      })
-      if (error) throw error // -> fall back to client
-      if (!data || data === '') break // empty string = no more rows
-      setArchivalProgress(`Processing chunk ${chunk + 1}…`)
-      const isHeaderChunk = chunk === 0
-      const partText = isHeaderChunk ? data : `\n${data}`
-      // Count data rows ~ occurrences of line breaks (coarse but enough here)
-      dataRowsSeen += partText.split('\n').length - (isHeaderChunk ? 1 : 0)
-      parts.push(new Blob([partText], { type: 'text/csv' }))
-      // A full chunk holds ~CHUNK data rows. If this chunk had fewer, it's the last one.
-      const dataLen = isHeaderChunk ? data.split('\n').length - 1 : data.split('\n').length
-      if (dataLen < CHUNK) break
-      chunk += 1
-    }
-    if (dataRowsSeen === 0) return null
-    setArchivalProgress('Finalising file…')
-    return new Blob(parts, { type: 'text/csv' })
-  }
-
-  // Fallback path: client-side paginated fetch. Uses ORDER BY id for
-  // deterministic pagination and joins pages with a single newline to avoid
-  // merged rows at page boundaries. The inner field join is ',' (CSV), row
-  // join is '\r\n'. MAX_ROWS prevents browser OOM - does not truncate valid data (613k < 650k).
-  const downloadViaClient = async ({ onlyType }) => {
-    const PAGE = 5000
-    const MAX_ROWS = 650000
-    const parts = []
-    let start = 0
-    let rowsAny = false
-    let totalFetched = 0
-    while (totalFetched < MAX_ROWS) {
-      setArchivalProgress(start === 0 ? 'Fetching archival rows…' : `Fetched ${totalFetched.toLocaleString()} rows…`)
-      let query = supabase
-        .from('archival_attendance')
-        .select('sewadar_name,badge_number,father_husband_name,gender,age,department_name,department_id,area_name,centre_name,status,duty_type,duty_date,deployed_department,deployed_centre')
-        .order('id', { ascending: true })
-        .range(start, start + PAGE - 1)
-
-      if (onlyType) query = query.eq('duty_type', onlyType)
-      if (archivalFrom) query = query.gte('duty_date', archivalFrom)
-      if (archivalTo) query = query.lte('duty_date', archivalTo)
-
-      const { data: rows, error } = await query
-      if (error) throw error
-
-      if (!rows || rows.length === 0) break
-      rowsAny = true
-      totalFetched += rows.length
-
-      const pageLines = rows.map(r => [
-        r.sewadar_name, r.badge_number, r.father_husband_name, r.gender, r.age,
-        r.department_name, r.department_id, r.area_name, r.centre_name, r.status,
-        r.duty_type, toDDMMYYYY(r.duty_date), r.deployed_department, r.deployed_centre,
-      ].map(escapeCsv).join(',')).join('\r\n')
-      parts.push(pageLines)
-
-      if (rows.length < PAGE) break
-      start += PAGE
-    }
-    if (!rowsAny) return null
-    setArchivalProgress(`Building CSV — ${totalFetched.toLocaleString()} rows…`)
-    return new Blob([`${ARCHIVAL_HEADERS.join(',')}\r\n` + parts.join('\r\n')], { type: 'text/csv' })
-  }
+  const ARCHIVAL_ENDPOINT =
+    import.meta.env.VITE_ARCHIVAL_EXPORT_ENDPOINT ||
+    (import.meta.env.VITE_SUPABASE_URL
+      ? `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/request-archival-export`
+      : '')
 
   const downloadArchivalCSV = async (scope) => {
     const isFiltered = scope === 'filtered'
-    const type = isFiltered ? archivalDutyType : ''
-    if (isFiltered && !type) { alert('Please select a duty type for the filtered download'); return }
-    if (archivalFrom && archivalTo && archivalFrom > archivalTo) { alert('From date cannot be after To date'); return }
-
     setDownloadingArchive(isFiltered ? 'filtered' : 'combined')
+    setArchivalNotice('')
     setArchivalProgress('Starting…')
-    const filename = archivalFileName(isFiltered, type)
+
     try {
-      const opts = { onlyType: type }
-      let blob = null
-      try {
-        blob = await downloadViaRpc(opts) // fast path (requires deployed RPC)
-      } catch (rpcErr) {
-        console.warn('Archival RPC unavailable, using client download:', rpcErr?.message || rpcErr)
+      const result = await runArchivalExport({
+        client: supabase,
+        request: {
+          dutyType: isFiltered ? archivalDutyType : '',
+          dateFrom: archivalFrom,
+          dateTo: archivalTo,
+        },
+        requireDutyType: isFiltered,
+        fetchArtifact: (request) => requestArchivalArtifact(supabase, request, {
+          endpoint: ARCHIVAL_ENDPOINT,
+          anonKey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        }),
+        onProgress: ({ strategy, rows }) => {
+          if (strategy === 'rpc') {
+            setArchivalProgress(rows ? `Preparing export — ${rows.toLocaleString()} rows…` : 'Preparing archival export…')
+          } else if (strategy === 'client') {
+            setArchivalProgress(`Fetched ${rows.toLocaleString()} rows…`)
+          }
+        },
+      })
+
+      if (result.notices?.length) console.warn('Archival export:', result.notices.join(' | '))
+
+      switch (result.status) {
+        case 'ready':
+          setArchivalProgress('Saving file…')
+          if (result.strategy === 'artifact') {
+            downloadUrl(result.url, result.filename)
+            setArchivalNotice(
+              `Downloaded${result.rowCount ? ` ${result.rowCount.toLocaleString()} rows` : ''} from the prepared snapshot ${result.filename}.`,
+            )
+          } else {
+            downloadBlob(result.blob, result.filename)
+            if (result.truncated) {
+              setArchivalNotice(result.message)
+              alert(result.message)
+            } else {
+              setArchivalNotice(`Downloaded ${result.rows.toLocaleString()} rows to ${result.filename}.`)
+            }
+          }
+          break
+
+        case 'queued':
+          setArchivalNotice(
+            `No prepared file exists for this filter yet, so a job was queued (${result.jobId}). Run the export worker, then try again — the next request will download straight away.`,
+          )
+          break
+
+        case 'empty':
+          alert('No archival records found for the selected filters')
+          break
+
+        case 'invalid':
+          alert(result.message)
+          break
+
+        default:
+          console.error('Archival download failed:', result.message, result.notices)
+          alert('Failed to download archival report. Please try again.')
       }
-      if (blob === null) {
-        // RPC absent/broken OR produced no rows -> use the reliable client path
-        blob = await downloadViaClient(opts)
-      }
-      if (blob === null) {
-        // No rows at all
-        setDownloadingArchive(null)
-        setArchivalProgress('')
-        alert('No archival records found for the selected filters')
-        return
-      }
-      setArchivalProgress('Saving file…')
-      downloadBlob(blob, filename)
     } catch (err) {
       console.error('Archival download error:', err)
       alert('Failed to download archival report. Please try again.')
+    } finally {
+      setDownloadingArchive(null)
+      setArchivalProgress('')
     }
-    setDownloadingArchive(null)
-    setArchivalProgress('')
   }
 
   // Export handlers
@@ -1621,6 +1564,9 @@ export default function ReportsPage() {
                     <div className="archival-progress-track" aria-hidden="true"><div className="archival-progress-bar" /></div>
                     <div className="archival-progress-dots" aria-hidden="true"><span></span><span></span><span></span></div>
                   </div>
+                )}
+                {archivalNotice && (
+                  <p className="archival-notice" role="status" aria-live="polite">{archivalNotice}</p>
                 )}
               </div>
             </div>

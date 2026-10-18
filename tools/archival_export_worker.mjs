@@ -1,0 +1,417 @@
+#!/usr/bin/env node
+// ============================================================================
+// archival_export_worker.mjs — generate archival CSV artifacts, drain the queue
+// ============================================================================
+//
+// SERVER-SIDE ONLY. This script uses the Supabase service-role key, which
+// bypasses RLS. It must never run in a browser, never be bundled, and never be
+// pointed at a database you have not been asked to write to.
+//
+//   node tools/archival_export_worker.mjs --snapshots [--dry-run] [--bucket B]
+//   node tools/archival_export_worker.mjs --jobs [--limit N] [--dry-run] [--bucket B]
+//
+//   --snapshots  build the reusable artifacts: one "all" snapshot plus one per
+//                duty type. These are what elevated callers (ASO / super_admin,
+//                no date filter) get served from a signed URL.
+//   --jobs       drain public.archival_export_jobs: centre-scoped / date-filtered
+//                requests the snapshot set cannot answer.
+//   --dry-run    print what would be written, write nothing.
+//
+// Environment (no defaults, no fallbacks — a missing var is a hard error):
+//   SUPABASE_URL               e.g. https://<ref>.supabase.co
+//   SUPABASE_SERVICE_ROLE_KEY  service-role key
+//   ARCHIVAL_EXPORT_BUCKET     optional; overrides --bucket
+//
+// Storage layout (see buildObjectPath):
+//   archival/<scope>/<duty|all>/<dates|all>/<fingerprint|none>/v<version>/<file>
+//
+// The pure helpers below are unit-tested in archival_export_worker.test.mjs and
+// MUST keep agreeing with the SQL side:
+//   csvEscapeCell     <-> public.csv_field               (sql/archival_download_rpc.sql)
+//   scopeFingerprint  <-> public.archival_scope_fingerprint (sql/archival_export_jobs.sql)
+
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+
+// CSV writing lives in src/lib/csv.js — one implementation for the browser, the
+// SQL mirror and this worker. Re-exported under the names this CLI already used
+// so the queue/fetch code below and the test suite are unchanged.
+import {
+  ARCHIVAL_COLUMNS,
+  ARCHIVAL_HEADERS,
+  ARCHIVAL_SELECT,
+  CSV_EOL,
+  archivalFilename,
+  buildCsv,
+  csvEscapeCell,
+  csvHeader,
+  toDDMMYYYY,
+} from '../src/lib/csv.js';
+
+export {
+  ARCHIVAL_COLUMNS,
+  ARCHIVAL_HEADERS,
+  ARCHIVAL_SELECT,
+  CSV_EOL,
+  csvEscapeCell,
+  csvHeader,
+  toDDMMYYYY,
+};
+
+export const DUTY_TYPES = ['D', 'JMC', 'JO', 'V', 'JH'];
+export const rowsToCsv = buildCsv;
+
+const SAFE_SEGMENT = /^[A-Za-z0-9._-]{1,120}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Raised when a job row carries an empty centre set. See resolveJobScope.
+export const EMPTY_SCOPE_ERROR =
+  'job has an empty centre_scope — refusing to export the whole table';
+
+/**
+ * PostgREST has no `= NULL` predicate: `.eq(col, null)` renders the literal
+ * `col=eq.null`, which matches nothing. Every nullable column comparison must go
+ * through here, or a filter silently matches zero rows instead of null ones.
+ */
+export function applyNullable(query, column, value) {
+  return value === null || value === undefined ? query.is(column, null) : query.eq(column, value);
+}
+
+/**
+ * One week from now, ISO. Every artifact row carries an expiry: a signed URL is a
+ * bearer token, and a CSV holding 615k rows of personal data should not be
+ * servable forever. The endpoint treats `expires_at IS NULL` as fresh
+ * indefinitely, so this default is what makes the documented retention true.
+ */
+export function artifactExpiry(now = Date.now()) {
+  return new Date(now + 7 * DAY_MS).toISOString();
+}
+
+// ---------------------------------------------------------------------------
+// Scope fingerprint / paths
+// ---------------------------------------------------------------------------
+
+/**
+ * md5 of the sorted, de-duplicated, non-blank centre names joined with '|'.
+ * Empty scope is '' (not md5('')). Sorted with JS default (code-unit) order to
+ * match `ORDER BY c COLLATE "C"` on the SQL side. Values are joined RAW.
+ */
+export function scopeFingerprint(centres) {
+  if (centres === null || centres === undefined) return '';
+  const uniq = new Set();
+  for (const raw of centres) {
+    if (raw === null || raw === undefined) continue;
+    const s = String(raw);
+    if (s.trim() === '') continue;
+    uniq.add(s);
+  }
+  if (uniq.size === 0) return '';
+  return createHash('md5').update([...uniq].sort().join('|')).digest('hex');
+}
+
+/** A single path component we are willing to build a Storage key from. */
+export function isSafePathSegment(seg) {
+  if (typeof seg !== 'string') return false;
+  if (seg === '.' || seg === '..') return false;
+  return SAFE_SEGMENT.test(seg);
+}
+
+/** Filename shown to the user — the same rule the browser download uses. */
+export function artifactFilename(options = {}) {
+  return archivalFilename(options);
+}
+
+/**
+ * Deterministic Storage key. Throws rather than emitting an unsafe path: a
+ * crafted duty type or date could otherwise escape the `archival/` prefix.
+ */
+export function buildObjectPath({
+  scope,
+  dutyType = null,
+  dateFrom = null,
+  dateTo = null,
+  fingerprint = '',
+  version,
+}) {
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error(`buildObjectPath: version must be a positive integer, got ${JSON.stringify(version)}`);
+  }
+  const segments = [
+    'archival',
+    String(scope ?? ''),
+    dutyType ? String(dutyType) : 'all',
+    dateFrom || dateTo ? `${dateFrom || 'start'}_${dateTo || 'end'}` : 'all',
+    fingerprint ? String(fingerprint) : 'none',
+    `v${version}`,
+    artifactFilename({ dutyType, dateFrom, dateTo }),
+  ];
+  for (const seg of segments) {
+    if (!isSafePathSegment(seg)) {
+      throw new Error(`buildObjectPath: unsafe path segment ${JSON.stringify(seg)}`);
+    }
+  }
+  return segments.join('/');
+}
+
+// ---------------------------------------------------------------------------
+// Args
+// ---------------------------------------------------------------------------
+
+export function parseArgs(argv) {
+  const args = { mode: null, dryRun: false, bucket: null, limit: null };
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--snapshots' || a === '--jobs') {
+      const mode = a === '--jobs' ? 'jobs' : 'snapshots';
+      if (args.mode && args.mode !== mode) {
+        throw new Error('parseArgs: choose exactly one of --snapshots / --jobs');
+      }
+      args.mode = mode;
+    } else if (a === '--dry-run') {
+      args.dryRun = true;
+    } else if (a === '--bucket') {
+      const v = argv[(i += 1)];
+      if (!v) throw new Error('parseArgs: --bucket needs a value');
+      if (!isSafePathSegment(v)) throw new Error(`parseArgs: unsafe bucket name ${JSON.stringify(v)}`);
+      args.bucket = v;
+    } else if (a === '--limit') {
+      const v = argv[(i += 1)];
+      if (!/^\d+$/.test(v ?? '')) throw new Error('parseArgs: --limit needs a non-negative integer');
+      args.limit = Number(v);
+    } else {
+      throw new Error(`parseArgs: unknown argument ${JSON.stringify(a)}`);
+    }
+  }
+  if (!args.mode) throw new Error('parseArgs: pass --snapshots or --jobs');
+  return args;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime (never reached by the unit tests)
+// ---------------------------------------------------------------------------
+
+function resolveConfig(args) {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const bucket = args.bucket || process.env.ARCHIVAL_EXPORT_BUCKET || null;
+  const missing = [];
+  if (!url) missing.push('SUPABASE_URL');
+  if (!key) missing.push('SUPABASE_SERVICE_ROLE_KEY');
+  if (!bucket) missing.push('ARCHIVAL_EXPORT_BUCKET (or --bucket)');
+  if (missing.length) {
+    throw new Error(`missing required environment: ${missing.join(', ')}`);
+  }
+  if (!isSafePathSegment(bucket)) throw new Error(`unsafe bucket name ${JSON.stringify(bucket)}`);
+  return { url, key, bucket };
+}
+
+/**
+ * Decide a queued job's export scope from its `centre_scope` column.
+ *
+ * NULL is meaningful and different from '{}':
+ *   NULL / undefined -> whole table. The request Edge Function writes NULL only
+ *                       after resolving the caller as unrestricted (super_admin
+ *                       or aso), so a global, optionally date-filtered export on
+ *                       a queue row is legitimate.
+ *   [] / [null] / [' '] -> malformed or forged. Treating it as "whole table"
+ *                       would silently widen a centre-scoped request to every
+ *                       centre on the deployment, so refuse it instead.
+ */
+export function resolveJobScope(job) {
+  const raw = job?.centre_scope;
+  if (raw === null || raw === undefined) return { scope: 'global', centreScope: null };
+  const list = Array.isArray(raw)
+    ? raw.filter((c) => typeof c === 'string' && c.trim() !== '')
+    : [];
+  if (list.length === 0) throw new Error(EMPTY_SCOPE_ERROR);
+  return { scope: 'centre', centreScope: list };
+}
+
+const PAGE = 1000; // PostgREST default max-rows
+
+async function fetchAllRows(client, { dutyType = null, dateFrom = null, dateTo = null, centreScope = null }, onPage) {
+  const rows = [];
+  for (let from = 0; ; from += PAGE) {
+    let q = client
+      .from('archival_attendance')
+      .select(ARCHIVAL_SELECT)
+      // Same presentation order as sql/archival_download_rpc.sql (and the
+      // idx_archival_export_order index it creates).
+      .order('duty_date', { ascending: false })
+      .order('sewadar_name', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (dutyType) q = q.eq('duty_type', dutyType);
+    if (dateFrom) q = q.gte('duty_date', dateFrom);
+    if (dateTo) q = q.lte('duty_date', dateTo);
+    if (centreScope && centreScope.length) q = q.in('centre_name', centreScope);
+    const { data, error } = await q;
+    if (error) throw new Error(`fetch archival rows failed: ${error.message}`);
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    if (onPage) onPage(rows.length);
+    if (data.length < PAGE) break;
+  }
+  return rows;
+}
+
+async function publishArtifact(client, { bucket, csv, meta, dryRun }) {
+  const body = Buffer.from(csv, 'utf8');
+  const sha256 = createHash('sha256').update(body).digest('hex');
+  const rowCount = Math.max(0, csv.split(CSV_EOL).length - 1);
+
+  const q = client
+    .from('archival_export_artifacts')
+    .select('version')
+    .eq('scope', meta.scope)
+    .eq('scope_fingerprint', meta.fingerprint || '');
+  const { data: prev, error: prevErr } = await applyNullable(q, 'duty_type', meta.dutyType)
+    .eq('is_current', true);
+  if (prevErr) throw new Error(`artifact lookup failed: ${prevErr.message}`);
+  const version = (prev?.reduce((m, r) => Math.max(m, r.version || 0), 0) || 0) + 1;
+
+  const objectPath = buildObjectPath({ ...meta, version });
+  const filename = artifactFilename(meta);
+
+  if (dryRun) {
+    console.log(`[dry-run] would upload ${objectPath} (${rowCount} rows, ${body.byteLength} bytes, sha256 ${sha256.slice(0, 12)}…)`);
+    return { objectPath, rowCount, byteSize: body.byteLength, sha256, version, filename, dryRun: true };
+  }
+
+  // Upload to a NEW versioned path rather than overwriting: Storage returns
+  // 400 "Asset Already Exists" on a plain re-upload, and CDN propagation makes
+  // overwriting a live object unreliable.
+  const { error: upErr } = await client.storage
+    .from(bucket)
+    .upload(objectPath, body, { contentType: 'text/csv; charset=utf-8', upsert: false });
+  if (upErr) throw new Error(`storage upload failed: ${upErr.message}`);
+
+  const existing = client
+    .from('archival_export_artifacts')
+    .update({ is_current: false })
+    .eq('scope', meta.scope)
+    .eq('scope_fingerprint', meta.fingerprint || '');
+  await applyNullable(existing, 'duty_type', meta.dutyType).eq('is_current', true);
+
+  const { error: insErr } = await client.from('archival_export_artifacts').insert({
+    scope: meta.scope,
+    duty_type: meta.dutyType,
+    date_from: meta.dateFrom,
+    date_to: meta.dateTo,
+    centre_scope: meta.centreScope || null,
+    scope_fingerprint: meta.fingerprint || '',
+    artifact_bucket: bucket,
+    artifact_path: objectPath,
+    row_count: rowCount,
+    byte_size: body.byteLength,
+    content_sha256: sha256,
+    version,
+    is_current: true,
+    expires_at: meta.expiresAt || artifactExpiry(),
+  });
+  if (insErr) throw new Error(`artifact record insert failed: ${insErr.message}`);
+
+  console.log(`uploaded ${objectPath} (${rowCount} rows, ${(body.byteLength / 1048576).toFixed(1)} MB)`);
+  return { objectPath, rowCount, byteSize: body.byteLength, sha256, version, filename };
+}
+
+async function runSnapshots(client, cfg, args) {
+  const targets = [{ dutyType: null, label: 'all' }, ...DUTY_TYPES.map((d) => ({ dutyType: d, label: d }))];
+  for (const t of targets) {
+    const meta = { scope: 'global', dutyType: t.dutyType, dateFrom: null, dateTo: null, fingerprint: '', centreScope: null };
+    console.log(`— snapshot ${t.label}`);
+    const rows = await fetchAllRows(client, { dutyType: t.dutyType }, (n) => {
+      if (n % 50000 === 0) console.log(`  … ${n} rows`);
+    });
+    await publishArtifact(client, { bucket: cfg.bucket, csv: rowsToCsv(rows), meta, dryRun: args.dryRun });
+  }
+}
+
+async function runJobs(client, cfg, args) {
+  const { data: jobs, error } = await client
+    .from('archival_export_jobs')
+    .select('id,requested_by,requester_label,duty_type,date_from,date_to,centre_scope,scope_fingerprint,attempts')
+    .eq('status', 'queued')
+    .order('created_at', { ascending: true })
+    .limit(args.limit ?? 25);
+  if (error) throw new Error(`job fetch failed: ${error.message}`);
+  if (!jobs || jobs.length === 0) {
+    console.log('no queued jobs');
+    return;
+  }
+
+  for (const job of jobs) {
+    console.log(`— job ${job.id} (${job.requester_label || job.requested_by})`);
+    if (args.dryRun) {
+      console.log('  [dry-run] would process');
+      continue;
+    }
+    await client
+      .from('archival_export_jobs')
+      .update({ status: 'processing', attempts: (job.attempts || 0) + 1, updated_at: new Date().toISOString() })
+      .eq('id', job.id)
+      .eq('status', 'queued');
+    try {
+      const { scope, centreScope } = resolveJobScope(job);
+      const meta = {
+        scope,
+        dutyType: job.duty_type,
+        dateFrom: job.date_from,
+        dateTo: job.date_to,
+        fingerprint: job.scope_fingerprint || scopeFingerprint(centreScope || []),
+        centreScope,
+      };
+      const rows = await fetchAllRows(client, {
+        dutyType: job.duty_type,
+        dateFrom: job.date_from,
+        dateTo: job.date_to,
+        centreScope,
+      });
+      const published = await publishArtifact(client, {
+        bucket: cfg.bucket,
+        csv: rowsToCsv(rows),
+        meta,
+        dryRun: false,
+      });
+      const { error: doneErr } = await client
+        .from('archival_export_jobs')
+        .update({
+          status: 'ready',
+          artifact_bucket: cfg.bucket,
+          artifact_path: published.objectPath,
+          row_count: published.rowCount,
+          byte_size: published.byteSize,
+          content_sha256: published.sha256,
+          ready_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          expires_at: artifactExpiry(),
+        })
+        .eq('id', job.id);
+      if (doneErr) throw new Error(doneErr.message);
+    } catch (err) {
+      const { error: failErr } = await client
+        .from('archival_export_jobs')
+        .update({ status: 'failed', error_message: String(err.message || err).slice(0, 500), updated_at: new Date().toISOString() })
+        .eq('id', job.id);
+      if (failErr) console.error(`  could not record failure: ${failErr.message}`);
+      console.error(`  job failed: ${err.message || err}`);
+    }
+  }
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const cfg = resolveConfig(args);
+  const { createClient } = await import('@supabase/supabase-js');
+  const client = createClient(cfg.url, cfg.key, { auth: { persistSession: false, autoRefreshToken: false } });
+  console.log(`archival export worker → ${cfg.bucket} (mode ${args.mode}${args.dryRun ? ', dry-run' : ''})`);
+  if (args.mode === 'snapshots') await runSnapshots(client, cfg, args);
+  else await runJobs(client, cfg, args);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(err.message || err);
+    process.exit(1);
+  });
+}

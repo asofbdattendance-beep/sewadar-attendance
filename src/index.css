@@ -1667,6 +1667,14 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .archival-progress-dots span:nth-child(3) { animation-delay:0.30s; }
 @keyframes dotPulse { 0%,80%,100% { opacity:0.25; transform:scale(0.85); } 40% { opacity:1; transform:scale(1); } }
 
+/* Outcome of the last archival download — the one line that says whether the
+   file was a snapshot, a freshly built export, or a queued job. */
+.archival-notice {
+  margin:12px 0 0; padding:8px 10px; border-radius:6px;
+  background:var(--green-bg); border:1px solid rgba(33,115,70,0.15);
+  color:var(--text-primary); font-size:13px; line-height:1.45;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dl-btn-loading, .archival-progress-bar, .archival-progress-dots span, .report-loading-bar, .spin, .archival-loading-overlay { animation:none !important; }
 }
@@ -2245,4 +2253,31 @@ h1,h2,h3,h4 { font-weight:700; color:var(--text-primary); }
 .chip-dot.beas { background:var(--blue); }
 .chip-dot.major { background:var(--purple); }
 .chip-dot.home { background:var(--green); }
+
+/* ═══ Ported scanner engine (from sewadar-deployment-portal) ═══
+   Classes rendered by src/components/scanner/BarcodeScanner.jsx.
+   `.spin` + `@keyframes spin` already exist above and are reused here. */
+.pill {
+  display:inline-flex; align-items:center; gap:0.3rem;
+  padding:0.18rem 0.55rem; border-radius:999px;
+  font-size:0.7rem; font-weight:700; letter-spacing:0.02em;
+}
+.scanner-init-spinner {
+  width:22px; height:22px; border:3px solid rgba(255,255,255,0.35);
+  border-top-color:#fff; border-radius:50%;
+  animation:spin 0.6s linear infinite; flex-shrink:0;
+}
+@keyframes tapFocusPulse {
+  0% { opacity:1; transform:translate(-50%,-50%) scale(1); }
+  100% { opacity:0; transform:translate(-50%,-50%) scale(2); }
+}
+@media (max-width: 768px) {
+  /* Dynamic viewport: the preview no longer jumps when browser chrome
+     collapses mid-scan. Unsupported browsers ignore dvh and keep 52vh. */
+  .scanner-video { height:clamp(220px, 46dvh, 420px) !important; touch-action:manipulation; }
+  .scanner-torch { min-height:44px; min-width:44px; touch-action:manipulation; }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .scanner-video { height:clamp(150px, 44dvh, 240px) !important; }
+}
 
