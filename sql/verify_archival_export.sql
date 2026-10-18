@@ -131,6 +131,38 @@ ORDER BY grantee;
 
 
 -- ============================================================================
+--  §3c.  EXPORT TABLES (artifacts metadata + job queue)
+-- ============================================================================
+-- Run AFTER sql/archival_export_jobs.sql. ZERO ROWS here means the two tables
+-- are not deployed yet — that is not a failure of this file, it is the answer.
+--
+-- EXPECTED, after that file has been run:
+--   archival_export_artifacts — rls_enabled = true, policy_count = 0 (no policy
+--     at all: service_role only), grants = service_role=SELECT,INSERT,... only.
+--   archival_export_jobs      — rls_enabled = true, policy_count = 1
+--     (archival_jobs_select:SELECT), grants = authenticated=SELECT and
+--     service_role=... — and NOT authenticated=INSERT/UPDATE/DELETE. If
+--     authenticated appears with a write privilege, the REVOKE did not take.
+SELECT '3c. export tables'                    AS check_name,
+       c.relname                              AS table_name,
+       c.relrowsecurity                       AS rls_enabled,
+       (SELECT count(*) FROM pg_policies p
+         WHERE p.schemaname = 'public' AND p.tablename = c.relname) AS policy_count,
+       (SELECT string_agg(p.policyname || ':' || p.cmd, ', ' ORDER BY p.policyname)
+          FROM pg_policies p
+         WHERE p.schemaname = 'public' AND p.tablename = c.relname) AS policies,
+       (SELECT string_agg(g.grantee || '=' || g.privilege_type, ', '
+                          ORDER BY g.grantee, g.privilege_type)
+          FROM information_schema.role_table_grants g
+         WHERE g.table_schema = 'public' AND g.table_name = c.relname) AS grants
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public'
+  AND c.relname IN ('archival_export_artifacts', 'archival_export_jobs')
+ORDER BY c.relname;
+
+
+-- ============================================================================
 --  §4.  EXPORT RPC(S)
 -- ============================================================================
 -- 4a. Function facts. EXPECTED after sql/archival_download_rpc.sql is re-run:

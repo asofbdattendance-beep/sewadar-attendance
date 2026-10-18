@@ -78,3 +78,41 @@ test('jobs SQL: authenticated may SELECT but never INSERT/UPDATE/DELETE', () => 
   assert.doesNotMatch(jobsSql, /GRANT[^;]*INSERT[^;]*TO authenticated/i);
   assert.doesNotMatch(jobsSql, /GRANT[^;]*(UPDATE|DELETE)[^;]*TO authenticated/i);
 });
+
+test('jobs SQL: the inherited default grant is revoked, not merely overridden', () => {
+  // Supabase's ALTER DEFAULT PRIVILEGES already granted ALL to anon and
+  // authenticated when the table was created, and GRANT is additive — so the
+  // revoke is the statement that actually narrows the privilege. Grepping for
+  // explicit INSERT/UPDATE/DELETE grants cannot see the inherited default.
+  assert.match(
+    jobsSql,
+    /REVOKE ALL ON public\.archival_export_jobs FROM anon, authenticated/,
+    'a bare GRANT SELECT leaves the inherited INSERT/UPDATE/DELETE in place',
+  );
+});
+
+test('export RPC: the legacy direct anon grant is revoked, not just PUBLIC', () => {
+  const rpcSql = read('sql/archival_download_rpc.sql');
+  const signatures = [
+    'csv_field(TEXT)',
+    'archival_csv_header()',
+    'get_archival_csv_chunk(INT, TEXT, DATE, DATE, INT)',
+  ];
+  for (const sig of signatures) {
+    const escaped = sig.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(
+      rpcSql,
+      new RegExp(`REVOKE ALL ON FUNCTION public\\.${escaped}\\s+FROM anon;`),
+      `the base revision granted EXECUTE on ${sig} directly to anon; REVOKE ... FROM PUBLIC does not remove that entry`,
+    );
+  }
+});
+
+test('the baseline verifier covers both new tables', () => {
+  const verifySql = read('sql/verify_archival_export.sql');
+  assert.match(
+    verifySql,
+    /c\.relname IN \('archival_export_artifacts', 'archival_export_jobs'\)/,
+    'the verifier must actually probe both new tables, not merely mention their names in prose',
+  );
+});

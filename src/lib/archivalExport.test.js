@@ -22,7 +22,7 @@ import {
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 /** Minimal PostgREST-ish stub: records every query, slices by range(). */
-function makeClient({ rows = [], rpc = null } = {}) {
+function makeClient({ rows = [], rpc = null, count } = {}) {
   const queries = [];
   const client = {
     queries,
@@ -30,14 +30,15 @@ function makeClient({ rows = [], rpc = null } = {}) {
     from() {
       const query = {
         filters: [],
-        select: () => query,
+        requestedCount: undefined,
+        select: (_cols, options) => { query.requestedCount = options?.count; return query; },
         order: () => query,
         eq(col, value) { query.filters.push(['eq', col, value]); return query; },
         gte(col, value) { query.filters.push(['gte', col, value]); return query; },
         lte(col, value) { query.filters.push(['lte', col, value]); return query; },
         range(from, to) {
-          queries.push({ from, to, filters: query.filters });
-          return Promise.resolve({ data: rows.slice(from, to + 1), error: null });
+          queries.push({ from, to, filters: query.filters, requestedCount: query.requestedCount });
+          return Promise.resolve({ data: rows.slice(from, to + 1), error: null, count });
         },
       };
       return query;
@@ -276,5 +277,53 @@ describe('shared contract', () => {
   test('the browser fallback cap is large enough for the live table, and bounded', () => {
     expect(CLIENT_FALLBACK_MAX_ROWS).toBe(650000);
     expect(CLIENT_FALLBACK_MAX_ROWS).toBeGreaterThan(615724); // live row count
+  });
+});
+
+// The API caps how many rows one request may return (PostgREST's max-rows; the
+// worker pages at 1000 because that is a Supabase default). A short page is
+// therefore not proof that the table ended, which is the only way a partial file
+// could ever look complete.
+describe('the server row cap', () => {
+  const boom = async () => ({ data: null, error: { message: 'boom' } });
+
+  test('pages at the documented API row limit, not at a guess', async () => {
+    const client = makeClient({ rows: [row(1)], rpc: boom });
+
+    await runArchivalExport({ client, request: {} });
+
+    expect(client.queries[0].from).toBe(0);
+    expect(client.queries[0].to).toBe(999);
+  });
+
+  test('asks the server for an exact count, on the first page only', async () => {
+    const client = makeClient({ rows: [row(1), row(2), row(3)], rpc: boom });
+
+    const result = await runArchivalExport({ client, request: {}, pageSize: 2, maxRows: 10 });
+
+    expect(result.rows).toBe(3);
+    expect(client.queries).toHaveLength(2);
+    expect(client.queries[0].requestedCount).toBe('exact');
+    expect(client.queries[1].requestedCount).toBeUndefined();
+  });
+
+  test('a short page is truncation when the server reports more rows', async () => {
+    const client = makeClient({ rows: [row(1)], count: 615724, rpc: boom });
+
+    const result = await runArchivalExport({ client, request: {}, pageSize: 5000 });
+
+    expect(result.truncated).toBe(true);
+    expect(result.rows).toBe(1);
+    expect(result.message).toMatch(/615.?724/i);
+    expect(result.message).toMatch(/narrow/i);
+  });
+
+  test('a short page that matches the server count is complete, not truncation', async () => {
+    const client = makeClient({ rows: [row(1)], count: 1, rpc: boom });
+
+    const result = await runArchivalExport({ client, request: {}, pageSize: 5000 });
+
+    expect(result.truncated).toBe(false);
+    expect(result.message).toBeNull();
   });
 });

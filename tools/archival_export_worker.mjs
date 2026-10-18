@@ -68,6 +68,25 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const EMPTY_SCOPE_ERROR =
   'job has an empty centre_scope — refusing to export the whole table';
 
+/**
+ * PostgREST has no `= NULL` predicate: `.eq(col, null)` renders the literal
+ * `col=eq.null`, which matches nothing. Every nullable column comparison must go
+ * through here, or a filter silently matches zero rows instead of null ones.
+ */
+export function applyNullable(query, column, value) {
+  return value === null || value === undefined ? query.is(column, null) : query.eq(column, value);
+}
+
+/**
+ * One week from now, ISO. Every artifact row carries an expiry: a signed URL is a
+ * bearer token, and a CSV holding 615k rows of personal data should not be
+ * servable forever. The endpoint treats `expires_at IS NULL` as fresh
+ * indefinitely, so this default is what makes the documented retention true.
+ */
+export function artifactExpiry(now = Date.now()) {
+  return new Date(now + 7 * DAY_MS).toISOString();
+}
+
 // ---------------------------------------------------------------------------
 // Scope fingerprint / paths
 // ---------------------------------------------------------------------------
@@ -241,12 +260,12 @@ async function publishArtifact(client, { bucket, csv, meta, dryRun }) {
   const sha256 = createHash('sha256').update(body).digest('hex');
   const rowCount = Math.max(0, csv.split(CSV_EOL).length - 1);
 
-  const { data: prev, error: prevErr } = await client
+  const q = client
     .from('archival_export_artifacts')
     .select('version')
     .eq('scope', meta.scope)
-    .eq('scope_fingerprint', meta.fingerprint || '')
-    .eq('duty_type', meta.dutyType)
+    .eq('scope_fingerprint', meta.fingerprint || '');
+  const { data: prev, error: prevErr } = await applyNullable(q, 'duty_type', meta.dutyType)
     .eq('is_current', true);
   if (prevErr) throw new Error(`artifact lookup failed: ${prevErr.message}`);
   const version = (prev?.reduce((m, r) => Math.max(m, r.version || 0), 0) || 0) + 1;
@@ -267,13 +286,12 @@ async function publishArtifact(client, { bucket, csv, meta, dryRun }) {
     .upload(objectPath, body, { contentType: 'text/csv; charset=utf-8', upsert: false });
   if (upErr) throw new Error(`storage upload failed: ${upErr.message}`);
 
-  await client
+  const existing = client
     .from('archival_export_artifacts')
     .update({ is_current: false })
     .eq('scope', meta.scope)
-    .eq('scope_fingerprint', meta.fingerprint || '')
-    .eq('duty_type', meta.dutyType)
-    .eq('is_current', true);
+    .eq('scope_fingerprint', meta.fingerprint || '');
+  await applyNullable(existing, 'duty_type', meta.dutyType).eq('is_current', true);
 
   const { error: insErr } = await client.from('archival_export_artifacts').insert({
     scope: meta.scope,
@@ -289,7 +307,7 @@ async function publishArtifact(client, { bucket, csv, meta, dryRun }) {
     content_sha256: sha256,
     version,
     is_current: true,
-    expires_at: meta.expiresAt || null,
+    expires_at: meta.expiresAt || artifactExpiry(),
   });
   if (insErr) throw new Error(`artifact record insert failed: ${insErr.message}`);
 
@@ -366,7 +384,7 @@ async function runJobs(client, cfg, args) {
           content_sha256: published.sha256,
           ready_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 7 * DAY_MS).toISOString(),
+          expires_at: artifactExpiry(),
         })
         .eq('id', job.id);
       if (doneErr) throw new Error(doneErr.message);

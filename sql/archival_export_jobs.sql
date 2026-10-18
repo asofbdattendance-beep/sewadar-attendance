@@ -193,7 +193,11 @@ CREATE POLICY archival_jobs_select ON public.archival_export_jobs
 
 DROP POLICY IF EXISTS archival_jobs_insert ON public.archival_export_jobs;
 
-REVOKE ALL ON public.archival_export_jobs FROM anon;
+-- Supabase's ALTER DEFAULT PRIVILEGES grants ALL on a new public table to anon
+-- AND authenticated at CREATE time, and GRANT is additive — so a bare
+-- `GRANT SELECT` would leave INSERT/UPDATE/DELETE in place and RLS would be the
+-- only layer denying them. Revoke first, then grant back exactly SELECT.
+REVOKE ALL ON public.archival_export_jobs FROM anon, authenticated;
 GRANT SELECT ON public.archival_export_jobs TO authenticated;
 GRANT ALL ON public.archival_export_jobs TO service_role;
 

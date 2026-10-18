@@ -206,6 +206,14 @@ CREATE INDEX IF NOT EXISTS idx_archival_export_order
 -- `service_role` keeps EXECUTE because it is the server-side role and the worker
 -- (tools/archival_export_worker.mjs) may reasonably reuse the RPC. It never
 -- appears in a client bundle.
+-- An earlier revision of this file granted EXECUTE on csv_field and
+-- archival_csv_header DIRECTLY to `anon`. A direct grant is a per-grantee entry in
+-- proacl, and `REVOKE ... FROM PUBLIC` removes only the PUBLIC entry — so the anon
+-- grant survives unless it is named. Revoke it explicitly, then close PUBLIC too.
+REVOKE ALL ON FUNCTION public.csv_field(TEXT)                                    FROM anon;
+REVOKE ALL ON FUNCTION public.archival_csv_header()                              FROM anon;
+REVOKE ALL ON FUNCTION public.get_archival_csv_chunk(INT, TEXT, DATE, DATE, INT) FROM anon;
+
 REVOKE ALL ON FUNCTION public.csv_field(TEXT)                                    FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.archival_csv_header()                              FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.get_archival_csv_chunk(INT, TEXT, DATE, DATE, INT) FROM PUBLIC;

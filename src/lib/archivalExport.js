@@ -36,7 +36,7 @@ export const CLIENT_FALLBACK_MAX_ROWS = 650000;
 
 const RPC_NAME = 'get_archival_csv_chunk';
 const DEFAULT_RPC_CHUNK = 100000;
-const DEFAULT_PAGE_SIZE = 5000;
+const DEFAULT_PAGE_SIZE = 1000; // PostgREST's default max-rows; asking for more is silently capped
 const TABLE = 'archival_attendance';
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 // Paranoia bound: the RPC loop is data-driven, but a buggy server that always
@@ -178,37 +178,57 @@ async function exportViaRpc({ client, request, chunkSize, onProgress }) {
 async function exportViaClient({ client, request, pageSize, maxRows, onProgress }) {
   const rows = [];
 
+  // The API caps how many rows one request may return (PostgREST's max-rows — 1000
+  // on a default Supabase project, which is why the worker pages at 1000 too). A
+  // short page is therefore NOT proof that the table ended: it is equally the
+  // signature of the cap. So ask the server for an exact count with the first page
+  // and let that count — not the page length — decide whether we got everything.
+  // A partial file that looks complete is the failure this module exists to stop.
+  let serverCount = null;
+  let sawShortPage = false;
+
   while (rows.length < maxRows) {
-    let query = client.from(TABLE).select(ARCHIVAL_SELECT).order('id', { ascending: true });
+    const first = rows.length === 0;
+    let query = client
+      .from(TABLE)
+      .select(ARCHIVAL_SELECT, first ? { count: 'exact' } : undefined)
+      .order('id', { ascending: true });
     if (request.dutyType) query = query.eq('duty_type', request.dutyType);
     if (request.dateFrom) query = query.gte('duty_date', request.dateFrom);
     if (request.dateTo) query = query.lte('duty_date', request.dateTo);
 
     const size = Math.min(pageSize, maxRows - rows.length);
-    const { data, error } = await query.range(rows.length, rows.length + size - 1);
+    const { data, error, count } = await query.range(rows.length, rows.length + size - 1);
     if (error) throw new Error(errorText(error));
+
+    if (typeof count === 'number' && count >= 0) serverCount = count;
 
     const batch = Array.isArray(data) ? data : [];
     rows.push(...batch);
     onProgress({ strategy: 'client', rows: rows.length });
 
-    if (batch.length < size) break; // short page: this was the last one
-    if (rows.length >= maxRows) {
-      return {
-        blob: new Blob([buildCsv(rows)], { type: 'text/csv' }),
-        rows: rows.length,
-        truncated: true,
-        message: `Only the first ${maxRows} rows were downloaded. Narrow the date range or duty type to get the rest.`,
-      };
+    if (batch.length < size) {
+      sawShortPage = true; // the last page, or the API row cap — the count decides
+      break;
     }
   }
 
   if (rows.length === 0) return null;
+
+  const capped = rows.length >= maxRows;
+  const missing = serverCount !== null && rows.length < serverCount;
+  const truncated = capped || (sawShortPage && missing);
+  const message = !truncated
+    ? null
+    : capped
+      ? `Only the first ${maxRows} rows were downloaded. Narrow the date range or duty type to get the rest.`
+      : `The API returned ${rows.length} of ${serverCount} rows. Narrow the date range or duty type to get the rest.`;
+
   return {
     blob: new Blob([buildCsv(rows)], { type: 'text/csv' }),
     rows: rows.length,
-    truncated: false,
-    message: null,
+    truncated,
+    message,
   };
 }
 

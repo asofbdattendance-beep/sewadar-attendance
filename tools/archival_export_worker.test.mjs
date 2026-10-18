@@ -405,3 +405,66 @@ test('resolveJobScope: blank-only and non-string entries are refused too', () =>
 test('resolveJobScope: blanks mixed with real centres are dropped, not fatal', () => {
   assert.deepEqual(resolveJobScope({ centre_scope: ['A', ' ', null] }), { scope: 'centre', centreScope: ['A'] });
 });
+
+// ---------------------------------------------------------------------------
+// Nullable filters and artifact freshness — both from the whole-branch review.
+//
+// A null `duty_type` filtered with .eq() matches nothing: postgrest-js renders it
+// as the literal `duty_type=eq.null`, so the version lookup always missed and the
+// upload always landed on the same object path, making --snapshots a one-shot
+// trap. And an artifact row written with expires_at = NULL never goes stale, which
+// contradicts the runbook's 7-day retention sentence.
+// ---------------------------------------------------------------------------
+
+import { applyNullable, artifactExpiry } from './archival_export_worker.mjs';
+
+const recorder = () => {
+  const calls = [];
+  const q = {
+    calls,
+    is(col, value) { calls.push(['is', col, value]); return q; },
+    eq(col, value) { calls.push(['eq', col, value]); return q; },
+  };
+  return q;
+};
+
+test('applyNullable: NULL and undefined become .is(col, null)', () => {
+  const q1 = recorder();
+  assert.equal(applyNullable(q1, 'duty_type', null), q1, 'must stay chainable');
+  assert.deepEqual(q1.calls, [['is', 'duty_type', null]]);
+
+  const q2 = recorder();
+  applyNullable(q2, 'duty_type', undefined);
+  assert.deepEqual(q2.calls, [['is', 'duty_type', null]]);
+});
+
+test('applyNullable: a real value becomes .eq(col, value)', () => {
+  const q = recorder();
+  applyNullable(q, 'duty_type', 'D');
+  applyNullable(q, 'duty_type', '');
+  assert.deepEqual(q.calls, [['eq', 'duty_type', 'D'], ['eq', 'duty_type', '']]);
+});
+
+test('the artifact lookup and retire-step go through applyNullable, never eq(col, null)', () => {
+  const src = repoFile('tools/archival_export_worker.mjs');
+  assert.doesNotMatch(
+    src,
+    /\.eq\('duty_type',\s*(null|meta\.)/,
+    "a null duty_type filtered with eq() renders 'duty_type=eq.null' and matches nothing",
+  );
+  assert.match(src, /applyNullable\(q, 'duty_type', meta\.dutyType\)/);
+  assert.match(src, /applyNullable\(existing, 'duty_type', meta\.dutyType\)/);
+});
+
+test('artifactExpiry: exactly one week ahead, ISO-shaped', () => {
+  const iso = artifactExpiry(0);
+  assert.equal(Date.parse(iso), 7 * 24 * 60 * 60 * 1000);
+  assert.match(iso, /^\d{4}-\d{2}-\d{2}T/);
+  assert.ok(Date.parse(artifactExpiry()) > Date.now());
+});
+
+test('an artifact row is always written with an expiry, never with NULL', () => {
+  const src = repoFile('tools/archival_export_worker.mjs');
+  assert.doesNotMatch(src, /expires_at:\s*meta\.expiresAt\s*\|\|\s*null/);
+  assert.match(src, /expires_at:\s*meta\.expiresAt\s*\|\|\s*artifactExpiry\(\)/);
+});
