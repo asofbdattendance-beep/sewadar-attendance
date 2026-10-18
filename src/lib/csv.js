@@ -106,3 +106,21 @@ export function downloadBlob(blob, filename) {
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
+
+/**
+ * Save a URL the server prepared for us (a signed Storage URL).
+ *
+ * `download` is only a hint cross-origin, so the signed URL must also carry a
+ * Content-Disposition header — the Edge Function asks for one when it signs.
+ * `target=_blank` keeps the SPA alive if the browser decides to navigate.
+ */
+export function downloadUrl(url, filename) {
+  const a = document.createElement('a');
+  a.href = url;
+  if (filename) a.download = filename;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}

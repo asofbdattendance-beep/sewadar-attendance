@@ -258,16 +258,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
       if (artifact && fresh && scopeOk) {
         const bucketName = artifact.artifact_bucket || BUCKET;
+        const filename = basename(artifact.artifact_path);
+        // `download` makes Storage attach a Content-Disposition: attachment header,
+        // so the browser saves the file. Without it a cross-origin `a[download]`
+        // attribute is only a hint and the CSV renders in the tab instead.
         const { data: signed, error: signError } = await admin.storage
           .from(bucketName)
-          .createSignedUrl(artifact.artifact_path, TTL_SECONDS);
+          .createSignedUrl(artifact.artifact_path, TTL_SECONDS, filename ? { download: filename } : undefined);
         if (signError) {
           console.error(`[${requestId}] createSignedUrl failed: ${signError.message}`);
         } else if (signed?.signedUrl) {
           return json({
             status: 'ready',
             url: signed.signedUrl,
-            filename: basename(artifact.artifact_path),
+            filename,
             expiresAt: new Date(Date.now() + TTL_SECONDS * 1000).toISOString(),
             rowCount: artifact.row_count ?? null,
           });

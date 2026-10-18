@@ -15,6 +15,7 @@ import {
   CLIENT_FALLBACK_MAX_ROWS,
   DUTY_TYPES,
   EXPORT_STRATEGIES,
+  requestArchivalArtifact,
   runArchivalExport,
 } from './archivalExport.js';
 
@@ -218,6 +219,42 @@ describe('validation and empty results', () => {
     const result = await runArchivalExport({ client, request: {} });
     expect(result.status).toBe('error');
     expect(result.message).toMatch(/client exploded|download/i);
+  });
+});
+
+describe('artifact requester', () => {
+  const session = (token) => ({ auth: { getSession: async () => ({ data: { session: token ? { access_token: token } : null } }) } });
+
+  test('posts the request with the caller token and returns the parsed body', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ status: 'ready', url: 'u' }) }));
+
+    const body = await requestArchivalArtifact(
+      session('tok'),
+      { dutyType: 'D' },
+      { endpoint: 'https://x/functions/v1/request-archival-export', anonKey: 'anon', fetchImpl },
+    );
+
+    expect(body).toEqual({ status: 'ready', url: 'u' });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://x/functions/v1/request-archival-export');
+    expect(init.method).toBe('POST');
+    expect(init.headers.Authorization).toBe('Bearer tok');
+    expect(init.headers.apikey).toBe('anon');
+    expect(JSON.parse(init.body)).toEqual({ dutyType: 'D', dateFrom: null, dateTo: null });
+  });
+
+  test('throws when the endpoint is not configured, so the RPC path takes over', async () => {
+    await expect(requestArchivalArtifact(session('tok'), {}, { endpoint: '' })).rejects.toThrow(/not configured/i);
+  });
+
+  test('throws on a non-ok response and on a missing session', async () => {
+    const failing = async () => ({ ok: false, status: 401, json: async () => ({}) });
+    await expect(
+      requestArchivalArtifact(session('tok'), {}, { endpoint: 'https://x/req', fetchImpl: failing }),
+    ).rejects.toThrow(/401/);
+    await expect(
+      requestArchivalArtifact(session(null), {}, { endpoint: 'https://x/req', fetchImpl: failing }),
+    ).rejects.toThrow(/signed in/i);
   });
 });
 

@@ -228,6 +228,40 @@ async function exportViaClient({ client, request, pageSize, maxRows, onProgress 
  *   {status:'invalid', message, notices}
  *   {status:'error', message, notices}
  */
+/**
+ * POST the request to the request-archival-export Edge Function and return its
+ * body. Throws on anything unexpected — runArchivalExport() reads a throw as
+ * "no artifact path here" and moves on to the RPC, which is why this must never
+ * swallow a failure into a fake success.
+ */
+export async function requestArchivalArtifact(client, request = {}, { endpoint = '', anonKey = '', fetchImpl = null } = {}) {
+  if (!endpoint) throw new Error('artifact endpoint is not configured');
+  const doFetch = fetchImpl || globalThis.fetch;
+  if (typeof doFetch !== 'function') throw new Error('fetch is not available in this environment');
+
+  const session = await client?.auth?.getSession?.();
+  const token = session?.data?.session?.access_token;
+  if (!token) throw new Error('not signed in');
+
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+  if (anonKey) headers.apikey = anonKey;
+
+  const response = await doFetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      dutyType: request.dutyType || null,
+      dateFrom: request.dateFrom || null,
+      dateTo: request.dateTo || null,
+    }),
+  });
+
+  if (!response || !response.ok) {
+    throw new Error(`artifact endpoint returned ${response ? response.status : 'no response'}`);
+  }
+  return response.json();
+}
+
 export async function runArchivalExport({
   client,
   request = {},
