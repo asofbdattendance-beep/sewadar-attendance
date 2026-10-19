@@ -501,6 +501,20 @@ again".
 **Until 1–4 are done the feature is inert but not broken:** every request falls
 through to the RPC, then to the browser fallback, exactly as before.
 
+**Free-plan Storage limit — measured 2026-10-18.** Storage's Free plan enforces a
+fixed 50 MB per-object ceiling that cannot be raised (the dashboard states it; the
+global limit is not configurable on Free). Measured snapshot sizes: combined
+65,563,506 B (62.5 MiB — never fits), `D` 51,952,608 B (49.54 MiB — borderline,
+do not rely on it), `JMC` 8,665,067 B, `JO` 2,844,883 B, `V` 2,099,464 B, `JH`
+2,168 B — the last four fit comfortably. So the worker **skips any snapshot it
+cannot store** (`MAX_ARTIFACT_BYTES`; logged as `[skip] …`; a queued job whose
+export cannot be stored is marked `failed` with the reason rather than `ready`),
+and one oversize snapshot no longer aborts the run. The page then falls through to
+the RPC for those filters. Hold onto the consequence: **the artifact is an
+optimisation — `get_archival_csv_chunk` is the path that always works.** A `queued`
+answer no longer ends a download; it is reported only if the RPC *and* the browser
+pager both produce nothing.
+
 ### Verify after deploy
 - `sql/verify_archival_export.sql` §4b: `anon_can_execute = false`,
   `authenticated_can_execute = true`, `acl_is_open_to_public = false`.

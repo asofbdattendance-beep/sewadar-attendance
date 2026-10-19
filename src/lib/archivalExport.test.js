@@ -70,14 +70,43 @@ describe('strategy order', () => {
     expect(client.queries.length).toBe(0);
   });
 
-  test('a queued answer is returned as queued, not retried through the RPC', async () => {
-    const client = makeClient();
+  test('a queued answer falls through to the RPC instead of blocking the download', async () => {
+    const client = makeClient({
+      rpc: async (_name, args) => ({ data: args.p_chunk === 0 ? 'header\nr1\nr2' : '', error: null }),
+    });
     const fetchArtifact = vi.fn(async () => ({ status: 'queued', jobId: 'job-1' }));
+
+    const result = await runArchivalExport({
+      client,
+      request: { dutyType: 'JMC' },
+      fetchArtifact,
+      rpcChunkSize: 2,
+    });
+
+    // The caller asked for a file. A queued job is not a file, and the RPC answers
+    // the same filters, so the download continues instead of stopping to explain.
+    expect(result.status).toBe('ready');
+    expect(result.strategy).toBe('rpc');
+    expect(result.rows).toBe(2);
+    expect(client.rpc).toHaveBeenCalled();
+  });
+
+  test('a queued job is surfaced only when nothing else can produce a file', async () => {
+    const rangeError = () => {
+      const query = {};
+      for (const method of ['select', 'order', 'eq', 'gte', 'lte']) query[method] = () => query;
+      query.range = () => Promise.reject(new Error('network is down'));
+      return query;
+    };
+    const client = { rpc: vi.fn(async () => ({ data: '', error: null })), from: rangeError };
+    const fetchArtifact = vi.fn(async () => ({ status: 'queued', jobId: 'job-7' }));
 
     const result = await runArchivalExport({ client, request: { dutyType: 'JMC' }, fetchArtifact });
 
-    expect(result).toEqual(expect.objectContaining({ status: 'queued', jobId: 'job-1' }));
-    expect(client.rpc).not.toHaveBeenCalled();
+    // RPC empty, browser pager dead: the queued job is the only live thread left,
+    // so it must not be swallowed by a generic error.
+    expect(result).toMatchObject({ status: 'queued', jobId: 'job-7' });
+    expect(result.notices.some((note) => /no rows/i.test(note))).toBe(true);
   });
 
   test('an unreachable endpoint falls through to the RPC', async () => {
