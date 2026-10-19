@@ -87,6 +87,23 @@ export function artifactExpiry(now = Date.now()) {
   return new Date(now + 7 * DAY_MS).toISOString();
 }
 
+/**
+ * Storage's per-object ceiling. On the free plan the 50 MB global limit is fixed
+ * and cannot be raised, and the combined snapshot is 62.5 MiB, so that artifact is
+ * simply not storable. Knowing the ceiling here means one oversized CSV is a skip
+ * with a reason instead of an exception that aborts every other snapshot.
+ */
+export const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
+
+export function fitsInStorage(byteLength, max = MAX_ARTIFACT_BYTES) {
+  return byteLength <= max;
+}
+
+/** Storage's refusal wording for an over-limit object, as it reaches the client. */
+export function isObjectTooLarge(message) {
+  return /maximum allowed size|too large|exceeded the maximum/i.test(String(message || ''));
+}
+
 // ---------------------------------------------------------------------------
 // Scope fingerprint / paths
 // ---------------------------------------------------------------------------
@@ -255,10 +272,29 @@ async function fetchAllRows(client, { dutyType = null, dateFrom = null, dateTo =
   return rows;
 }
 
-async function publishArtifact(client, { bucket, csv, meta, dryRun }) {
+export async function publishArtifact(client, { bucket, csv, meta, dryRun, maxBytes = MAX_ARTIFACT_BYTES }) {
   const body = Buffer.from(csv, 'utf8');
   const sha256 = createHash('sha256').update(body).digest('hex');
   const rowCount = Math.max(0, csv.split(CSV_EOL).length - 1);
+
+  const skippedResult = (reason) => ({
+    objectPath: null,
+    rowCount,
+    byteSize: body.byteLength,
+    sha256,
+    version: null,
+    filename: artifactFilename(meta),
+    skipped: true,
+    skipReason: reason,
+  });
+
+  // Decide locally, before any network call: an object over the ceiling cannot be
+  // stored, and attempting it costs a full upload attempt before being refused.
+  if (!fitsInStorage(body.byteLength, maxBytes)) {
+    const reason = `${body.byteLength} bytes exceeds the ${maxBytes}-byte Storage object limit`;
+    console.log(`[skip] ${artifactFilename(meta)} — ${reason}`);
+    return skippedResult(reason);
+  }
 
   const q = client
     .from('archival_export_artifacts')
@@ -284,7 +320,17 @@ async function publishArtifact(client, { bucket, csv, meta, dryRun }) {
   const { error: upErr } = await client.storage
     .from(bucket)
     .upload(objectPath, body, { contentType: 'text/csv; charset=utf-8', upsert: false });
-  if (upErr) throw new Error(`storage upload failed: ${upErr.message}`);
+  if (upErr) {
+    // The local check covers the ceiling we know about; a different cap would show
+    // up only as a server refusal. Skip on a size refusal so the remaining
+    // snapshots still publish; every other upload error stays fatal.
+    if (isObjectTooLarge(upErr.message)) {
+      const reason = `Storage refused the object: ${upErr.message}`;
+      console.log(`[skip] ${artifactFilename(meta)} — ${reason}`);
+      return skippedResult(reason);
+    }
+    throw new Error(`storage upload failed: ${upErr.message}`);
+  }
 
   const existing = client
     .from('archival_export_artifacts')
@@ -317,13 +363,18 @@ async function publishArtifact(client, { bucket, csv, meta, dryRun }) {
 
 async function runSnapshots(client, cfg, args) {
   const targets = [{ dutyType: null, label: 'all' }, ...DUTY_TYPES.map((d) => ({ dutyType: d, label: d }))];
+  const skipped = [];
   for (const t of targets) {
     const meta = { scope: 'global', dutyType: t.dutyType, dateFrom: null, dateTo: null, fingerprint: '', centreScope: null };
     console.log(`— snapshot ${t.label}`);
     const rows = await fetchAllRows(client, { dutyType: t.dutyType }, (n) => {
       if (n % 50000 === 0) console.log(`  … ${n} rows`);
     });
-    await publishArtifact(client, { bucket: cfg.bucket, csv: rowsToCsv(rows), meta, dryRun: args.dryRun });
+    const published = await publishArtifact(client, { bucket: cfg.bucket, csv: rowsToCsv(rows), meta, dryRun: args.dryRun });
+    if (published.skipped) skipped.push(t.label);
+  }
+  if (skipped.length > 0) {
+    console.log(`no artifact for: ${skipped.join(', ')} — those filters download via the CSV RPC instead`);
   }
 }
 
@@ -373,6 +424,11 @@ async function runJobs(client, cfg, args) {
         meta,
         dryRun: false,
       });
+      // A skipped upload must never be recorded as a ready job: the requester
+      // would be told a file exists that was never stored.
+      if (published.skipped) {
+        throw new Error(`no artifact could be stored: ${published.skipReason}`);
+      }
       const { error: doneErr } = await client
         .from('archival_export_jobs')
         .update({

@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path'
 const h = vi.hoisted(() => {
   const state = {
     rows: [],            // rows the stub returns for archival_attendance
+    rowsError: null,     // when set, range() resolves this as an error instead
     rpcImpl: null,       // (name, args) => { data, error }
     ranges: [],          // every range(from,to) the page asked for
     rpcCalls: [],        // [name, args]
@@ -42,6 +43,7 @@ const h = vi.hoisted(() => {
       lte(col, value) { query._filters.push(['lte', col, value]); return query },
       range(from, to) {
         state.ranges.push({ table, from, to, filters: query._filters })
+        if (state.rowsError) return Promise.resolve({ data: null, error: state.rowsError })
         return Promise.resolve({ data: table === 'archival_attendance' ? state.rows.slice(from, to + 1) : [], error: null })
       },
       single() { return Promise.resolve({ data: null, error: null }) },
@@ -148,6 +150,7 @@ let anchors
 beforeEach(() => {
   h.state.rows = []
   h.state.rpcImpl = null
+  h.state.rowsError = null
   h.state.ranges = []
   h.state.rpcCalls = []
   vi.stubEnv('VITE_ARCHIVAL_EXPORT_ENDPOINT', 'https://example.test/functions/v1/request-archival-export')
@@ -217,12 +220,14 @@ describe('archival downloads on the Downloads tab', () => {
     expect(await blobText(blob)).toBe(RPC_CSV)
   })
 
-  it('a queued answer is surfaced with its job id instead of spinning', async () => {
+  it('a queued answer with no working fallback still surfaces its job id', async () => {
     global.fetch = vi.fn(async () => ({
       ok: true,
       status: 200,
       json: async () => ({ status: 'queued', jobId: 'job-9f2', deduplicated: false }),
     }))
+    // RPC empty (default stub) and the browser pager dead: nothing can build a file.
+    h.state.rowsError = { message: 'network is down' }
 
     renderPage()
     // The filtered button refuses an empty duty type, so pick one first.
@@ -230,8 +235,30 @@ describe('archival downloads on the Downloads tab', () => {
     fireEvent.click(screen.getByRole('button', { name: /Download Filtered CSV/i }))
 
     expect(await screen.findByText(/job-9f2/)).toBeTruthy()
-    expect(archivalRpcCalls()).toHaveLength(0)
+    expect(archivalRpcCalls().length).toBeGreaterThan(0)
     expect(anchors.created.length).toBe(0)
+  })
+
+  it('a queued answer does not block the download when the RPC can build the file', async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: 'queued', jobId: 'job-9f2', deduplicated: false }),
+    }))
+    h.state.rpcImpl = (name, args) => (name === 'get_archival_csv_chunk' && args.p_chunk === 0
+      ? { data: RPC_CSV, error: null }
+      : { data: '', error: null })
+
+    renderPage()
+    fireEvent.change(await screen.findByLabelText(/Duty type|Duty Type/i), { target: { value: 'JMC' } })
+    fireEvent.click(screen.getByRole('button', { name: /Download Filtered CSV/i }))
+
+    // "No prepared file yet" must not mean "no file": the RPC answers the same
+    // filters, so the user still gets their CSV.
+    await waitFor(() => expect(anchors.created.length).toBe(1))
+    expect(anchors.created[0].download).toMatch(/\.csv$/)
+    const blob = URL.createObjectURL.mock.calls[0][0]
+    expect(await blobText(blob)).toBe(RPC_CSV)
   })
 
   it('a broken RPC falls through to the browser and still delivers a file', async () => {

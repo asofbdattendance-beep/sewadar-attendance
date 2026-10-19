@@ -416,7 +416,14 @@ test('resolveJobScope: blanks mixed with real centres are dropped, not fatal', (
 // contradicts the runbook's 7-day retention sentence.
 // ---------------------------------------------------------------------------
 
-import { applyNullable, artifactExpiry } from './archival_export_worker.mjs';
+import {
+  applyNullable,
+  artifactExpiry,
+  fitsInStorage,
+  isObjectTooLarge,
+  MAX_ARTIFACT_BYTES,
+  publishArtifact,
+} from './archival_export_worker.mjs';
 
 const recorder = () => {
   const calls = [];
@@ -467,4 +474,114 @@ test('an artifact row is always written with an expiry, never with NULL', () => 
   const src = repoFile('tools/archival_export_worker.mjs');
   assert.doesNotMatch(src, /expires_at:\s*meta\.expiresAt\s*\|\|\s*null/);
   assert.match(src, /expires_at:\s*meta\.expiresAt\s*\|\|\s*artifactExpiry\(\)/);
+});
+
+// ---------------------------------------------------------------------------
+// The 50 MB free-plan Storage object limit
+// ---------------------------------------------------------------------------
+
+/** The filter shape every global snapshot uses. */
+const globalMeta = () => ({
+  scope: 'global', dutyType: null, dateFrom: null, dateTo: null, fingerprint: '', centreScope: null,
+});
+
+/** A client that records whether Storage or a DB query was touched at all. */
+function storageStub({ uploadError = null, versions = [] } = {}) {
+  const calls = { uploads: [], inserts: [], dbLookups: 0, storageTouched: false };
+  const chain = () => {
+    const q = {};
+    q.select = () => q;
+    q.eq = () => q;
+    q.is = () => q;
+    q.update = () => q;
+    q.insert = (row) => { calls.inserts.push(row); return Promise.resolve({ error: null }); };
+    q.then = (resolve) => Promise.resolve({ data: versions, error: null }).then(resolve);
+    return q;
+  };
+  return {
+    calls,
+    from() { calls.dbLookups += 1; return chain(); },
+    storage: {
+      from() {
+        calls.storageTouched = true;
+        return {
+          upload: async (path, body, options) => {
+            calls.uploads.push({ path, options, size: body.byteLength });
+            return { error: uploadError };
+          },
+        };
+      },
+    },
+  };
+}
+
+test('fitsInStorage: the boundary is inclusive, and the measured snapshots are judged', () => {
+  assert.equal(MAX_ARTIFACT_BYTES, 50 * 1024 * 1024);
+  assert.equal(fitsInStorage(MAX_ARTIFACT_BYTES), true);
+  assert.equal(fitsInStorage(MAX_ARTIFACT_BYTES + 1), false);
+  // Sizes measured from the live archive by --dry-run (see context.md §11).
+  assert.equal(fitsInStorage(65_563_506), false); // combined "all": 62.5 MiB
+  assert.equal(fitsInStorage(51_952_608), true);  // "D": 49.54 MiB — inside a 50 MiB cap
+  assert.equal(fitsInStorage(8_665_067), true);   // JMC
+  // The plan's "50 MB" unit is not documented precisely, so an upload that is
+  // refused anyway is converted to a skip at upload time (isObjectTooLarge); the
+  // pre-check is the fast path, not the only guard.
+  assert.equal(fitsInStorage(51_952_608, 60 * 1024 * 1024), true);
+});
+
+test('isObjectTooLarge: recognises the Storage refusal, ignores unrelated errors', () => {
+  assert.equal(isObjectTooLarge('The object exceeded the maximum allowed size'), true);
+  assert.equal(isObjectTooLarge('Bucket not found'), false);
+  assert.equal(isObjectTooLarge(''), false);
+  assert.equal(isObjectTooLarge(undefined), false);
+});
+
+test('publishArtifact: an oversize CSV is skipped before any DB or Storage call', async () => {
+  const client = storageStub();
+
+  const result = await publishArtifact(client, {
+    bucket: 'archival-exports',
+    csv: `h\n${'x'.repeat(40)}`,
+    meta: globalMeta(),
+    dryRun: false,
+    maxBytes: 8,
+  });
+
+  assert.equal(result.skipped, true);
+  assert.equal(result.objectPath, null);
+  assert.equal(result.version, null);
+  assert.equal(result.byteSize > 8, true);
+  assert.match(result.skipReason, /exceeds the 8-byte Storage object limit/);
+  assert.equal(client.calls.dbLookups, 0, 'the version lookup must not run for a skipped snapshot');
+  assert.equal(client.calls.storageTouched, false, 'a skipped snapshot must not be uploaded');
+  assert.equal(client.calls.inserts.length, 0);
+});
+
+test('publishArtifact: a Storage size refusal becomes a skip, not a crash', async () => {
+  const client = storageStub({ uploadError: { message: 'The object exceeded the maximum allowed size' } });
+
+  const result = await publishArtifact(client, {
+    bucket: 'archival-exports', csv: 'h\n1\n', meta: globalMeta(), dryRun: false,
+  });
+
+  assert.equal(result.skipped, true);
+  assert.equal(result.objectPath, null);
+  assert.equal(client.calls.inserts.length, 0, 'no artifact row may claim a file that was refused');
+});
+
+test('publishArtifact: any other upload error still throws', async () => {
+  const client = storageStub({ uploadError: { message: 'Bucket not found' } });
+
+  await assert.rejects(
+    () => publishArtifact(client, {
+      bucket: 'archival-exports', csv: 'h\n1\n', meta: globalMeta(), dryRun: false,
+    }),
+    /storage upload failed: Bucket not found/,
+  );
+});
+
+test('runJobs: a skipped publish fails the job instead of marking it ready', () => {
+  const src = repoFile('tools/archival_export_worker.mjs');
+  assert.match(src, /if \(published\.skipped\) \{/);
+  assert.match(src, /no artifact could be stored: \$\{published\.skipReason\}/);
 });

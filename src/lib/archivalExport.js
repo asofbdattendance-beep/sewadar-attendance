@@ -293,6 +293,9 @@ export async function runArchivalExport({
   requireDutyType = false,
 } = {}) {
   const notices = [];
+  // `queued` is not an ending: it means no prepared file exists right now. Hold it
+  // so it can still be reported if every path that can build a file also fails.
+  let queued = null;
 
   try {
     if (!client) throw new Error('a Supabase client is required');
@@ -301,9 +304,13 @@ export async function runArchivalExport({
     const problem = validateRequest(asked, { requireDutyType });
     if (problem) return { status: 'invalid', message: problem, notices };
 
-    // 1. Pre-built artifact.
+    // 1. Pre-built artifact. Only a real file short-circuits the rest: a queued
+    //    answer is held and the download continues, because the caller asked for a
+    //    file and the RPC below builds one from the same filters. The artifact is
+    //    an optimisation; the server-side CSV is the path that always works.
     const artifact = await tryArtifact(fetchArtifact, asked, notices);
-    if (artifact) return { ...artifact, notices };
+    if (artifact && artifact.status !== 'queued') return { ...artifact, notices };
+    queued = artifact;
 
     // 2. Server-side CSV. An error here is not fatal: it means the RPC is
     //    missing from this deployment, so we fall through and say so.
@@ -350,6 +357,10 @@ export async function runArchivalExport({
       notices,
     };
   } catch (error) {
+    // Nothing produced a file. If a job was queued on the way, that job is the one
+    // piece of information worth keeping — it is the only path to this data that
+    // has been started but not yet finished.
+    if (queued) return { ...queued, notices };
     return { status: 'error', message: `Download failed: ${errorText(error)}`, notices };
   }
 }
